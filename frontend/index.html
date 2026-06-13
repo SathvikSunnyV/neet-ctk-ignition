@@ -1,0 +1,331 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>NEET CTK IGNITION · Connectomic Learning</title>
+<meta name="description" content="A serene, connection-based NEET preparation platform built on the Seven Hills of Knowledge.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;600;700&family=Sora:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<div class="container">
+
+  <!-- ===================== NAV ===================== -->
+  <div class="navbar">
+    <div class="logo">
+      <h1>🏔️ NEET CTK IGNITION</h1>
+    </div>
+    <div class="logo tagline" style="width:100%; order:3;">Connectomic Theory of Knowledge · The Seven Hills of Knowledge</div>
+    <div class="nav-links" id="navLinks">
+      <button class="nav-btn" data-page="welcome">Welcome</button>
+      <button class="nav-btn" data-page="register">Register</button>
+      <button class="nav-btn" data-page="guidance">Guidance</button>
+      <button class="nav-btn" data-page="practice">Practice</button>
+      <button class="nav-btn" data-page="progress">Progress</button>
+      <button class="nav-btn" data-page="pricing">Pricing</button>
+      <button class="nav-btn" data-page="contact">Contact</button>
+      <button class="nav-btn" data-page="admin">Admin</button>
+      <button class="nav-btn" data-page="lecturer">Lecturer Hub</button>
+    </div>
+  </div>
+
+  <!-- ===================== WELCOME ===================== -->
+  <div id="welcomePage" class="page">
+    <div class="hero">
+      <div class="eyebrow">Connectomic Theory of Knowledge</div>
+      <h1>Climb the Seven Hills.<br>Connect the concepts.<br>Reach NEET.</h1>
+      <p class="lead">A calm, intelligent learning companion that turns isolated NEET facts into a connected map of understanding — built around Prof. Konuri's Seven Hills of Knowledge.</p>
+      <button class="btn btn-primary" id="startNowBtn">Start Your Journey →</button>
+
+      <div class="ridge" aria-hidden="true">
+        <svg viewBox="0 0 920 190" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M0,190 L0,120 Q120,50 240,110 T460,90 T680,120 T920,80 L920,190 Z" fill="var(--hill-7)"/>
+          <path d="M0,190 L0,150 Q160,90 320,140 T620,120 T920,140 L920,190 Z" fill="var(--hill-5)"/>
+          <path d="M0,190 L0,165 Q200,120 400,160 T800,150 T920,165 L920,190 Z" fill="var(--hill-3)"/>
+          <path d="M0,190 L0,178 Q260,150 460,178 T920,178 L920,190 Z" fill="var(--hill-2)"/>
+        </svg>
+      </div>
+      <div class="grid-7 mt-1">
+        <div class="badge">1 · Known → Unknown</div>
+        <div class="badge">2 · Central Point</div>
+        <div class="badge">3 · Let Student Discover</div>
+        <div class="badge">4 · One Key, Many Doors</div>
+        <div class="badge">5 · Recognise Patterns</div>
+        <div class="badge">6 · Build Connections</div>
+        <div class="badge">7 · Real-World Wisdom</div>
+      </div>
+    </div>
+
+    <div class="grid-3">
+      <div class="card">
+        <h3>🧭 Personalised, not generic</h3>
+        <p style="color:var(--ink-soft); font-size:0.92rem;">Your study plan is generated from your exam date, category, aim and live performance — recalculated every time you practise.</p>
+      </div>
+      <div class="card">
+        <h3>🗺️ Error Atlas &amp; Remedial Ladder</h3>
+        <p style="color:var(--ink-soft); font-size:0.92rem;">Every quiz feeds an analytics engine that finds your weakest topics and prescribes a Hill-based remedy.</p>
+      </div>
+      <div class="card">
+        <h3>👨‍🏫 Curated faculty lectures</h3>
+        <p style="color:var(--ink-soft); font-size:0.92rem;">Senior faculty submit lectures, our admin team reviews them, and approved sessions appear instantly in Practice.</p>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>What students say</h3>
+      <div class="grid-2">
+        <div class="testimonial">
+          <p class="quote">The Error Atlas showed me exactly where I was losing marks. My Physics accuracy went from 45% to 78% in six weeks.</p>
+          <div class="author">— Anjali, OBC category</div>
+        </div>
+        <div class="testimonial">
+          <p class="quote">The CTK method made Biology feel like one connected story instead of forty separate chapters.</p>
+          <div class="author">— Rohan, General category</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== REGISTER ===================== -->
+  <div id="registerPage" class="page">
+    <div class="card" style="max-width:680px; margin:0 auto;">
+      <h2>Create your learning profile</h2>
+      <p style="color:var(--ink-soft); margin-bottom:1.25rem; font-size:0.92rem;">Tell us a little about your goals — we'll build your first personalised plan immediately.</p>
+
+      <div class="grid-2">
+        <div class="field-group">
+          <label class="field-label" for="regName">Full name</label>
+          <input type="text" id="regName" placeholder="e.g. Aarav Mehta" required>
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="regEmail">Email</label>
+          <input type="email" id="regEmail" placeholder="you@example.com" required>
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="regPhone">Phone</label>
+          <input type="tel" id="regPhone" placeholder="10-digit mobile number">
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="regCategory">Category</label>
+          <select id="regCategory">
+            <option>General</option><option>OBC</option><option>SC</option><option>ST</option><option>EWS</option><option>PwD</option>
+          </select>
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="regAim">Exam aim</label>
+          <select id="regAim">
+            <option>AIIMS</option><option>Government Medical College</option><option>Private Medical College</option>
+          </select>
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="regExamDate">Probable exam date</label>
+          <input type="date" id="regExamDate">
+          <p class="helper-text">Used only to shape your personal plan — the platform-wide NEET date is managed by admin.</p>
+        </div>
+      </div>
+
+      <button id="registerBtn" class="btn btn-primary btn-block mt-2">Register &amp; build my plan</button>
+      <div id="regMessage" class="mt-2"></div>
+    </div>
+  </div>
+
+  <!-- ===================== GUIDANCE ===================== -->
+  <div id="guidancePage" class="page">
+    <div id="guidanceContent">
+      <div class="empty-state">
+        <span class="icon">🧭</span>
+        <p>Register first to unlock your personalised Seven Hills plan.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== PRACTICE ===================== -->
+  <div id="practicePage" class="page">
+    <div class="card">
+      <h3>🏔️ Prof. Konuri's Connectomic Lectures</h3>
+      <div id="profLecturesList" class="video-grid"></div>
+    </div>
+    <div class="card">
+      <h3>📺 Approved senior faculty lectures</h3>
+      <div id="approvedLecturesList" class="video-grid"></div>
+    </div>
+    <div class="card">
+      <div class="flex-between">
+        <h3 style="margin-bottom:0;">📝 Topic-wise quiz · Level 1</h3>
+        <span class="badge" id="quizCountBadge">6 questions</span>
+      </div>
+      <div id="quizContainer" class="mt-2"></div>
+      <button id="submitQuizBtn" class="btn btn-primary mt-2">Submit quiz</button>
+    </div>
+  </div>
+
+  <!-- ===================== PROGRESS ===================== -->
+  <div id="progressPage" class="page">
+    <div id="progressContent">
+      <div class="empty-state">
+        <span class="icon">📊</span>
+        <p>Register and attempt a quiz to see your analytics here.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== PRICING ===================== -->
+  <div id="pricingPage" class="page">
+    <div class="hero" style="padding-top:0;">
+      <div class="eyebrow">Pricing</div>
+      <h1 style="font-size:clamp(1.8rem,4vw,2.6rem);">Choose your climbing pace</h1>
+      <p class="lead">Every plan includes the Connectomic framework. Higher tiers unlock deeper analytics and faculty access.</p>
+    </div>
+    <div class="grid-3">
+      <div class="card price-card">
+        <h3>📖 Free</h3>
+        <div class="price">₹0</div>
+        <ul>
+          <li>✔️ 30% of chapter library</li>
+          <li>✔️ Basic Level-1 quizzes</li>
+          <li>✔️ Community discussion access</li>
+          <li>✔️ Welcome &amp; Seven Hills guide</li>
+        </ul>
+        <button class="btn btn-outline btn-block" disabled>Current plan</button>
+      </div>
+      <div class="card price-card featured">
+        <h3>🚀 Pro</h3>
+        <div class="price">₹999<span style="font-size:0.9rem; color:var(--ink-soft);">/month</span></div>
+        <ul>
+          <li>✔️ Full e-books &amp; lecture library</li>
+          <li>✔️ Error Atlas + Remedial Ladder</li>
+          <li>✔️ Personalised Seven Hills plan</li>
+          <li>✔️ Advanced practice mode (once unlocked)</li>
+        </ul>
+        <button class="btn btn-primary btn-block" id="upgradeProBtn">Upgrade to Pro</button>
+      </div>
+      <div class="card price-card">
+        <h3>🏆 Premium</h3>
+        <div class="price">₹1999<span style="font-size:0.9rem; color:var(--ink-soft);">/year</span></div>
+        <ul>
+          <li>✔️ Everything in Pro</li>
+          <li>✔️ Live doubt-clearing sessions</li>
+          <li>✔️ Priority support</li>
+          <li>✔️ Extra full-length mock tests</li>
+        </ul>
+        <button class="btn btn-primary btn-block" id="upgradePremiumBtn">Contact for payment</button>
+      </div>
+    </div>
+    <div class="card" style="text-align:center;">
+      <p class="badge warn">📢 Institutional &amp; bulk discounts available — write to <strong>admin@neetctk.com</strong></p>
+    </div>
+  </div>
+
+  <!-- ===================== CONTACT ===================== -->
+  <div id="contactPage" class="page">
+    <div class="grid-2">
+      <div class="card">
+        <h3>📞 Get in touch</h3>
+        <p style="margin:0.4rem 0;">✉️ support@neetctk.com</p>
+        <p style="margin:0.4rem 0;">📱 +91-9876543210</p>
+        <p style="margin:0.4rem 0;">📍 CTK Learning Hub, Delhi NCR</p>
+        <p class="helper-text mt-2">We typically respond within one working day. For urgent exam-date queries, please use the feedback form — admin reviews these daily.</p>
+      </div>
+      <div class="card">
+        <h3>💬 Send feedback or a query</h3>
+        <div class="field-group">
+          <textarea id="feedbackMsg" rows="5" placeholder="Tell us what's on your mind — a bug, a suggestion, or a question about your plan."></textarea>
+        </div>
+        <button id="sendFeedbackBtn" class="btn btn-primary">Send feedback</button>
+        <div id="feedbackResp" class="mt-2"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== ADMIN ===================== -->
+  <div id="adminPage" class="page">
+    <div class="card" id="adminLoginCard">
+      <h2>🔐 Admin console</h2>
+      <p style="color:var(--ink-soft); font-size:0.92rem; margin-bottom:1rem;">Enter the admin passcode to manage exam dates, lecture approvals, analytics and platform data.</p>
+      <div class="flex-row">
+        <input type="password" id="adminPasscode" placeholder="Admin passcode" style="max-width:260px;">
+        <button id="adminLoginBtn" class="btn btn-primary">Unlock console</button>
+      </div>
+      <p class="helper-text mt-1">Demo passcode: <strong>ctk-admin</strong> (set <code>ADMIN_PASSCODE</code> in production).</p>
+      <div id="adminLoginError" class="mt-1"></div>
+    </div>
+
+    <div id="adminConsole" style="display:none;">
+      <div class="card">
+        <h3>📅 Platform exam date</h3>
+        <p class="helper-text">This date drives every student's personalised plan on the Guidance page.</p>
+        <div class="flex-row mt-1">
+          <input type="date" id="adminExamDate" style="max-width:220px;">
+          <button id="setExamDateBtn" class="btn btn-primary">Update exam date</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>⏳ Pending lecturer submissions</h3>
+        <div id="pendingLecturesAdmin"></div>
+      </div>
+
+      <div class="card">
+        <h3>📊 Student analytics summary</h3>
+        <div id="adminAnalyticsSummary"></div>
+      </div>
+
+      <div class="card">
+        <h3>💬 Feedback inbox</h3>
+        <div id="adminFeedbackList"></div>
+      </div>
+
+      <div class="card">
+        <h3>⚠️ Danger zone</h3>
+        <p class="helper-text mt-1">This permanently deletes all students, progress, targets, lectures and feedback. Approved sample lectures will be re-seeded.</p>
+        <button id="resetAllDataBtn" class="btn btn-danger mt-1">Reset all platform data</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== LECTURER HUB ===================== -->
+  <div id="lecturerPage" class="page">
+    <div class="card">
+      <h2>👨‍🏫 Senior Lecturer Portal</h2>
+      <p style="color:var(--ink-soft); font-size:0.92rem; margin-bottom:1rem;">Submit a lecture for admin review. Once approved, it appears immediately on the Practice page for every student.</p>
+      <div class="grid-2">
+        <div class="field-group">
+          <label class="field-label" for="lecturerName">Your name</label>
+          <input type="text" id="lecturerName" placeholder="e.g. Dr. Priya Nair">
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="lectureSubject">Subject</label>
+          <select id="lectureSubject"><option>Physics</option><option>Chemistry</option><option>Biology</option></select>
+        </div>
+        <div class="field-group" style="grid-column:1/-1;">
+          <label class="field-label" for="lectureTitle">Video title</label>
+          <input type="text" id="lectureTitle" placeholder="e.g. Electrochemistry — connecting cells to corrosion">
+        </div>
+        <div class="field-group" style="grid-column:1/-1;">
+          <label class="field-label" for="lectureUrl">Embed URL (YouTube embed link)</label>
+          <input type="url" id="lectureUrl" placeholder="https://www.youtube.com/embed/...">
+        </div>
+      </div>
+      <button id="submitLectureBtn" class="btn btn-primary">Submit for approval</button>
+      <div id="lecturerStatus" class="mt-2"></div>
+    </div>
+
+    <div class="card">
+      <div class="flex-between">
+        <h3 style="margin-bottom:0;">My submissions</h3>
+        <button id="refreshSubmissionsBtn" class="btn btn-outline">Refresh</button>
+      </div>
+      <div id="mySubmissionsList" class="mt-2"></div>
+    </div>
+  </div>
+
+  <div class="site-footer">NEET CTK IGNITION · Built on the Connectomic Theory of Knowledge · Seven Hills of Knowledge</div>
+</div>
+
+<div id="toast"></div>
+<script src="app.js"></script>
+</body>
+</html>
