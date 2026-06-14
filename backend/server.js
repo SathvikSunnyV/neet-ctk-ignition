@@ -5,7 +5,15 @@ const express = require('express');
 const cors    = require('cors');
 const path    = require('path');
 require('dotenv').config();
-const { pool, initSchema, QUESTIONS, computeTargets, TOPIC_BANK } = require('./db');
+const { pool, initSchema, QUESTIONS, computeTargets, TOPIC_BANK, predictCutoff } = require('./db');
+const { generateRecommendations } = require('./ai');
+const {
+    hashPassword, verifyPassword, signToken,
+    generateOTP, otpExpiry, isOtpExpired,
+    sendOtpEmail,
+    authenticate, requireRole, optionalAuth,
+    checkRateLimit, recordAttempt
+} = require('./auth');
 
 const app  = express();
 const PORT = process.env.PORT || 4000;
@@ -14,9 +22,357 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '..', 'frontend')));
 
+// ===========================================================================
+// AUTHENTICATION SYSTEM (additive — does not affect existing routes)
+// ===========================================================================
+
 // ---------------------------------------------------------------------------
-// Helper: full student bundle (student + progress + targets)
+// REGISTER (Student / Faculty / Admin) — creates an unverified user and
+// sends an OTP for email verification.
 // ---------------------------------------------------------------------------
+app.post('/api/auth/register', async (req, res) => {
+    const { name, email, password, confirmPassword, role } = req.body;
+    const cleanEmail = (email || '').trim().toLowerCase();
+    const allowedRoles = ['student', 'faculty', 'admin'];
+    const finalRole = allowedRoles.includes(role) ? role : 'student';
+
+    if (!name?.trim() || !cleanEmail || !password)
+        return res.status(400).json({ error: 'Name, email and password are required.' });
+
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail))
+        return res.status(400).json({ error: 'Please provide a valid email address.' });
+
+    if (password.length < 8)
+        return res.status(400).json({ error: 'Password must be at least 8 characters long.' });
+
+    if (confirmPassword !== undefined && password !== confirmPassword)
+        return res.status(400).json({ error: 'Passwords do not match.' });
+
+    // Admin self-registration requires an invite code, to avoid open
+    // creation of admin accounts.
+    if (finalRole === 'admin') {
+        const expected = process.env.ADMIN_SIGNUP_CODE || 'ctk-admin-invite';
+        if (req.body.adminCode !== expected) {
+            return res.status(403).json({ error: 'A valid admin invite code is required to register as Admin.' });
+        }
+    }
+
+    try {
+        const { rows: [existing] } = await pool.query(`SELECT id, is_verified FROM users WHERE email = $1`, [cleanEmail]);
+        if (existing && existing.is_verified) {
+            return res.status(409).json({ error: 'An account with this email already exists. Please log in.' });
+        }
+
+        const passwordHash = await hashPassword(password);
+        const otp = generateOTP();
+        const expiry = otpExpiry();
+
+        if (existing) {
+            await pool.query(
+                `UPDATE users SET name=$1, password_hash=$2, role=$3, otp_code=$4, otp_expires_at=$5 WHERE email=$6`,
+                [name.trim(), passwordHash, finalRole, otp, expiry, cleanEmail]
+            );
+        } else {
+            await pool.query(
+                `INSERT INTO users (name, email, password_hash, role, is_verified, otp_code, otp_expires_at)
+                 VALUES ($1,$2,$3,$4, FALSE, $5, $6)`,
+                [name.trim(), cleanEmail, passwordHash, finalRole, otp, expiry]
+            );
+        }
+
+        if (finalRole === 'faculty') {
+            await pool.query(
+                `INSERT INTO faculty (email, name) VALUES ($1,$2)
+                 ON CONFLICT (email) DO UPDATE SET name = $2`,
+                [cleanEmail, name.trim()]
+            );
+        }
+
+        await sendOtpEmail(cleanEmail, otp, 'verify your NEET CTK IGNITION account');
+
+        return res.status(201).json({
+            success: true,
+            message: 'Registration successful. Please check your email for the OTP to verify your account.',
+            email: cleanEmail
+        });
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'Server error during registration.' });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// VERIFY OTP — activates the account
+// ---------------------------------------------------------------------------
+app.post('/api/auth/verify-otp', async (req, res) => {
+    const cleanEmail = (req.body.email || '').trim().toLowerCase();
+    const { otp } = req.body;
+
+    if (!cleanEmail || !otp) return res.status(400).json({ error: 'Email and OTP are required.' });
+
+    try {
+        const { rows: [user] } = await pool.query(`SELECT * FROM users WHERE email = $1`, [cleanEmail]);
+        if (!user) return res.status(404).json({ error: 'No account found for this email.' });
+        if (user.is_verified) return res.status(400).json({ error: 'This account is already verified. Please log in.' });
+
+        if (isOtpExpired(user.otp_expires_at)) {
+            return res.status(400).json({ error: 'OTP has expired. Please request a new one.' });
+        }
+        if (user.otp_code !== otp) {
+            return res.status(400).json({ error: 'Incorrect OTP. Please try again.' });
+        }
+
+        await pool.query(
+            `UPDATE users SET is_verified = TRUE, otp_code = NULL, otp_expires_at = NULL WHERE email = $1`,
+            [cleanEmail]
+        );
+
+        return res.json({ success: true, message: 'Email verified successfully. You can now log in.' });
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'Server error during OTP verification.' });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// RESEND OTP
+// ---------------------------------------------------------------------------
+app.post('/api/auth/resend-otp', async (req, res) => {
+    const cleanEmail = (req.body.email || '').trim().toLowerCase();
+    if (!cleanEmail) return res.status(400).json({ error: 'Email is required.' });
+
+    try {
+        const allowed = await checkRateLimit(pool, cleanEmail, 'otp', 5, 15);
+        if (!allowed) return res.status(429).json({ error: 'Too many OTP requests. Please wait a few minutes and try again.' });
+
+        const { rows: [user] } = await pool.query(`SELECT * FROM users WHERE email = $1`, [cleanEmail]);
+        if (!user) return res.status(404).json({ error: 'No account found for this email.' });
+        if (user.is_verified) return res.status(400).json({ error: 'This account is already verified. Please log in.' });
+
+        const otp = generateOTP();
+        const expiry = otpExpiry();
+        await pool.query(`UPDATE users SET otp_code=$1, otp_expires_at=$2 WHERE email=$3`, [otp, expiry, cleanEmail]);
+        await recordAttempt(pool, cleanEmail, 'otp');
+        await sendOtpEmail(cleanEmail, otp, 'verify your NEET CTK IGNITION account');
+
+        return res.json({ success: true, message: 'A new OTP has been sent to your email.' });
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'Server error while resending OTP.' });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// LOGIN
+// ---------------------------------------------------------------------------
+app.post('/api/auth/login', async (req, res) => {
+    const cleanEmail = (req.body.email || '').trim().toLowerCase();
+    const { password } = req.body;
+
+    if (!cleanEmail || !password) return res.status(400).json({ error: 'Email and password are required.' });
+
+    try {
+        const allowed = await checkRateLimit(pool, cleanEmail, 'login', 10, 15);
+        if (!allowed) return res.status(429).json({ error: 'Too many login attempts. Please wait a few minutes and try again.' });
+
+        const { rows: [user] } = await pool.query(`SELECT * FROM users WHERE email = $1`, [cleanEmail]);
+        await recordAttempt(pool, cleanEmail, 'login');
+
+        if (!user) return res.status(401).json({ error: 'Invalid email or password.' });
+
+        const ok = await verifyPassword(password, user.password_hash);
+        if (!ok) return res.status(401).json({ error: 'Invalid email or password.' });
+
+        if (!user.is_verified) {
+            return res.status(403).json({ error: 'Please verify your email with the OTP sent during registration before logging in.', needsVerification: true, email: cleanEmail });
+        }
+
+        const token = signToken(user);
+        return res.json({
+            success: true,
+            token,
+            user: { id: user.id, name: user.name, email: user.email, role: user.role, onboardingDone: user.onboarding_done }
+        });
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'Server error during login.' });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// FORGOT PASSWORD — sends a reset OTP
+// ---------------------------------------------------------------------------
+app.post('/api/auth/forgot-password', async (req, res) => {
+    const cleanEmail = (req.body.email || '').trim().toLowerCase();
+    if (!cleanEmail) return res.status(400).json({ error: 'Email is required.' });
+
+    try {
+        const allowed = await checkRateLimit(pool, cleanEmail, 'reset', 5, 15);
+        if (!allowed) return res.status(429).json({ error: 'Too many reset requests. Please wait a few minutes and try again.' });
+
+        const { rows: [user] } = await pool.query(`SELECT * FROM users WHERE email = $1`, [cleanEmail]);
+        // Always respond success to avoid leaking which emails are registered.
+        if (user) {
+            const otp = generateOTP();
+            const expiry = otpExpiry();
+            await pool.query(`UPDATE users SET reset_otp_code=$1, reset_otp_expires_at=$2 WHERE email=$3`, [otp, expiry, cleanEmail]);
+            await recordAttempt(pool, cleanEmail, 'reset');
+            await sendOtpEmail(cleanEmail, otp, 'reset your NEET CTK IGNITION password');
+        }
+
+        return res.json({ success: true, message: 'If an account exists for this email, a password reset OTP has been sent.' });
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'Server error during password reset request.' });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// RESET PASSWORD — verify OTP and set new password
+// ---------------------------------------------------------------------------
+app.post('/api/auth/reset-password', async (req, res) => {
+    const cleanEmail = (req.body.email || '').trim().toLowerCase();
+    const { otp, newPassword, confirmPassword } = req.body;
+
+    if (!cleanEmail || !otp || !newPassword) return res.status(400).json({ error: 'Email, OTP and new password are required.' });
+    if (newPassword.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters long.' });
+    if (confirmPassword !== undefined && newPassword !== confirmPassword) return res.status(400).json({ error: 'Passwords do not match.' });
+
+    try {
+        const { rows: [user] } = await pool.query(`SELECT * FROM users WHERE email = $1`, [cleanEmail]);
+        if (!user) return res.status(404).json({ error: 'No account found for this email.' });
+
+        if (isOtpExpired(user.reset_otp_expires_at)) {
+            return res.status(400).json({ error: 'OTP has expired. Please request a new one.' });
+        }
+        if (user.reset_otp_code !== otp) {
+            return res.status(400).json({ error: 'Incorrect OTP. Please try again.' });
+        }
+
+        const passwordHash = await hashPassword(newPassword);
+        await pool.query(
+            `UPDATE users SET password_hash=$1, reset_otp_code=NULL, reset_otp_expires_at=NULL WHERE email=$2`,
+            [passwordHash, cleanEmail]
+        );
+
+        return res.json({ success: true, message: 'Password reset successfully. You can now log in with your new password.' });
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'Server error during password reset.' });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// CURRENT USER (session check)
+// ---------------------------------------------------------------------------
+app.get('/api/auth/me', authenticate, async (req, res) => {
+    try {
+        const { rows: [user] } = await pool.query(
+            `SELECT id, name, email, role, onboarding_done FROM users WHERE id = $1`, [req.user.id]
+        );
+        if (!user) return res.status(404).json({ error: 'User not found.' });
+        res.json({ user: { id: user.id, name: user.name, email: user.email, role: user.role, onboardingDone: user.onboarding_done } });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server error.' });
+    }
+});
+
+// ===========================================================================
+// STUDENT ONBOARDING (post first-login questionnaire)
+// Reuses the existing `students`/`progress`/`targets` tables and the
+// existing /api/register logic, but is gated behind authentication and
+// marks the user's onboarding as complete.
+// ===========================================================================
+app.post('/api/onboarding/student', authenticate, requireRole('student'), async (req, res) => {
+    const {
+        targetExam, targetInstitution, category, state,
+        currentClass, examDate, dailyStudyHours, prepLevel
+    } = req.body;
+
+    const email = req.user.email;
+    const name = req.user.name;
+
+    const aim = targetInstitution || 'Government Medical College';
+    const cat = category || 'General';
+
+    try {
+        const { rows: [existing] } = await pool.query(`SELECT email FROM students WHERE email = $1`, [email]);
+
+        if (existing) {
+            await pool.query(
+                `UPDATE students SET name=$1, category=$2, aim=$3, exam_date=$4,
+                        target_institution=$5, state=$6, current_class=$7,
+                        daily_study_hours=$8, prep_level=$9, target_exam=$10
+                 WHERE email=$11`,
+                [name, cat, aim, examDate || null, aim, state || null, currentClass || null,
+                 dailyStudyHours || null, prepLevel || 'Beginner', targetExam || 'NEET', email]
+            );
+        } else {
+            await pool.query(
+                `INSERT INTO students (email, name, phone, category, aim, exam_date,
+                        target_institution, state, current_class, daily_study_hours, prep_level, target_exam)
+                 VALUES ($1,$2,'',$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+                [email, name, cat, aim, examDate || null, aim, state || null, currentClass || null,
+                 dailyStudyHours || null, prepLevel || 'Beginner', targetExam || 'NEET']
+            );
+            await pool.query(
+                `INSERT INTO progress (email, bio_accuracy, phy_accuracy, chem_accuracy, quiz_count, weekly_history)
+                 VALUES ($1, 40, 35, 38, 0, '[40,40,40,40,40,40,40]')`,
+                [email]
+            );
+        }
+
+        const t = computeTargets(aim, cat);
+        await pool.query(
+            `INSERT INTO targets (email, bio, phy, chem) VALUES ($1,$2,$3,$4)
+             ON CONFLICT (email) DO UPDATE SET bio=$2, phy=$3, chem=$4`,
+            [email, t.bio, t.phy, t.chem]
+        );
+
+        await pool.query(`UPDATE users SET onboarding_done = TRUE WHERE email = $1`, [email]);
+
+        const bundle = await getStudentBundle(email);
+        const cutoff = predictCutoff(aim, cat, state, examDate, null);
+
+        return res.status(201).json({ ...bundle, cutoffPrediction: cutoff });
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'Server error during onboarding.' });
+    }
+});
+
+// ===========================================================================
+// AI-BASED CUTOFF PREDICTION
+// Returns Safe/Target/Stretch scores, rank band and admission probability
+// computed from historical NEET cutoff trends (see db.js).
+// ===========================================================================
+app.get('/api/cutoff-prediction/:email', authenticate, async (req, res) => {
+    try {
+        const bundle = await getStudentBundle(req.params.email);
+        if (!bundle) return res.status(404).json({ error: 'Student not found.' });
+
+        const { student, progress } = bundle;
+        const avgAccuracy = progress
+            ? (progress.bio_accuracy + progress.phy_accuracy + progress.chem_accuracy) / 3
+            : null;
+
+        const prediction = predictCutoff(
+            student.aim || 'Government Medical College',
+            student.category || 'General',
+            student.state,
+            student.exam_date,
+            avgAccuracy
+        );
+
+        res.json(prediction);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server error while computing cutoff prediction.' });
+    }
+});
+
+
 async function getStudentBundle(email) {
     const { rows: [student] } = await pool.query(`SELECT * FROM students WHERE email = $1`, [email]);
     if (!student) return null;
@@ -328,9 +684,319 @@ app.get('/api/error-atlas/:email', async (req, res) => {
     res.json({ atlas });
 });
 
+// ===========================================================================
+// TEST MANAGEMENT SYSTEM (Faculty creates, Students attempt)
+// ===========================================================================
+
 // ---------------------------------------------------------------------------
-// SPA fallback
+// FACULTY: create a test with MCQ / fill-in-the-blank questions
 // ---------------------------------------------------------------------------
+app.post('/api/faculty/tests', authenticate, requireRole('faculty'), async (req, res) => {
+    const {
+        title, subject, chapter, difficulty, timeLimitMin,
+        negativeMarking, randomize, scheduledAt, questions
+    } = req.body;
+
+    if (!title?.trim() || !subject?.trim())
+        return res.status(400).json({ error: 'Title and subject are required.' });
+    if (!Array.isArray(questions) || questions.length === 0)
+        return res.status(400).json({ error: 'At least one question is required.' });
+
+    for (const q of questions) {
+        if (!q.questionText?.trim() || !q.correctAnswer?.toString().trim()) {
+            return res.status(400).json({ error: 'Every question needs text and a correct answer.' });
+        }
+        if (q.qType === 'mcq' && (!Array.isArray(q.options) || q.options.length < 2)) {
+            return res.status(400).json({ error: 'MCQ questions need at least two options.' });
+        }
+    }
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const { rows: [test] } = await client.query(
+            `INSERT INTO tests (title, subject, chapter, difficulty, time_limit_min, negative_marking, randomize, scheduled_at, created_by)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING *`,
+            [title.trim(), subject, chapter || null, difficulty || 'Medium',
+             timeLimitMin || 30, !!negativeMarking, !!randomize, scheduledAt || null, req.user.email]
+        );
+
+        for (let i = 0; i < questions.length; i++) {
+            const q = questions[i];
+            await client.query(
+                `INSERT INTO test_questions (test_id, q_type, question_text, options, correct_answer, topic, subtopic, concept, difficulty, position)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+                [test.id, q.qType || 'mcq', q.questionText.trim(),
+                 q.qType === 'mcq' ? JSON.stringify(q.options) : null,
+                 q.correctAnswer.toString().trim(),
+                 q.topic || null, q.subtopic || null, q.concept || null, q.difficulty || difficulty || 'Medium', i]
+            );
+        }
+
+        await client.query('COMMIT');
+        res.status(201).json({ success: true, test });
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error(err);
+        res.status(500).json({ error: 'Server error while creating test.' });
+    } finally {
+        client.release();
+    }
+});
+
+// ---------------------------------------------------------------------------
+// FACULTY: list own tests
+// ---------------------------------------------------------------------------
+app.get('/api/faculty/tests', authenticate, requireRole('faculty'), async (req, res) => {
+    const { rows } = await pool.query(
+        `SELECT t.*, (SELECT COUNT(*) FROM test_questions q WHERE q.test_id = t.id) AS question_count,
+                (SELECT COUNT(*) FROM test_attempts a WHERE a.test_id = t.id) AS attempt_count
+         FROM tests t WHERE t.created_by = $1 ORDER BY t.created_at DESC`,
+        [req.user.email]
+    );
+    res.json(rows);
+});
+
+// ---------------------------------------------------------------------------
+// STUDENT: list available tests (scheduled now or in the past, not yet attempted)
+// ---------------------------------------------------------------------------
+app.get('/api/student/tests', authenticate, requireRole('student'), async (req, res) => {
+    const { rows } = await pool.query(
+        `SELECT t.id, t.title, t.subject, t.chapter, t.difficulty, t.time_limit_min,
+                t.negative_marking, t.scheduled_at,
+                (SELECT COUNT(*) FROM test_questions q WHERE q.test_id = t.id) AS question_count,
+                EXISTS(SELECT 1 FROM test_attempts a WHERE a.test_id = t.id AND a.student_email = $1) AS attempted
+         FROM tests t
+         WHERE t.scheduled_at IS NULL OR t.scheduled_at <= NOW()
+         ORDER BY t.created_at DESC`,
+        [req.user.email]
+    );
+    res.json(rows);
+});
+
+// ---------------------------------------------------------------------------
+// STUDENT: fetch a test for attempting (answers/correct values withheld)
+// ---------------------------------------------------------------------------
+app.get('/api/student/tests/:id', authenticate, requireRole('student'), async (req, res) => {
+    const { rows: [test] } = await pool.query(`SELECT * FROM tests WHERE id = $1`, [req.params.id]);
+    if (!test) return res.status(404).json({ error: 'Test not found.' });
+
+    let { rows: questions } = await pool.query(
+        `SELECT id, q_type, question_text, options, topic, subtopic, difficulty, position
+         FROM test_questions WHERE test_id = $1 ORDER BY position ASC`,
+        [req.params.id]
+    );
+
+    if (test.randomize) {
+        questions = questions.slice().sort(() => Math.random() - 0.5);
+    }
+
+    res.json({ test, questions });
+});
+
+// ---------------------------------------------------------------------------
+// STUDENT: submit attempt -> auto-grade + mistake analysis
+// ---------------------------------------------------------------------------
+app.post('/api/student/tests/:id/submit', authenticate, requireRole('student'), async (req, res) => {
+    const testId = req.params.id;
+    const { answers } = req.body; // [{ questionId, answer }]
+    const email = req.user.email;
+
+    if (!Array.isArray(answers)) return res.status(400).json({ error: 'answers must be an array.' });
+
+    try {
+        const { rows: [test] } = await pool.query(`SELECT * FROM tests WHERE id = $1`, [testId]);
+        if (!test) return res.status(404).json({ error: 'Test not found.' });
+
+        const { rows: questions } = await pool.query(`SELECT * FROM test_questions WHERE test_id = $1`, [testId]);
+        const qMap = new Map(questions.map(q => [q.id, q]));
+
+        let correctCount = 0;
+        let attemptedCount = 0;
+        const perQuestion = [];
+
+        for (const a of answers) {
+            const q = qMap.get(a.questionId);
+            if (!q) continue;
+            const given = (a.answer ?? '').toString().trim();
+            const expected = q.correct_answer.toString().trim();
+            const isCorrect = given !== '' && (
+                q.q_type === 'mcq'
+                    ? given === expected
+                    : given.toLowerCase() === expected.toLowerCase()
+            );
+            if (given !== '') attemptedCount += 1;
+            if (isCorrect) correctCount += 1;
+            perQuestion.push({ question: q, given, isCorrect, attempted: given !== '' });
+        }
+
+        let rawScore = correctCount;
+        if (test.negative_marking) {
+            const incorrectAttempted = perQuestion.filter(p => p.attempted && !p.isCorrect).length;
+            rawScore = correctCount - incorrectAttempted * 0.25;
+        }
+
+        await pool.query(
+            `INSERT INTO test_attempts (test_id, student_email, answers, score, total)
+             VALUES ($1,$2,$3,$4,$5)`,
+            [testId, email, JSON.stringify(answers), rawScore, questions.length]
+        );
+
+        // ---- Mistake Analysis Engine ----
+        for (const p of perQuestion) {
+            if (p.isCorrect) continue;
+            const mistakeType = !p.attempted ? 'unattempted'
+                : (p.question.q_type === 'fill_blank' ? 'memory' : 'conceptual');
+            await pool.query(
+                `INSERT INTO mistakes (student_email, test_id, question_id, subject, topic, subtopic, concept, difficulty, mistake_type)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+                [email, testId, p.question.id, test.subject, p.question.topic, p.question.subtopic, p.question.concept, p.question.difficulty, mistakeType]
+            );
+        }
+
+        // ---- Update subject accuracy in `progress` (reuses existing blend logic) ----
+        const { rows: [progress] } = await pool.query(`SELECT * FROM progress WHERE email = $1`, [email]);
+        if (progress && questions.length > 0) {
+            const subjectKey = test.subject === 'Biology' ? 'bio' : test.subject === 'Physics' ? 'phy' : test.subject === 'Chemistry' ? 'chem' : null;
+            if (subjectKey) {
+                const attemptAcc = (correctCount / questions.length) * 100;
+                const colMap = { bio: 'bio_accuracy', phy: 'phy_accuracy', chem: 'chem_accuracy' };
+                const col = colMap[subjectKey];
+                const oldVal = progress[col];
+                const blended = Math.round((oldVal * 0.7 + attemptAcc * 0.3) * 10) / 10;
+                let history = [];
+                try { history = JSON.parse(progress.weekly_history); } catch (_) {}
+                history.push(blended);
+                if (history.length > 7) history = history.slice(-7);
+                await pool.query(
+                    `UPDATE progress SET ${col} = $1, quiz_count = quiz_count + 1, weekly_history = $2 WHERE email = $3`,
+                    [blended, JSON.stringify(history), email]
+                );
+            }
+        }
+
+        res.json({
+            score: rawScore,
+            total: questions.length,
+            correctCount,
+            attemptedCount,
+            accuracy: Math.round((correctCount / questions.length) * 100),
+            results: perQuestion.map(p => ({
+                questionId: p.question.id,
+                questionText: p.question.question_text,
+                yourAnswer: p.given,
+                correctAnswer: p.question.correct_answer,
+                isCorrect: p.isCorrect,
+                topic: p.question.topic
+            }))
+        });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server error while submitting test.' });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// STUDENT: mistake analysis summary (per-topic breakdown + recommendations)
+// ---------------------------------------------------------------------------
+app.get('/api/student/mistake-analysis', authenticate, requireRole('student'), async (req, res) => {
+    try {
+        const { rows } = await pool.query(
+            `SELECT subject, topic, mistake_type, COUNT(*) AS count
+             FROM mistakes WHERE student_email = $1
+             GROUP BY subject, topic, mistake_type
+             ORDER BY count DESC`,
+            [req.user.email]
+        );
+
+        const { rows: totals } = await pool.query(
+            `SELECT subject, topic, COUNT(*) AS attempts
+             FROM mistakes WHERE student_email = $1
+             GROUP BY subject, topic`,
+            [req.user.email]
+        );
+        const totalMap = new Map(totals.map(t => [`${t.subject}::${t.topic}`, parseInt(t.attempts, 10)]));
+
+        const bySubject = {};
+        for (const r of rows) {
+            bySubject[r.subject] = bySubject[r.subject] || [];
+            bySubject[r.subject].push({
+                topic: r.topic,
+                mistakeType: r.mistake_type,
+                count: parseInt(r.count, 10)
+            });
+        }
+
+        const topMistakes = rows.slice(0, 5).map(r => ({
+            subject: r.subject, topic: r.topic, mistakeType: r.mistake_type, count: parseInt(r.count, 10)
+        }));
+        const recommendations = await generateRecommendations(topMistakes);
+
+        res.json({ bySubject, recommendations });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server error while computing mistake analysis.' });
+    }
+});
+
+// ===========================================================================
+// LECTURER ANALYTICS DASHBOARD
+// ===========================================================================
+app.get('/api/faculty/analytics', authenticate, requireRole('faculty'), async (req, res) => {
+    try {
+        // Subject/topic-wide weak-area detection across all students who
+        // attempted this faculty member's tests.
+        const { rows: weakTopics } = await pool.query(
+            `SELECT m.subject, m.topic, COUNT(DISTINCT m.student_email) AS weak_student_count
+             FROM mistakes m
+             JOIN tests t ON m.test_id = t.id
+             WHERE t.created_by = $1
+             GROUP BY m.subject, m.topic
+             ORDER BY weak_student_count DESC
+             LIMIT 10`,
+            [req.user.email]
+        );
+
+        const { rows: scores } = await pool.query(
+            `SELECT s.email, s.name, s.category, s.aim,
+                    a.test_id, t.title, a.score, a.total, a.submitted_at
+             FROM test_attempts a
+             JOIN tests t ON a.test_id = t.id
+             JOIN students s ON a.student_email = s.email
+             WHERE t.created_by = $1
+             ORDER BY a.submitted_at DESC
+             LIMIT 100`,
+            [req.user.email]
+        );
+
+        const { rows: avgScores } = await pool.query(
+            `SELECT t.id AS test_id, t.title, t.subject, AVG(a.score) AS avg_score, AVG(a.total) AS total, COUNT(*) AS attempts
+             FROM test_attempts a JOIN tests t ON a.test_id = t.id
+             WHERE t.created_by = $1
+             GROUP BY t.id, t.title, t.subject
+             ORDER BY t.created_at DESC`,
+            [req.user.email]
+        );
+
+        res.json({
+            weakTopics: weakTopics.map(w => ({
+                subject: w.subject, topic: w.topic, weakStudentCount: parseInt(w.weak_student_count, 10),
+                message: `${w.weak_student_count} student(s) are weak in ${w.topic}.`
+            })),
+            recentAttempts: scores,
+            testAverages: avgScores.map(a => ({
+                testId: a.test_id, title: a.title, subject: a.subject,
+                avgScore: Math.round(parseFloat(a.avg_score) * 10) / 10,
+                total: parseInt(a.total, 10), attempts: parseInt(a.attempts, 10)
+            }))
+        });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server error while computing analytics.' });
+    }
+});
+
+
 app.get(/^\/(?!api).*/, (req, res) => {
     res.sendFile(path.join(__dirname, '..', 'frontend', 'index.html'));
 });

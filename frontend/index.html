@@ -16,19 +16,22 @@
   <!-- ===================== NAV ===================== -->
   <div class="navbar">
     <div class="logo">
-      <h1>🏔️ NEET CK IGNITION</h1>
+      <h1>🏔️ NEET CTK IGNITION</h1>
     </div>
     <div class="logo tagline" style="width:100%; order:3;">Connectomic Theory of Knowledge · The Seven Hills of Knowledge</div>
     <div class="nav-links" id="navLinks">
       <button class="nav-btn" data-page="welcome">Welcome</button>
-      <button class="nav-btn" data-page="register">Register</button>
-      <button class="nav-btn" data-page="guidance">Guidance</button>
-      <button class="nav-btn" data-page="practice">Practice</button>
-      <button class="nav-btn" data-page="progress">Progress</button>
+      <button class="nav-btn" data-page="login" id="navLogin">Login</button>
+      <button class="nav-btn" data-page="register" id="navRegister">Register</button>
+      <button class="nav-btn" data-page="onboarding" id="navOnboarding" style="display:none;">Setup Profile</button>
+      <button class="nav-btn" data-page="guidance" id="navGuidance" style="display:none;">Guidance</button>
+      <button class="nav-btn" data-page="practice" id="navPractice" style="display:none;">Practice</button>
+      <button class="nav-btn" data-page="progress" id="navProgress" style="display:none;">Progress</button>
       <button class="nav-btn" data-page="pricing">Pricing</button>
       <button class="nav-btn" data-page="contact">Contact</button>
       <button class="nav-btn" data-page="admin">Admin</button>
-      <button class="nav-btn" data-page="lecturer">Lecturer Hub</button>
+      <button class="nav-btn" data-page="lecturer" id="navLecturer" style="display:none;">Lecturer Hub</button>
+      <button class="nav-btn" id="navLogout" style="display:none;">Logout</button>
     </div>
   </div>
 
@@ -89,48 +92,188 @@
     </div>
   </div>
 
-  <!-- ===================== REGISTER ===================== -->
+  <!-- ===================== REGISTER (AUTH) ===================== -->
   <div id="registerPage" class="page">
-    <div class="card" style="max-width:680px; margin:0 auto;">
-      <h2>Create your learning profile</h2>
-      <p style="color:var(--ink-soft); margin-bottom:1.25rem; font-size:0.92rem;">Tell us a little about your goals — we'll build your first personalised plan immediately.</p>
+    <div class="card" style="max-width:560px; margin:0 auto;">
+      <h2>Create your account</h2>
+      <p style="color:var(--ink-soft); margin-bottom:1.25rem; font-size:0.92rem;">Register as a Student, Faculty member, or Admin. We'll send a one-time code to verify your email.</p>
+
+      <div class="field-group">
+        <label class="field-label" for="authRole">I am registering as</label>
+        <select id="authRole">
+          <option value="student">Student</option>
+          <option value="faculty">Faculty / Lecturer</option>
+          <option value="admin">Admin</option>
+        </select>
+      </div>
+      <div class="field-group" id="adminCodeGroup" style="display:none;">
+        <label class="field-label" for="authAdminCode">Admin invite code</label>
+        <input type="text" id="authAdminCode" placeholder="Provided by the institution">
+      </div>
+      <div class="field-group">
+        <label class="field-label" for="authName">Full name</label>
+        <input type="text" id="authName" placeholder="e.g. Aarav Mehta" required>
+      </div>
+      <div class="field-group">
+        <label class="field-label" for="authEmail">Email</label>
+        <input type="email" id="authEmail" placeholder="you@example.com" required>
+      </div>
+      <div class="grid-2">
+        <div class="field-group">
+          <label class="field-label" for="authPassword">Password</label>
+          <input type="password" id="authPassword" placeholder="At least 8 characters" required>
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="authConfirmPassword">Confirm password</label>
+          <input type="password" id="authConfirmPassword" placeholder="Re-enter password" required>
+        </div>
+      </div>
+
+      <button id="registerBtn" class="btn btn-primary btn-block mt-2">Create account &amp; send OTP</button>
+      <div id="regMessage" class="mt-2"></div>
+      <p class="helper-text mt-2">Already have an account? <a href="#" id="goToLoginLink">Log in</a></p>
+    </div>
+  </div>
+
+  <!-- ===================== LOGIN ===================== -->
+  <div id="loginPage" class="page">
+    <div class="card" style="max-width:480px; margin:0 auto;">
+      <h2>Welcome back</h2>
+      <p style="color:var(--ink-soft); margin-bottom:1.25rem; font-size:0.92rem;">Log in with your registered email and password.</p>
+
+      <div class="field-group">
+        <label class="field-label" for="loginEmail">Email</label>
+        <input type="email" id="loginEmail" placeholder="you@example.com" required>
+      </div>
+      <div class="field-group">
+        <label class="field-label" for="loginPassword">Password</label>
+        <input type="password" id="loginPassword" placeholder="Your password" required>
+      </div>
+
+      <button id="loginBtn" class="btn btn-primary btn-block mt-1">Log in</button>
+      <div id="loginMessage" class="mt-2"></div>
+
+      <div class="flex-between mt-2">
+        <a href="#" id="goToRegisterLink">Create an account</a>
+        <a href="#" id="goToForgotLink">Forgot password?</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== VERIFY OTP ===================== -->
+  <div id="verifyOtpPage" class="page">
+    <div class="card" style="max-width:440px; margin:0 auto;">
+      <h2>Verify your email</h2>
+      <p style="color:var(--ink-soft); margin-bottom:1rem; font-size:0.92rem;">We sent a 6-digit code to <strong id="verifyOtpEmailLabel"></strong>. Enter it below to activate your account.</p>
+
+      <div class="field-group">
+        <label class="field-label" for="otpInput">One-time code</label>
+        <input type="text" id="otpInput" inputmode="numeric" maxlength="6" placeholder="123456">
+      </div>
+
+      <button id="verifyOtpBtn" class="btn btn-primary btn-block">Verify &amp; activate account</button>
+      <button id="resendOtpBtn" class="btn btn-outline btn-block mt-1">Resend code</button>
+      <div id="verifyOtpMessage" class="mt-2"></div>
+    </div>
+  </div>
+
+  <!-- ===================== FORGOT PASSWORD ===================== -->
+  <div id="forgotPasswordPage" class="page">
+    <div class="card" style="max-width:440px; margin:0 auto;">
+      <h2>Reset your password</h2>
+      <p style="color:var(--ink-soft); margin-bottom:1rem; font-size:0.92rem;">Enter your account email — we'll send a one-time code to reset your password.</p>
+
+      <div class="field-group">
+        <label class="field-label" for="forgotEmail">Email</label>
+        <input type="email" id="forgotEmail" placeholder="you@example.com">
+      </div>
+      <button id="sendResetOtpBtn" class="btn btn-primary btn-block">Send reset code</button>
+      <div id="forgotMessage" class="mt-2"></div>
+
+      <hr class="divider">
+
+      <div class="field-group">
+        <label class="field-label" for="resetOtpInput">One-time code</label>
+        <input type="text" id="resetOtpInput" inputmode="numeric" maxlength="6" placeholder="123456">
+      </div>
+      <div class="grid-2">
+        <div class="field-group">
+          <label class="field-label" for="resetNewPassword">New password</label>
+          <input type="password" id="resetNewPassword" placeholder="At least 8 characters">
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="resetConfirmPassword">Confirm new password</label>
+          <input type="password" id="resetConfirmPassword" placeholder="Re-enter new password">
+        </div>
+      </div>
+      <button id="resetPasswordBtn" class="btn btn-primary btn-block">Reset password</button>
+      <div id="resetMessage" class="mt-2"></div>
+    </div>
+  </div>
+
+  <!-- ===================== STUDENT ONBOARDING ===================== -->
+  <div id="onboardingPage" class="page">
+    <div class="card" style="max-width:720px; margin:0 auto;">
+      <h2>Tell us about your goals</h2>
+      <p style="color:var(--ink-soft); margin-bottom:1.25rem; font-size:0.92rem;">This shapes your Seven Hills plan, predicted cutoffs, and progress targets. You can update these anytime.</p>
 
       <div class="grid-2">
         <div class="field-group">
-          <label class="field-label" for="regName">Full name</label>
-          <input type="text" id="regName" placeholder="e.g. Aarav Mehta" required>
-        </div>
-        <div class="field-group">
-          <label class="field-label" for="regEmail">Email</label>
-          <input type="email" id="regEmail" placeholder="you@example.com" required>
-        </div>
-        <div class="field-group">
-          <label class="field-label" for="regPhone">Phone</label>
-          <input type="tel" id="regPhone" placeholder="10-digit mobile number">
-        </div>
-        <div class="field-group">
-          <label class="field-label" for="regCategory">Category</label>
-          <select id="regCategory">
-            <option>General</option><option>OBC</option><option>SC</option><option>ST</option><option>EWS</option><option>PwD</option>
+          <label class="field-label" for="obTargetExam">Target examination</label>
+          <select id="obTargetExam">
+            <option value="NEET">NEET</option>
+            <option value="JEE">JEE (coming soon)</option>
           </select>
         </div>
         <div class="field-group">
-          <label class="field-label" for="regAim">Exam aim</label>
-          <select id="regAim">
+          <label class="field-label" for="obTargetInstitution">Target institution</label>
+          <select id="obTargetInstitution">
             <option>AIIMS</option><option>Government Medical College</option><option>Private Medical College</option>
           </select>
         </div>
         <div class="field-group">
-          <label class="field-label" for="regExamDate">Probable exam date</label>
-          <input type="date" id="regExamDate">
-          <p class="helper-text">Used only to shape your personal plan — the platform-wide NEET date is managed by admin.</p>
+          <label class="field-label" for="obCategory">Reservation category</label>
+          <select id="obCategory">
+            <option value="General">General/OC</option>
+            <option value="EWS">EWS</option>
+            <option value="OBC">OBC/BC</option>
+            <option value="SC">SC</option>
+            <option value="ST">ST</option>
+            <option value="Others">Others</option>
+          </select>
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="obState">State</label>
+          <input type="text" id="obState" placeholder="e.g. Andhra Pradesh">
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="obCurrentClass">Current class</label>
+          <select id="obCurrentClass">
+            <option>11th</option><option>12th</option><option>Dropper</option>
+          </select>
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="obExamDate">Expected exam date</label>
+          <input type="date" id="obExamDate">
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="obDailyHours">Daily study hours</label>
+          <input type="number" id="obDailyHours" min="0" max="18" step="0.5" placeholder="e.g. 6">
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="obPrepLevel">Current preparation level</label>
+          <select id="obPrepLevel">
+            <option>Beginner</option><option>Intermediate</option><option>Advanced</option>
+          </select>
         </div>
       </div>
 
-      <button id="registerBtn" class="btn btn-primary btn-block mt-2">Register &amp; build my plan</button>
-      <div id="regMessage" class="mt-2"></div>
+      <button id="onboardingBtn" class="btn btn-primary btn-block mt-2">Save &amp; build my plan</button>
+      <div id="onboardingMessage" class="mt-2"></div>
     </div>
   </div>
+
+
 
   <!-- ===================== GUIDANCE ===================== -->
   <div id="guidancePage" class="page">
@@ -160,9 +303,15 @@
       <div id="quizContainer" class="mt-2"></div>
       <button id="submitQuizBtn" class="btn btn-primary mt-2">Submit quiz</button>
     </div>
+    <div class="card">
+      <div class="flex-between">
+        <h3 style="margin-bottom:0;">📋 Scheduled tests from faculty</h3>
+        <button id="refreshStudentTestsBtn" class="btn btn-outline">Refresh</button>
+      </div>
+      <div id="studentTestsList" class="mt-2"></div>
+    </div>
+    <div id="testAttemptArea" class="mt-2"></div>
   </div>
-
-  <!-- ===================== PROGRESS ===================== -->
   <div id="progressPage" class="page">
     <div id="progressContent">
       <div class="empty-state">
@@ -320,7 +469,78 @@
       </div>
       <div id="mySubmissionsList" class="mt-2"></div>
     </div>
+
+    <!-- ===== TEST SCHEDULING ===== -->
+    <div class="card">
+      <h3>📝 Schedule a test</h3>
+      <p style="color:var(--ink-soft); font-size:0.92rem; margin-bottom:1rem;">Create MCQ or fill-in-the-blank questions. Students see the test once the scheduled time has passed (leave blank to publish immediately).</p>
+
+      <div class="grid-2">
+        <div class="field-group">
+          <label class="field-label" for="testTitle">Test title</label>
+          <input type="text" id="testTitle" placeholder="e.g. Rotational Motion — Weekly Test 3">
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="testSubject">Subject</label>
+          <select id="testSubject"><option>Physics</option><option>Chemistry</option><option>Biology</option></select>
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="testChapter">Chapter</label>
+          <input type="text" id="testChapter" placeholder="e.g. Rotational Mechanics">
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="testDifficulty">Difficulty</label>
+          <select id="testDifficulty"><option>Easy</option><option selected>Medium</option><option>Hard</option></select>
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="testTimeLimit">Time limit (minutes)</label>
+          <input type="number" id="testTimeLimit" min="1" value="30">
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="testScheduledAt">Scheduled release (optional)</label>
+          <input type="datetime-local" id="testScheduledAt">
+        </div>
+        <div class="field-group">
+          <label class="field-label"><input type="checkbox" id="testNegativeMarking"> Negative marking (−0.25 per wrong answer)</label>
+        </div>
+        <div class="field-group">
+          <label class="field-label"><input type="checkbox" id="testRandomize"> Randomize question order for students</label>
+        </div>
+      </div>
+
+      <div id="testQuestionsContainer" class="mt-1"></div>
+      <button id="addTestQuestionBtn" class="btn btn-outline mt-1">+ Add question</button>
+
+      <button id="createTestBtn" class="btn btn-primary btn-block mt-2">Schedule test</button>
+      <div id="createTestMessage" class="mt-2"></div>
+    </div>
+
+    <div class="card">
+      <div class="flex-between">
+        <h3 style="margin-bottom:0;">📋 My scheduled tests</h3>
+        <button id="refreshFacultyTestsBtn" class="btn btn-outline">Refresh</button>
+      </div>
+      <div id="facultyTestsList" class="mt-2"></div>
+    </div>
+
+    <!-- ===== LECTURER ANALYTICS DASHBOARD ===== -->
+    <div class="card">
+      <h3>📊 Analytics — weak topics across your tests</h3>
+      <div id="facultyWeakTopics"></div>
+    </div>
+
+    <div class="card">
+      <h3>📈 Test averages</h3>
+      <div id="facultyTestAverages"></div>
+    </div>
+
+    <div class="card">
+      <h3>🧑‍🎓 Recent student attempts</h3>
+      <div id="facultyRecentAttempts"></div>
+    </div>
   </div>
+
+
 
   <div class="site-footer">NEET CTK IGNITION · Built on the Connectomic Theory of Knowledge · Seven Hills of Knowledge</div>
 </div>
