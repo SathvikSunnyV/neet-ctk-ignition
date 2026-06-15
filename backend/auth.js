@@ -5,8 +5,7 @@
 
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
-const nodemailer = require('nodemailer');
-
+const SibApiV3Sdk = require('@getbrevo/brevo');
 const JWT_SECRET = process.env.JWT_SECRET || 'ctk-ignition-dev-secret-change-me';
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
 const OTP_TTL_MINUTES = 10;
@@ -60,33 +59,31 @@ function isOtpExpired(expiresAt) {
 // keeps the app fully functional in local/dev environments without
 // requiring a real mail account.
 // ---------------------------------------------------------------------------
-let transporter = null;
-function getTransporter() {
-    if (transporter) return transporter;
-    if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
-        transporter = nodemailer.createTransport({
-            host: process.env.SMTP_HOST,
-            port: Number(process.env.SMTP_PORT) || 587,
-            secure: Number(process.env.SMTP_PORT) === 465,
-            auth: { user: process.env.SMTP_USER, pass: process.env.SMTP_PASS }
-        });
-    }
-    return transporter;
-}
+const { BrevoClient } = require('@getbrevo/brevo');
+
+const apiKey = (process.env.BREVO_API_KEY || '').trim();
+
+const brevo = new BrevoClient({
+  apiKey: apiKey,
+});
 
 async function sendEmail({ to, subject, html, text }) {
-    const t = getTransporter();
-    if (!t) {
-        // Dev fallback: log to console so OTPs are visible during testing.
-        console.log(`\n📧  [DEV EMAIL] To: ${to}\nSubject: ${subject}\n${text || html}\n`);
-        return { devMode: true };
-    }
-    return t.sendMail({
-        from: process.env.SMTP_FROM || `"NEET CTK IGNITION" <${process.env.SMTP_USER}>`,
-        to, subject, html, text
+  try {
+    return await brevo.transactionalEmails.sendTransacEmail({
+      sender: {
+        name: process.env.BREVO_SENDER_NAME || 'NEET CTK IGNITION',
+        email: process.env.BREVO_SENDER_EMAIL,
+      },
+      to: [{ email: to }],
+      subject,
+      htmlContent: html,
+      textContent: text,
     });
+  } catch (err) {
+    console.error('Brevo Email Error:', err);
+    throw err;
+  }
 }
-
 async function sendOtpEmail(to, otp, purpose = 'verify your account') {
     return sendEmail({
         to,
