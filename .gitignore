@@ -3,5 +3,6 @@ node_modules/
 *.sqlite-shm
 *.sqlite-wal
 .env
+.env.example
 .env.local
 .DS_Store
