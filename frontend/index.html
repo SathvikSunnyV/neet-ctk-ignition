@@ -27,6 +27,7 @@
       <button class="nav-btn" data-page="guidance" id="navGuidance" style="display:none;">Guidance</button>
       <button class="nav-btn" data-page="practice" id="navPractice" style="display:none;">Practice</button>
       <button class="nav-btn" data-page="progress" id="navProgress" style="display:none;">Progress</button>
+      <button class="nav-btn" data-page="physics" id="navPhysics" style="display:none;">Physics</button>
       <button class="nav-btn" data-page="pricing">Pricing</button>
       <button class="nav-btn" data-page="contact">Contact</button>
       <button class="nav-btn" data-page="admin">Admin</button>
@@ -39,7 +40,7 @@
   <div id="welcomePage" class="page">
     <div class="hero">
       <div class="eyebrow">Connectomic Theory of Knowledge</div>
-      <h1>Climb the Seven Hills.<br>Connect the concepts.<br>Reach NEET.</h1>
+      <h1>Climb the Seven Hills.<br>Connect the concepts.<br>Reach your Target.</h1>
       <p class="lead">A calm, intelligent learning companion that turns isolated NEET facts into a connected map of understanding — built around Prof. Konuri's Seven Hills of Knowledge.</p>
       <button class="btn btn-primary" id="startNowBtn">Start Your Journey →</button>
 
@@ -297,6 +298,13 @@
     </div>
     <div class="card">
       <div class="flex-between">
+        <h3 style="margin-bottom:0;">📚 Study materials from faculty</h3>
+        <button id="refreshMaterialsBtn" class="btn btn-outline">Refresh</button>
+      </div>
+      <div id="materialsList" class="mt-2"></div>
+    </div>
+    <div class="card">
+      <div class="flex-between">
         <h3 style="margin-bottom:0;">📝 Topic-wise quiz · Level 1</h3>
         <span class="badge" id="quizCountBadge">6 questions</span>
       </div>
@@ -317,6 +325,68 @@
       <div class="empty-state">
         <span class="icon">📊</span>
         <p>Register and attempt a quiz to see your analytics here.</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== PHYSICS STUDENT MODULE ===================== -->
+  <div id="physicsPage" class="page">
+    <div class="hero" style="padding: 1rem 1rem 1.75rem;">
+      <div class="eyebrow">Physics-only curated track</div>
+      <h1 style="font-size: clamp(1.7rem, 4vw, 2.4rem);">⚛️ Your Physics Journey</h1>
+      <p class="lead" style="margin-bottom:0;">Diagnostics, Term-organised materials, lecture tracking, and topic-wise analytics — all focused on Physics.</p>
+    </div>
+
+    <div class="card" id="physicsDashboardCard">
+      <h3>📊 Physics Dashboard</h3>
+      <div id="physicsDashboardContent">
+        <div class="loading-row"><div class="spinner"></div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="flex-between">
+        <h3 style="margin-bottom:0;">🧪 Entry-Level Assessments</h3>
+      </div>
+      <p class="helper-text">Test 1 is mandatory before you dive into the main learning system. Tests 2 &amp; 3 are optional, deeper diagnostics you can take any time.</p>
+      <div id="physicsEntryTestsList" class="mt-2">
+        <div class="loading-row"><div class="spinner"></div></div>
+      </div>
+    </div>
+    <div id="physicsEntryTestArea" class="mt-2"></div>
+
+    <div class="card">
+      <div class="flex-between">
+        <h3 style="margin-bottom:0;">📘 Physics Learning Materials</h3>
+        <button id="refreshPhysicsMaterialsBtn" class="btn btn-outline">Refresh</button>
+      </div>
+      <p class="helper-text">Every topic is organised into three Terms: 1 — Conceptual Understanding, 2 — Definitions &amp; Formulae, 3 — Advanced Applications.</p>
+      <div class="field-group mt-1" style="max-width:320px;">
+        <label class="field-label" for="physicsTopicFilter">Jump to a topic</label>
+        <select id="physicsTopicFilter"><option value="">All topics</option></select>
+      </div>
+      <div id="physicsMaterialsContent" class="mt-2">
+        <div class="loading-row"><div class="spinner"></div></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>🎥 Physics Lectures</h3>
+      <div id="physicsLecturesList" class="video-grid mt-2"></div>
+    </div>
+
+    <div class="grid-2">
+      <div class="card">
+        <h3>📈 Topic-wise Analytics</h3>
+        <div id="physicsAnalyticsContent">
+          <div class="loading-row"><div class="spinner"></div></div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>🎯 Personalised Recommendations</h3>
+        <div id="physicsRecommendationsContent">
+          <div class="loading-row"><div class="spinner"></div></div>
+        </div>
       </div>
     </div>
   </div>
@@ -413,6 +483,14 @@
       </div>
 
       <div class="card">
+        <h3>🎯 Live NEET cutoff data</h3>
+        <p class="helper-text">Real cutoff figures fetched from the open web and parsed by AI (see backend). Refreshes automatically every 30 days, or trigger manually below. Requires logging in as Admin via the Login page (the passcode above only unlocks this legacy console).</p>
+        <button id="refreshCutoffCacheBtn" class="btn btn-primary mt-1">Refresh live cutoff data now</button>
+        <div id="cutoffCacheMessage" class="mt-2"></div>
+        <div id="cutoffCacheTable" class="mt-2"></div>
+      </div>
+
+      <div class="card">
         <h3>⏳ Pending lecturer submissions</h3>
         <div id="pendingLecturesAdmin"></div>
       </div>
@@ -506,6 +584,11 @@
         <div class="field-group">
           <label class="field-label"><input type="checkbox" id="testRandomize"> Randomize question order for students</label>
         </div>
+        <div class="field-group" style="grid-column:1/-1;">
+          <label class="field-label" for="testAssignEmails">Assign to specific students (optional)</label>
+          <input type="text" id="testAssignEmails" placeholder="email1@example.com, email2@example.com — leave blank to publish to everyone">
+          <p class="helper-text">Leave blank to publish this test to every student (the previous default behaviour). Provide a comma-separated list to assign it only to those students.</p>
+        </div>
       </div>
 
       <div id="testQuestionsContainer" class="mt-1"></div>
@@ -521,6 +604,67 @@
         <button id="refreshFacultyTestsBtn" class="btn btn-outline">Refresh</button>
       </div>
       <div id="facultyTestsList" class="mt-2"></div>
+    </div>
+
+    <!-- ===== STUDY MATERIALS ===== -->
+    <div class="card">
+      <h3>📚 Share study material</h3>
+      <p style="color:var(--ink-soft); font-size:0.92rem; margin-bottom:1rem;">Upload a PDF, PPT/PPTX, DOC/DOCX, or image — or share a link (e.g. a YouTube video). Published immediately to all students.</p>
+
+      <div class="grid-2">
+        <div class="field-group">
+          <label class="field-label" for="materialTitle">Title</label>
+          <input type="text" id="materialTitle" placeholder="e.g. Human Physiology — Unit 4 slides">
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="materialSubject">Subject</label>
+          <select id="materialSubject"><option>Physics</option><option>Chemistry</option><option>Biology</option></select>
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="materialChapter">Chapter / Topic (optional)</label>
+          <input type="text" id="materialChapter" placeholder="e.g. Human Physiology">
+        </div>
+        <div class="field-group" id="materialTermGroup" style="display:none;">
+          <label class="field-label" for="materialTerm">Term (Physics Student Module)</label>
+          <select id="materialTerm">
+            <option value="">— Not term-tagged —</option>
+            <option value="1">Term 1 · Conceptual Understanding</option>
+            <option value="2">Term 2 · Definitions & Formulae</option>
+            <option value="3">Term 3 · Advanced Applications</option>
+          </select>
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="materialKind">Type</label>
+          <select id="materialKind">
+            <option value="file">Upload a file (PDF / PPT / DOCX / image)</option>
+            <option value="link">Share a link (e.g. YouTube)</option>
+          </select>
+        </div>
+        <div class="field-group" id="materialFileGroup" style="grid-column:1/-1;">
+          <label class="field-label" for="materialFileInput">File</label>
+          <input type="file" id="materialFileInput" accept=".pdf,.ppt,.pptx,.doc,.docx,.png,.jpg,.jpeg,.webp">
+          <p class="helper-text">Max 20 MB. PDF, PPT/PPTX, DOC/DOCX, PNG, JPG, WEBP.</p>
+        </div>
+        <div class="field-group" id="materialUrlGroup" style="grid-column:1/-1; display:none;">
+          <label class="field-label" for="materialUrlInput">URL</label>
+          <input type="url" id="materialUrlInput" placeholder="https://www.youtube.com/watch?v=...">
+        </div>
+        <div class="field-group" style="grid-column:1/-1;">
+          <label class="field-label" for="materialDescription">Description (optional)</label>
+          <textarea id="materialDescription" rows="2" placeholder="What does this cover?"></textarea>
+        </div>
+      </div>
+
+      <button id="uploadMaterialBtn" class="btn btn-primary btn-block mt-1">Publish to students</button>
+      <div id="materialUploadMessage" class="mt-2"></div>
+    </div>
+
+    <div class="card">
+      <div class="flex-between">
+        <h3 style="margin-bottom:0;">🗂️ My uploaded materials</h3>
+        <button id="refreshFacultyMaterialsBtn" class="btn btn-outline">Refresh</button>
+      </div>
+      <div id="facultyMaterialsList" class="mt-2"></div>
     </div>
 
     <!-- ===== LECTURER ANALYTICS DASHBOARD ===== -->

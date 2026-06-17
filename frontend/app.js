@@ -64,6 +64,26 @@ async function api(path, options = {}) {
   return data;
 }
 
+// ---------------------------------------------------------------- multipart upload helper
+// (no Content-Type header — the browser sets the multipart boundary itself)
+async function apiUpload(path, formData) {
+  const headers = {};
+  if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
+  const res = await fetch(`${API_BASE}${path}`, { method: 'POST', headers, body: formData });
+  let data = null;
+  try { data = await res.json(); } catch (e) { /* no body */ }
+  if (res.status === 401 && authToken) {
+    clearSession();
+    updateNavForAuth();
+    showToast('Your session has expired — please log in again.', 'error');
+  }
+  if (!res.ok) {
+    const msg = (data && data.error) ? data.error : `Request failed (${res.status})`;
+    throw new Error(msg);
+  }
+  return data;
+}
+
 // ---------------------------------------------------------------- student data
 async function loadStudentData(email) {
   if (!email) return null;
@@ -334,7 +354,12 @@ async function renderGuidance() {
 
         ${cutoff ? `
         <hr class="divider">
-        <h3>🎯 AI cutoff &amp; rank prediction (${cutoff.targetYear})</h3>
+        <div class="flex-between">
+          <h3 style="margin-bottom:0;">🎯 AI cutoff &amp; rank prediction (${cutoff.targetYear})</h3>
+          <span class="badge ${cutoff.modelInfo.dataSource === 'web-research-ai' ? 'success' : 'warn'}">
+            ${cutoff.modelInfo.dataSource === 'web-research-ai' ? '🌐 Live web data' : '📊 Baseline estimate'}
+          </span>
+        </div>
         <div class="grid-3 mt-1">
           <div class="card" style="background:var(--hill-1); border:none;">
             <div class="helper-text">Safe Score</div>
@@ -352,7 +377,9 @@ async function renderGuidance() {
         <p class="helper-text mt-1">Estimated rank range: <strong>#${cutoff.estimatedRank.low.toLocaleString('en-IN')} – #${cutoff.estimatedRank.high.toLocaleString('en-IN')}</strong>
           ${cutoff.admissionProbability !== null ? ` · Admission probability at current pace: <strong>${cutoff.admissionProbability}%</strong>` : ''}
         </p>
-        <p class="helper-text">Based on ${cutoff.modelInfo.trainingPoints}-year historical cutoff trends for ${cutoff.category} category${student.state ? ` in ${student.state}` : ''}, regressed forward to ${cutoff.targetYear}.</p>
+        <p class="helper-text">${cutoff.modelInfo.dataSource === 'web-research-ai'
+            ? `Based on real, recently fetched NEET cutoff trends for ${cutoff.category} category${student.state ? ` in ${student.state}` : ''}, regressed forward to ${cutoff.targetYear}.`
+            : `Live data hasn't been fetched yet for this category — showing a baseline estimate from historical trends. This updates automatically once the live data refresh completes.`}</p>
         ` : ''}
 
         <div class="grid-3 mt-2">
@@ -459,6 +486,8 @@ async function renderPractice() {
   } catch (err) {
     quizContainer.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
   }
+
+  renderMaterials();
 
   if (currentUser?.role === 'student') {
     renderStudentTests();
@@ -764,6 +793,8 @@ async function createTest() {
   const scheduledAtRaw = document.getElementById('testScheduledAt').value;
   const negativeMarking = document.getElementById('testNegativeMarking').checked;
   const randomize = document.getElementById('testRandomize').checked;
+  const assignedEmails = document.getElementById('testAssignEmails').value
+    .split(',').map(e => e.trim()).filter(Boolean);
 
   const rows = document.querySelectorAll('#testQuestionsContainer > div');
   if (!title || rows.length === 0) {
@@ -797,12 +828,13 @@ async function createTest() {
   try {
     await api('/api/faculty/tests', {
       method: 'POST',
-      body: JSON.stringify({ title, subject, chapter, difficulty, timeLimitMin, negativeMarking, randomize, scheduledAt, questions })
+      body: JSON.stringify({ title, subject, chapter, difficulty, timeLimitMin, negativeMarking, randomize, scheduledAt, questions, assignedEmails })
     });
-    msgEl.innerHTML = `<span class="badge success">✅ Test scheduled successfully.</span>`;
+    msgEl.innerHTML = `<span class="badge success">✅ Test scheduled successfully${assignedEmails.length ? ` and assigned to ${assignedEmails.length} student(s)` : ''}.</span>`;
     showToast('Test scheduled.', 'success');
     document.getElementById('testTitle').value = '';
     document.getElementById('testChapter').value = '';
+    document.getElementById('testAssignEmails').value = '';
     document.getElementById('testQuestionsContainer').innerHTML = '';
     testQuestionCount = 0;
     renderFacultyTests();
@@ -874,10 +906,134 @@ async function renderFacultyAnalytics() {
 }
 
 // ====================================================================
-// TEST MANAGEMENT — STUDENT (attempt tests)
+// STUDY MATERIALS — FACULTY (upload files or share links)
 // ====================================================================
-let activeStudentTest = null;
-let activeTestQuestions = [];
+function toggleMaterialKindFields() {
+  const kind = document.getElementById('materialKind').value;
+  document.getElementById('materialFileGroup').style.display = kind === 'file' ? '' : 'none';
+  document.getElementById('materialUrlGroup').style.display = kind === 'link' ? '' : 'none';
+}
+
+function toggleMaterialTermField() {
+  const subject = document.getElementById('materialSubject').value;
+  document.getElementById('materialTermGroup').style.display = subject === 'Physics' ? '' : 'none';
+}
+
+async function uploadMaterial() {
+  const btn = document.getElementById('uploadMaterialBtn');
+  const msgEl = document.getElementById('materialUploadMessage');
+  const title = document.getElementById('materialTitle').value.trim();
+  const subject = document.getElementById('materialSubject').value;
+  const chapter = document.getElementById('materialChapter').value.trim();
+  const description = document.getElementById('materialDescription').value.trim();
+  const kind = document.getElementById('materialKind').value;
+  const term = document.getElementById('materialTerm').value;
+
+  if (!title || !subject) {
+    msgEl.innerHTML = `<span class="badge danger">Please provide a title and subject.</span>`;
+    return;
+  }
+
+  btn.disabled = true; btn.textContent = 'Publishing...';
+  try {
+    if (kind === 'file') {
+      const fileInput = document.getElementById('materialFileInput');
+      const file = fileInput.files[0];
+      if (!file) { msgEl.innerHTML = `<span class="badge danger">Please choose a file.</span>`; btn.disabled = false; btn.textContent = 'Publish to students'; return; }
+      const formData = new FormData();
+      formData.append('file', file);
+      formData.append('title', title);
+      formData.append('subject', subject);
+      formData.append('chapter', chapter);
+      formData.append('description', description);
+      if (term) formData.append('term', term);
+      const data = await apiUpload('/api/faculty/materials/upload', formData);
+      msgEl.innerHTML = `<span class="badge success">✅ ${data.message}</span>`;
+      fileInput.value = '';
+    } else {
+      const externalUrl = document.getElementById('materialUrlInput').value.trim();
+      if (!externalUrl) { msgEl.innerHTML = `<span class="badge danger">Please provide a URL.</span>`; btn.disabled = false; btn.textContent = 'Publish to students'; return; }
+      const data = await api('/api/faculty/materials/link', {
+        method: 'POST',
+        body: JSON.stringify({ title, subject, chapter, description, externalUrl, term: term || null })
+      });
+      msgEl.innerHTML = `<span class="badge success">✅ ${data.message}</span>`;
+      document.getElementById('materialUrlInput').value = '';
+    }
+    document.getElementById('materialTitle').value = '';
+    document.getElementById('materialChapter').value = '';
+    document.getElementById('materialDescription').value = '';
+    document.getElementById('materialTerm').value = '';
+    showToast('Material published to students.', 'success');
+    renderFacultyMaterials();
+  } catch (err) {
+    msgEl.innerHTML = `<span class="badge danger">${err.message}</span>`;
+    showToast(err.message, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Publish to students';
+  }
+}
+
+function formatFileSize(bytes) {
+  if (!bytes) return '';
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+async function renderFacultyMaterials() {
+  const container = document.getElementById('facultyMaterialsList');
+  if (!container) return;
+  container.innerHTML = `<div class="loading-row"><div class="spinner"></div></div>`;
+  try {
+    const materials = await api('/api/faculty/materials');
+    container.innerHTML = materials.length ? materials.map(m => `
+      <div class="flex-between" style="padding:0.6rem 0; border-bottom:1px solid var(--border);">
+        <div>
+          <strong>${m.title}</strong>
+          <div class="helper-text">${m.subject}${m.chapter ? ' · ' + m.chapter : ''}${m.term ? ' · Term ' + m.term : ''} · ${m.material_type === 'file' ? (m.file_name + ' · ' + formatFileSize(m.file_size)) : (m.material_type === 'note' ? 'Note' : 'Link')}</div>
+        </div>
+        <button class="btn btn-outline" onclick="deleteMaterial(${m.id})">Remove</button>
+      </div>`).join('') : `<div class="empty-state"><p>No materials uploaded yet.</p></div>`;
+  } catch (err) {
+    container.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
+  }
+}
+
+window.deleteMaterial = async (id) => {
+  try {
+    await api(`/api/faculty/materials/${id}`, { method: 'DELETE' });
+    showToast('Material removed.', '');
+    renderFacultyMaterials();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+};
+
+// ====================================================================
+// STUDY MATERIALS — STUDENT (browse & download)
+// ====================================================================
+async function renderMaterials() {
+  const container = document.getElementById('materialsList');
+  if (!container) return;
+  container.innerHTML = `<div class="loading-row"><div class="spinner"></div></div>`;
+  try {
+    const materials = await api('/api/materials');
+    container.innerHTML = materials.length ? materials.map(m => `
+      <div class="flex-between" style="padding:0.6rem 0; border-bottom:1px solid var(--border);">
+        <div>
+          <strong>${m.title}</strong>
+          <div class="helper-text">${m.subject}${m.chapter ? ' · ' + m.chapter : ''} · ${m.uploaded_by_name || 'Faculty'}${m.description ? ' — ' + m.description : ''}</div>
+        </div>
+        ${m.material_type === 'file'
+          ? `<a class="btn btn-outline" href="${API_BASE}/api/materials/${m.id}/download" target="_blank" rel="noopener">⬇ ${formatFileSize(m.file_size)}</a>`
+          : `<a class="btn btn-outline" href="${m.external_url}" target="_blank" rel="noopener">🔗 Open</a>`}
+      </div>`).join('') : `<div class="empty-state"><p>No study materials published yet — check back soon.</p></div>`;
+  } catch (err) {
+    container.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
+  }
+}
+
+
 
 async function renderStudentTests() {
   const container = document.getElementById('studentTestsList');
@@ -1040,7 +1196,64 @@ async function renderAdmin() {
   } catch (err) {
     showToast(err.message, 'error');
   }
+
+  renderCutoffCacheTable();
 }
+
+async function renderCutoffCacheTable() {
+  const tableEl = document.getElementById('cutoffCacheTable');
+  if (!tableEl) return;
+  if (!currentUser || currentUser.role !== 'admin') {
+    tableEl.innerHTML = `<div class="empty-state"><p>Log in as Admin (via the Login page) to view and refresh live cutoff data.</p></div>`;
+    return;
+  }
+  tableEl.innerHTML = `<div class="loading-row"><div class="spinner"></div></div>`;
+  try {
+    const { rows } = await api('/api/admin/cutoff-cache');
+    tableEl.innerHTML = rows.length ? `
+      <div style="overflow-x:auto;"><table style="width:100%; border-collapse:collapse; font-size:0.9rem;">
+        <thead><tr style="text-align:left; border-bottom:1px solid var(--border);">
+          <th style="padding:0.5rem;">Year</th><th style="padding:0.5rem;">Category</th>
+          <th style="padding:0.5rem;">AIIMS-tier</th><th style="padding:0.5rem;">Govt</th><th style="padding:0.5rem;">Private</th>
+          <th style="padding:0.5rem;">Fetched</th>
+        </tr></thead>
+        <tbody>${rows.map(r => `
+          <tr style="border-bottom:1px solid var(--border);">
+            <td style="padding:0.5rem;">${r.year}</td>
+            <td style="padding:0.5rem;">${r.category}</td>
+            <td style="padding:0.5rem;">${r.aiims}</td>
+            <td style="padding:0.5rem;">${r.govt}</td>
+            <td style="padding:0.5rem;">${r.private}</td>
+            <td style="padding:0.5rem;">${new Date(r.fetched_at).toLocaleDateString()}</td>
+          </tr>`).join('')}</tbody>
+      </table></div>` : `<div class="empty-state"><p>No live data fetched yet — click "Refresh live cutoff data now".</p></div>`;
+  } catch (err) {
+    tableEl.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
+  }
+}
+
+async function refreshCutoffCache() {
+  const btn = document.getElementById('refreshCutoffCacheBtn');
+  const msgEl = document.getElementById('cutoffCacheMessage');
+  if (!currentUser || currentUser.role !== 'admin') {
+    msgEl.innerHTML = `<span class="badge danger">Please log in as Admin via the Login page first.</span>`;
+    return;
+  }
+  btn.disabled = true; btn.textContent = 'Searching the web & extracting data...';
+  msgEl.innerHTML = '';
+  try {
+    const data = await api('/api/admin/cutoff-cache/refresh', { method: 'POST', body: JSON.stringify({ year: new Date().getFullYear() + 1 }) });
+    msgEl.innerHTML = `<span class="badge success">✅ ${data.message}</span>`;
+    showToast('Live cutoff data refreshed.', 'success');
+    renderCutoffCacheTable();
+  } catch (err) {
+    msgEl.innerHTML = `<span class="badge danger">${err.message}</span>`;
+    showToast(err.message, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Refresh live cutoff data now';
+  }
+}
+
 
 window.approveLecture = async (id) => {
   try {
@@ -1097,10 +1310,353 @@ async function sendFeedback() {
 }
 
 // ====================================================================
+// PHYSICS STUDENT MODULE
+// A dedicated, Physics-curated student experience layered on top of the
+// existing platform: entry-level diagnostics, Term-organised materials,
+// lecture/material progress tracking, topic-wise analytics, and
+// personalised recommendations. Mirrors the look & feel of the Practice
+// and Progress pages above; doesn't touch their behaviour.
+// ====================================================================
+let activePhysicsEntryTest = null;
+let activePhysicsEntryQuestions = null;
+let physicsMaterialsCache = null;
+
+async function loadPhysicsModule() {
+  // Each section loads independently so one failure doesn't block the rest.
+  renderPhysicsDashboard();
+  renderPhysicsEntryTests();
+  renderPhysicsMaterials();
+  renderPhysicsLectures();
+  renderPhysicsAnalytics();
+  renderPhysicsRecommendations();
+}
+
+function proficiencyBadge(level) {
+  if (!level || level === 'Not yet assessed') return `<span class="badge">Not yet assessed</span>`;
+  return `<span class="badge proficiency-badge ${level}">${level}</span>`;
+}
+
+async function renderPhysicsDashboard() {
+  const el = document.getElementById('physicsDashboardContent');
+  if (!el) return;
+  el.innerHTML = `<div class="loading-row"><div class="spinner"></div></div>`;
+  try {
+    const d = await api('/api/physics/dashboard');
+    el.innerHTML = `
+      ${d.entryTest1Required ? `<div class="badge warn mt-1">⚠️ Complete the mandatory Entry Test 1 below to unlock the full Physics learning system.</div>` : ''}
+      <div class="flex-between mt-1">
+        <span>Current level</span>
+        ${proficiencyBadge(d.currentLevel)}
+      </div>
+      <div class="stat-tile-grid">
+        <div class="stat-tile"><div class="stat-value">${d.lecturesCompleted}/${d.lecturesTotal}</div><div class="stat-label">Lectures completed</div></div>
+        <div class="stat-tile"><div class="stat-value">${d.materialsCompleted}/${d.materialsTotal}</div><div class="stat-label">Materials completed</div></div>
+        <div class="stat-tile"><div class="stat-value">${d.testsAttempted}</div><div class="stat-label">Tests attempted</div></div>
+        <div class="stat-tile"><div class="stat-value">${d.averageScore != null ? d.averageScore + '%' : '—'}</div><div class="stat-label">Average score</div></div>
+      </div>
+      <div class="grid-2 mt-2">
+        <div>
+          <strong>Strong topics</strong>
+          <div class="mt-1">${d.strongTopics.length ? d.strongTopics.map(t => `<span class="badge success" style="margin:0 0.3rem 0.3rem 0;">✓ ${t}</span>`).join('') : `<span class="helper-text">None yet — keep practicing!</span>`}</div>
+        </div>
+        <div>
+          <strong>Weak topics</strong>
+          <div class="mt-1">${d.weakTopics.length ? d.weakTopics.map(t => `<span class="badge danger" style="margin:0 0.3rem 0.3rem 0;">✗ ${t}</span>`).join('') : `<span class="helper-text">No weak topics identified yet.</span>`}</div>
+        </div>
+      </div>`;
+  } catch (err) {
+    el.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
+  }
+}
+
+async function renderPhysicsEntryTests() {
+  const el = document.getElementById('physicsEntryTestsList');
+  if (!el) return;
+  el.innerHTML = `<div class="loading-row"><div class="spinner"></div></div>`;
+  try {
+    const tests = await api('/api/physics/entry-tests');
+    el.innerHTML = tests.map(t => `
+      <div class="flex-between" style="padding:0.6rem 0; border-bottom:1px solid var(--border);">
+        <div>
+          <strong>${t.title}</strong> ${t.mandatory ? `<span class="badge warn">Mandatory</span>` : `<span class="badge">Optional</span>`}
+          ${t.attempted ? `<div class="helper-text mt-1">Last attempt: ${t.lastAttempt.score}/${t.lastAttempt.total} · ${t.lastAttempt.proficiency_level}</div>` : ''}
+        </div>
+        <button class="btn ${t.attempted ? 'btn-outline' : 'btn-primary'}" onclick="startPhysicsEntryTest(${t.testNumber})">
+          ${t.attempted ? 'Retake test' : 'Start test'}
+        </button>
+      </div>`).join('');
+  } catch (err) {
+    el.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
+  }
+}
+
+window.startPhysicsEntryTest = async (testNumber) => {
+  const area = document.getElementById('physicsEntryTestArea');
+  area.innerHTML = `<div class="loading-row"><div class="spinner"></div></div>`;
+  try {
+    const { test, questions } = await api(`/api/physics/entry-tests/${testNumber}`);
+    activePhysicsEntryTest = test;
+    activePhysicsEntryQuestions = questions;
+    physicsEntryTestStartedAt = Date.now();
+
+    area.innerHTML = `
+      <div class="card">
+        <h3>${test.title}</h3>
+        <div id="physicsEntryQuestionsArea" class="mt-2"></div>
+        <button id="submitPhysicsEntryTestBtn" class="btn btn-primary mt-2">Submit test</button>
+        <div id="physicsEntryResultArea" class="mt-2"></div>
+      </div>`;
+
+    document.getElementById('physicsEntryQuestionsArea').innerHTML = questions.map((q, idx) => `
+      <div class="quiz-item">
+        <div class="q-meta">${q.topic}</div>
+        <div class="q-text">${idx + 1}. ${q.question_text}</div>
+        ${q.options.map((opt, oi) => `
+          <label class="quiz-option">
+            <input type="radio" name="peq${q.id}" value="${oi}"> ${opt}
+          </label>`).join('')}
+      </div>`).join('');
+
+    document.getElementById('submitPhysicsEntryTestBtn').onclick = submitPhysicsEntryTest;
+    window.scrollTo({ top: area.offsetTop, behavior: 'smooth' });
+  } catch (err) {
+    area.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
+  }
+};
+
+let physicsEntryTestStartedAt = null;
+
+async function submitPhysicsEntryTest() {
+  if (!activePhysicsEntryTest) return;
+  const btn = document.getElementById('submitPhysicsEntryTestBtn');
+  const answers = activePhysicsEntryQuestions.map(q => {
+    const selected = document.querySelector(`input[name="peq${q.id}"]:checked`);
+    return { questionId: q.id, answer: selected ? selected.value : '' };
+  });
+  const timeTakenSeconds = physicsEntryTestStartedAt ? Math.round((Date.now() - physicsEntryTestStartedAt) / 1000) : null;
+
+  btn.disabled = true; btn.textContent = 'Submitting...';
+  try {
+    const result = await api(`/api/physics/entry-tests/${activePhysicsEntryTest.test_number}/submit`, {
+      method: 'POST', body: JSON.stringify({ answers, timeTakenSeconds })
+    });
+    document.getElementById('physicsEntryResultArea').innerHTML = `
+      <div class="card" style="background:var(--cream-deep); border:none;">
+        <strong>Score: ${result.score} / ${result.total}</strong> (Accuracy: ${result.accuracy}%)
+        <div class="mt-1">Proficiency: ${proficiencyBadge(result.proficiencyLevel)}</div>
+      </div>`;
+    showToast('Entry test submitted.', 'success');
+    btn.style.display = 'none';
+    renderPhysicsEntryTests();
+    renderPhysicsDashboard();
+    renderPhysicsAnalytics();
+    renderPhysicsRecommendations();
+  } catch (err) {
+    showToast(err.message, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Submit test';
+  }
+}
+
+const PHYSICS_TERM_LABELS = { 1: 'Term 1 · Conceptual Understanding', 2: 'Term 2 · Definitions & Formulae', 3: 'Term 3 · Advanced Applications' };
+
+function physicsMaterialRow(m) {
+  const action = m.material_type === 'file'
+    ? `<a class="btn btn-outline" href="${API_BASE}/api/materials/${m.id}/download" target="_blank" onclick="markPhysicsMaterialViewed(${m.id}, true)">Download</a>`
+    : (m.material_type === 'link'
+        ? `<a class="btn btn-outline" href="${m.external_url}" target="_blank" onclick="markPhysicsMaterialViewed(${m.id})">Open link</a>`
+        : `<button class="btn btn-outline" onclick="markPhysicsMaterialViewed(${m.id})">${m.viewed ? 'Viewed' : 'Mark as viewed'}</button>`);
+  return `
+    <div class="material-row">
+      <div>
+        <div class="material-title">${m.title} ${m.completed ? '<span class="badge success">✓ Completed</span>' : ''}</div>
+        ${m.description ? `<div class="material-desc">${m.description}</div>` : ''}
+      </div>
+      <div class="flex-row">
+        ${action}
+        ${!m.completed ? `<button class="btn btn-outline" onclick="markPhysicsMaterialComplete(${m.id})">Mark complete</button>` : ''}
+      </div>
+    </div>`;
+}
+
+async function renderPhysicsMaterials() {
+  const el = document.getElementById('physicsMaterialsContent');
+  if (!el) return;
+  el.innerHTML = `<div class="loading-row"><div class="spinner"></div></div>`;
+  try {
+    const data = await api('/api/physics/materials');
+    physicsMaterialsCache = data;
+
+    // Populate the topic jump-to filter once
+    const filterEl = document.getElementById('physicsTopicFilter');
+    if (filterEl && filterEl.options.length <= 1) {
+      data.topics.forEach(topic => {
+        const opt = document.createElement('option');
+        opt.value = topic; opt.textContent = topic;
+        filterEl.appendChild(opt);
+      });
+    }
+
+    el.innerHTML = data.topics.map((topic, idx) => {
+      const buckets = data.materialsByTopic[topic] || { 1: [], 2: [], 3: [], untagged: [] };
+      const totalCount = buckets[1].length + buckets[2].length + buckets[3].length + buckets.untagged.length;
+      return `
+        <div class="topic-group" id="physicsTopicGroup-${idx}" data-topic="${topic}">
+          <div class="topic-group-header" onclick="togglePhysicsTopicGroup(${idx})">
+            <span>${topic} <span class="helper-text">(${totalCount} item${totalCount === 1 ? '' : 's'})</span></span>
+            <span class="chevron">▸</span>
+          </div>
+          <div class="topic-group-body">
+            <div class="term-tabs">
+              ${[1, 2, 3].map(term => `<button class="term-tab ${term === 1 ? 'active' : ''}" onclick="showPhysicsTerm(${idx}, ${term}, this)">${PHYSICS_TERM_LABELS[term]}</button>`).join('')}
+            </div>
+            ${[1, 2, 3].map(term => `
+              <div class="physics-term-panel" data-term="${term}" style="${term === 1 ? '' : 'display:none;'}">
+                ${buckets[term].length ? buckets[term].map(physicsMaterialRow).join('') : `<p class="helper-text">No Term ${term} material published for this topic yet.</p>`}
+              </div>`).join('')}
+            ${buckets.untagged.length ? `<div class="mt-2"><strong style="font-size:0.85rem;">Additional resources</strong>${buckets.untagged.map(physicsMaterialRow).join('')}</div>` : ''}
+          </div>
+        </div>`;
+    }).join('');
+  } catch (err) {
+    el.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
+  }
+}
+
+window.togglePhysicsTopicGroup = (idx) => {
+  document.getElementById(`physicsTopicGroup-${idx}`).classList.toggle('open');
+};
+
+window.showPhysicsTerm = (idx, term, btn) => {
+  const group = document.getElementById(`physicsTopicGroup-${idx}`);
+  group.querySelectorAll('.term-tab').forEach(t => t.classList.remove('active'));
+  btn.classList.add('active');
+  group.querySelectorAll('.physics-term-panel').forEach(p => {
+    p.style.display = parseInt(p.getAttribute('data-term'), 10) === term ? '' : 'none';
+  });
+};
+
+window.markPhysicsMaterialViewed = async (id, silent) => {
+  try {
+    await api(`/api/physics/materials/${id}/view`, { method: 'POST' });
+    if (!silent) showToast('Marked as viewed.', '');
+    renderPhysicsMaterials();
+    renderPhysicsDashboard();
+  } catch (err) {
+    if (!silent) showToast(err.message, 'error');
+  }
+};
+
+window.markPhysicsMaterialComplete = async (id) => {
+  try {
+    await api(`/api/physics/materials/${id}/complete`, { method: 'POST' });
+    showToast('Marked as completed.', 'success');
+    renderPhysicsMaterials();
+    renderPhysicsDashboard();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+};
+
+function jumpToPhysicsTopic(topic) {
+  if (!topic) return;
+  document.querySelectorAll('.topic-group').forEach(g => g.classList.remove('open'));
+  const group = document.querySelector(`.topic-group[data-topic="${topic}"]`);
+  if (group) {
+    group.classList.add('open');
+    group.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+}
+
+async function renderPhysicsLectures() {
+  const el = document.getElementById('physicsLecturesList');
+  if (!el) return;
+  el.innerHTML = `<div class="loading-row"><div class="spinner"></div></div>`;
+  try {
+    const lectures = await api('/api/physics/lectures');
+    el.innerHTML = lectures.length ? lectures.map(l => `
+      <div class="video-card">
+        <iframe src="${l.url}" allowfullscreen></iframe>
+        <div class="info">
+          <strong>${l.title}</strong>
+          <div class="meta">${l.lecturer_name || ''}</div>
+          <div class="progress-bar"><div class="progress-fill" style="width:${l.percent_watched}%"></div></div>
+          <div class="flex-between mt-1">
+            <span class="helper-text">${Math.round(l.percent_watched)}% watched${l.completed ? ' · ✓ Completed' : ''}</span>
+          </div>
+          <div class="flex-row mt-1">
+            <input type="range" min="0" max="100" value="${Math.round(l.percent_watched)}" id="physicsLectureSlider-${l.id}" style="flex:1;">
+            <button class="btn btn-outline" onclick="savePhysicsLectureProgress(${l.id})">Save</button>
+          </div>
+        </div>
+      </div>`).join('') : `<div class="empty-state"><p>No approved Physics lectures yet — check back soon.</p></div>`;
+  } catch (err) {
+    el.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
+  }
+}
+
+window.savePhysicsLectureProgress = async (lectureId) => {
+  const slider = document.getElementById(`physicsLectureSlider-${lectureId}`);
+  const percentWatched = parseInt(slider.value, 10);
+  try {
+    await api(`/api/physics/lectures/${lectureId}/progress`, {
+      method: 'POST', body: JSON.stringify({ percentWatched, lastPositionSeconds: 0 })
+    });
+    showToast('Lecture progress saved.', 'success');
+    renderPhysicsLectures();
+    renderPhysicsDashboard();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+};
+
+async function renderPhysicsAnalytics() {
+  const el = document.getElementById('physicsAnalyticsContent');
+  if (!el) return;
+  el.innerHTML = `<div class="loading-row"><div class="spinner"></div></div>`;
+  try {
+    const a = await api('/api/physics/analytics');
+    if (!a.topicAccuracy.length) {
+      el.innerHTML = `<div class="empty-state"><p>Take an entry-level test to unlock your topic-wise analytics.</p></div>`;
+      return;
+    }
+    el.innerHTML = `
+      ${a.topicAccuracy.map(t => `
+        <div class="mt-1">
+          <div class="flex-between"><span style="font-size:0.88rem;">${t.topic}</span><span class="badge">${t.accuracy}%</span></div>
+          <div class="progress-bar"><div class="progress-fill" style="width:${t.accuracy}%"></div></div>
+        </div>`).join('')}
+      ${a.mistakeBreakdown.length ? `
+        <hr class="divider">
+        <strong style="font-size:0.9rem;">Mistake patterns</strong>
+        ${a.mistakeBreakdown.map(m => `<div class="atlas-item"><div class="topic-row">${m.topic}</div><div class="remedy">${m.count} ${m.mistakeType} mistake(s)</div></div>`).join('')}
+      ` : ''}`;
+  } catch (err) {
+    el.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
+  }
+}
+
+async function renderPhysicsRecommendations() {
+  const el = document.getElementById('physicsRecommendationsContent');
+  if (!el) return;
+  el.innerHTML = `<div class="loading-row"><div class="spinner"></div></div>`;
+  try {
+    const { recommendations } = await api('/api/physics/recommendations');
+    el.innerHTML = recommendations.length ? recommendations.map(r => `
+      <div class="rec-item">
+        <div class="rec-msg">${r.message}</div>
+        <ul>${r.actions.map(a => `<li>${a}</li>`).join('')}</ul>
+      </div>`).join('') : `<div class="empty-state"><p>No weak topics flagged yet — nice work! Take an entry-level test to refresh this.</p></div>`;
+  } catch (err) {
+    el.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
+  }
+}
+
+// ====================================================================
 // NAVIGATION
 // ====================================================================
 const AUTH_REQUIRED_PAGES = {
-  guidance: 'student', practice: 'student', progress: 'student',
+  guidance: 'student', practice: 'student', progress: 'student', physics: 'student',
   onboarding: 'student', lecturer: 'faculty', facultyDashboard: 'faculty'
 };
 
@@ -1128,7 +1684,8 @@ function showPage(pageId) {
   if (pageId === 'guidance') renderGuidance();
   if (pageId === 'practice') renderPractice();
   if (pageId === 'progress') renderProgress();
-  if (pageId === 'lecturer') { renderMySubmissions(); renderFacultyTests(); renderFacultyAnalytics(); }
+  if (pageId === 'physics') loadPhysicsModule();
+  if (pageId === 'lecturer') { renderMySubmissions(); renderFacultyTests(); renderFacultyAnalytics(); renderFacultyMaterials(); }
   if (pageId === 'onboarding') prefillOnboarding();
   if (pageId === 'admin') {
     if (sessionStorage.getItem('neet_ctk_admin') === '1') {
@@ -1156,6 +1713,7 @@ function updateNavForAuth() {
   document.getElementById('navGuidance').style.display    = (loggedIn && role === 'student') ? '' : 'none';
   document.getElementById('navPractice').style.display    = (loggedIn && role === 'student') ? '' : 'none';
   document.getElementById('navProgress').style.display    = (loggedIn && role === 'student') ? '' : 'none';
+  document.getElementById('navPhysics').style.display     = (loggedIn && role === 'student') ? '' : 'none';
   document.getElementById('navLecturer').style.display    = (loggedIn && role === 'faculty') ? '' : 'none';
 }
 
@@ -1191,6 +1749,14 @@ window.onload = () => {
   document.getElementById('createTestBtn').onclick = createTest;
   document.getElementById('refreshFacultyTestsBtn').onclick = renderFacultyTests;
   document.getElementById('refreshStudentTestsBtn').onclick = renderStudentTests;
+  document.getElementById('uploadMaterialBtn').onclick = uploadMaterial;
+  document.getElementById('refreshFacultyMaterialsBtn').onclick = renderFacultyMaterials;
+  document.getElementById('refreshMaterialsBtn').onclick = renderMaterials;
+  document.getElementById('materialKind').onchange = toggleMaterialKindFields;
+  document.getElementById('materialSubject').onchange = toggleMaterialTermField;
+  document.getElementById('refreshPhysicsMaterialsBtn').onclick = renderPhysicsMaterials;
+  document.getElementById('physicsTopicFilter').onchange = (e) => jumpToPhysicsTopic(e.target.value);
+  document.getElementById('refreshCutoffCacheBtn').onclick = refreshCutoffCache;
   document.getElementById('sendFeedbackBtn').onclick = sendFeedback;
   document.getElementById('adminLoginBtn').onclick = adminLogin;
   document.getElementById('setExamDateBtn').onclick = setExamDate;

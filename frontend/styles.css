@@ -276,3 +276,46 @@ hr.divider{ border:none; border-top:1px solid var(--border); margin: 1.5rem 0; }
   .ridge{ height: 130px; }
   .ridge .hill-label{ width: 70px; font-size:0.58rem; }
 }
+
+/* ---------------------------------------------------------------- Physics Student Module */
+.stat-tile-grid{ display:grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap:0.9rem; margin-top:0.5rem; }
+.stat-tile{
+  background: var(--cream-deep); border-radius: var(--radius-md); padding: 0.9rem 1rem;
+  border: 1px solid var(--border); text-align:center;
+}
+.stat-tile .stat-value{ font-family: var(--font-display); font-size:1.5rem; font-weight:600; color: var(--ink); }
+.stat-tile .stat-label{ font-size:0.72rem; color: var(--ink-soft); text-transform:uppercase; letter-spacing:0.04em; margin-top:0.2rem; }
+
+.topic-group{ border: 1px solid var(--border); border-radius: var(--radius-md); margin-bottom:0.9rem; overflow:hidden; }
+.topic-group-header{
+  display:flex; justify-content:space-between; align-items:center; padding: 0.85rem 1.1rem;
+  background: var(--cream-deep); cursor:pointer; font-weight:700;
+}
+.topic-group-body{ padding: 0 1.1rem 1.1rem; display:none; }
+.topic-group.open .topic-group-body{ display:block; }
+.topic-group.open .topic-group-header .chevron{ transform: rotate(90deg); }
+.topic-group-header .chevron{ transition: transform .2s ease; color: var(--ink-soft); }
+
+.term-tabs{ display:flex; gap:0.4rem; margin: 0.9rem 0 0.7rem; flex-wrap:wrap; }
+.term-tab{
+  background: var(--paper); border: 1px solid var(--border); border-radius: 999px;
+  padding: 0.4rem 0.9rem; font-size:0.8rem; font-weight:700; cursor:pointer; color: var(--ink-soft);
+}
+.term-tab.active{ background: var(--ink); color: var(--paper); border-color: var(--ink); }
+
+.material-row{
+  display:flex; justify-content:space-between; align-items:center; gap:0.8rem;
+  padding: 0.7rem 0.85rem; border-radius: var(--radius-sm); background: var(--paper);
+  border: 1px solid var(--border); margin-bottom: 0.5rem; flex-wrap:wrap;
+}
+.material-row .material-title{ font-weight:700; font-size:0.9rem; }
+.material-row .material-desc{ font-size:0.82rem; color: var(--ink-soft); margin-top:0.2rem; }
+
+.proficiency-badge.Beginner{ background:#F7E4E4; color:#B6504F; border-color:#F0CFCF; }
+.proficiency-badge.Intermediate{ background:#F6EBD9; color:#A1742F; border-color:#EFDDBE; }
+.proficiency-badge.Advanced{ background:#E4F0E6; color:#4F7A5C; border-color:#CDE3D2; }
+
+.rec-item{ border-bottom: 1px solid var(--border); padding: 0.9rem 0; }
+.rec-item:last-child{ border-bottom:none; }
+.rec-item .rec-msg{ font-weight:700; margin-bottom:0.4rem; }
+.rec-item ul{ margin: 0.3rem 0 0 1.1rem; font-size:0.88rem; color: var(--ink-soft); }
