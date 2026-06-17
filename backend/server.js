@@ -4,9 +4,11 @@
 const express = require('express');
 const cors    = require('cors');
 const path    = require('path');
+const multer  = require('multer');
 require('dotenv').config();
-const { pool, initSchema, QUESTIONS, computeTargets, TOPIC_BANK, predictCutoff } = require('./db');
-const { generateRecommendations } = require('./ai');
+const { pool, initSchema, QUESTIONS, computeTargets, TOPIC_BANK, predictCutoff, refreshCutoffCache,
+    PHYSICS_TOPICS, classifyPhysicsProficiency } = require('./db');
+const { generateRecommendations, generatePhysicsRecommendations } = require('./ai');
 const {
     hashPassword, verifyPassword, signToken,
     generateOTP, otpExpiry, isOtpExpired,
@@ -333,7 +335,7 @@ app.post('/api/onboarding/student', authenticate, requireRole('student'), async 
         await pool.query(`UPDATE users SET onboarding_done = TRUE WHERE email = $1`, [email]);
 
         const bundle = await getStudentBundle(email);
-        const cutoff = predictCutoff(aim, cat, state, examDate, null);
+        const cutoff = await predictCutoff(aim, cat, state, examDate, null);
 
         return res.status(201).json({ ...bundle, cutoffPrediction: cutoff });
     } catch (err) {
@@ -357,7 +359,7 @@ app.get('/api/cutoff-prediction/:email', authenticate, async (req, res) => {
             ? (progress.bio_accuracy + progress.phy_accuracy + progress.chem_accuracy) / 3
             : null;
 
-        const prediction = predictCutoff(
+        const prediction = await predictCutoff(
             student.aim || 'Government Medical College',
             student.category || 'General',
             student.state,
@@ -369,6 +371,35 @@ app.get('/api/cutoff-prediction/:email', authenticate, async (req, res) => {
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: 'Server error while computing cutoff prediction.' });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// ADMIN: view / force-refresh the live cutoff data cache
+// (real web search + free AI extraction — see research.js)
+// ---------------------------------------------------------------------------
+app.get('/api/admin/cutoff-cache', authenticate, requireRole('admin'), async (req, res) => {
+    try {
+        const { rows } = await pool.query(`SELECT * FROM cutoff_cache ORDER BY year DESC, category ASC`);
+        res.json({ rows });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server error while reading cutoff cache.' });
+    }
+});
+
+app.post('/api/admin/cutoff-cache/refresh', authenticate, requireRole('admin'), async (req, res) => {
+    const year = parseInt(req.body.year, 10) || (new Date().getFullYear() + 1);
+    try {
+        const result = await refreshCutoffCache(year);
+        if (result.success) {
+            res.json({ success: true, message: `Live cutoff data refreshed for ${year} from real web sources.`, rowCount: result.rowCount });
+        } else {
+            res.status(502).json({ success: false, error: `Could not fetch live data (${result.reason}). Existing cache / static baseline will continue to be used.` });
+        }
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server error while refreshing cutoff cache.' });
     }
 });
 
@@ -430,13 +461,13 @@ app.post('/api/register', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// FETCH STUDENT PROFILE
+// FETCH STUDENT PROFILE — registered further down (see "FETCH STUDENT
+// PROFILE (moved)" below) so its single-segment :email param doesn't
+// shadow more specific routes like /api/student/tests or
+// /api/student/mistake-analysis. (Pre-existing route-ordering bug fixed
+// here as part of the Physics Student Module work, since the assigned-
+// tests feature depends on /api/student/tests actually being reachable.)
 // ---------------------------------------------------------------------------
-app.get('/api/student/:email', async (req, res) => {
-    const bundle = await getStudentBundle(req.params.email);
-    if (!bundle) return res.status(404).json({ error: 'Student not found.' });
-    res.json(bundle);
-});
 
 // ---------------------------------------------------------------------------
 // EXAM DATE
@@ -619,6 +650,159 @@ app.delete('/api/admin/reject-lecture/:id', async (req, res) => {
     res.json({ success: true });
 });
 
+// ===========================================================================
+// STUDY MATERIALS (faculty uploads PDFs / PPTs / DOCX / images, or links)
+// Files are stored as bytea in Postgres so they survive redeploys on free
+// hosting tiers with an ephemeral filesystem. Published directly by the
+// authenticated faculty member — no separate approval queue, since this is
+// course material rather than open community video submissions.
+// ===========================================================================
+const MATERIAL_ALLOWED_MIME = new Set([
+    'application/pdf',
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation', // .pptx
+    'application/vnd.ms-powerpoint', // .ppt
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document', // .docx
+    'application/msword', // .doc
+    'image/png', 'image/jpeg', 'image/jpg', 'image/webp'
+]);
+
+const materialUpload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 20 * 1024 * 1024 }, // 20 MB cap, generous for slide decks/PDFs
+    fileFilter: (req, file, cb) => {
+        if (MATERIAL_ALLOWED_MIME.has(file.mimetype)) cb(null, true);
+        else cb(new Error('Unsupported file type. Allowed: PDF, PPT/PPTX, DOC/DOCX, PNG, JPG, WEBP.'));
+    }
+});
+
+// ---------------------------------------------------------------------------
+// FACULTY: upload a file-based material
+// ---------------------------------------------------------------------------
+app.post('/api/faculty/materials/upload', authenticate, requireRole('faculty'), (req, res) => {
+    materialUpload.single('file')(req, res, async (err) => {
+        if (err) return res.status(400).json({ error: err.message });
+
+        const { title, subject, chapter, description, term } = req.body;
+        if (!title?.trim() || !subject?.trim()) return res.status(400).json({ error: 'Title and subject are required.' });
+        if (!req.file) return res.status(400).json({ error: 'No file was uploaded.' });
+
+        const termNum = [1, 2, 3].includes(parseInt(term, 10)) ? parseInt(term, 10) : null;
+
+        try {
+            await pool.query(
+                `INSERT INTO materials (title, subject, chapter, material_type, file_name, mime_type, file_size, file_data, description, uploaded_by, term)
+                 VALUES ($1,$2,$3,'file',$4,$5,$6,$7,$8,$9,$10)`,
+                [title.trim(), subject, chapter || null, req.file.originalname, req.file.mimetype, req.file.size, req.file.buffer, description || null, req.user.email, termNum]
+            );
+            res.status(201).json({ success: true, message: 'Material uploaded and published to students.' });
+        } catch (e) {
+            console.error(e);
+            res.status(500).json({ error: 'Server error while saving the uploaded material.' });
+        }
+    });
+});
+
+// ---------------------------------------------------------------------------
+// FACULTY: publish a link-based material (e.g. YouTube, external resource)
+// ---------------------------------------------------------------------------
+app.post('/api/faculty/materials/link', authenticate, requireRole('faculty'), async (req, res) => {
+    const { title, subject, chapter, description, externalUrl, term } = req.body;
+    if (!title?.trim() || !subject?.trim() || !externalUrl?.trim())
+        return res.status(400).json({ error: 'Title, subject and URL are required.' });
+    if (!/^https?:\/\//i.test(externalUrl))
+        return res.status(400).json({ error: 'Please provide a valid URL.' });
+
+    const termNum = [1, 2, 3].includes(parseInt(term, 10)) ? parseInt(term, 10) : null;
+
+    try {
+        await pool.query(
+            `INSERT INTO materials (title, subject, chapter, material_type, external_url, description, uploaded_by, term)
+             VALUES ($1,$2,$3,'link',$4,$5,$6,$7)`,
+            [title.trim(), subject, chapter || null, externalUrl.trim(), description || null, req.user.email, termNum]
+        );
+        res.status(201).json({ success: true, message: 'Link published to students.' });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: 'Server error while saving the material link.' });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// FACULTY: list own uploaded materials
+// ---------------------------------------------------------------------------
+app.get('/api/faculty/materials', authenticate, requireRole('faculty'), async (req, res) => {
+    const { rows } = await pool.query(
+        `SELECT id, title, subject, chapter, material_type, file_name, mime_type, file_size, external_url, description, term, created_at
+         FROM materials WHERE uploaded_by = $1 ORDER BY created_at DESC`,
+        [req.user.email]
+    );
+    res.json(rows);
+});
+
+app.delete('/api/faculty/materials/:id', authenticate, requireRole('faculty'), async (req, res) => {
+    const { rowCount } = await pool.query(
+        `DELETE FROM materials WHERE id = $1 AND uploaded_by = $2`,
+        [req.params.id, req.user.email]
+    );
+    if (rowCount === 0) return res.status(404).json({ error: 'Material not found or not owned by you.' });
+    res.json({ success: true });
+});
+
+// ---------------------------------------------------------------------------
+// STUDENT (and anyone authenticated): browse all published materials
+// ---------------------------------------------------------------------------
+app.get('/api/materials', authenticate, async (req, res) => {
+    const { subject, term, topic } = req.query;
+    try {
+        const { rows } = await pool.query(
+            `SELECT m.id, m.title, m.subject, m.chapter, m.material_type, m.file_name, m.mime_type,
+                    m.file_size, m.external_url, m.description, m.term, m.created_at, f.name AS uploaded_by_name,
+                    COALESCE(mp.viewed, FALSE) AS viewed, COALESCE(mp.downloaded, FALSE) AS downloaded,
+                    COALESCE(mp.completed, FALSE) AS completed
+             FROM materials m
+             LEFT JOIN faculty f ON m.uploaded_by = f.email
+             LEFT JOIN material_progress mp ON mp.material_id = m.id AND mp.student_email = $4
+             WHERE ($1::text IS NULL OR m.subject = $1)
+               AND ($2::int IS NULL OR m.term = $2)
+               AND ($3::text IS NULL OR m.chapter = $3)
+             ORDER BY m.term ASC NULLS LAST, m.chapter ASC NULLS LAST, m.created_at DESC`,
+            [subject || null, term ? parseInt(term, 10) : null, topic || null, req.user.role === 'student' ? req.user.email : null]
+        );
+        res.json(rows);
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: 'Server error while listing materials.' });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// Download a file-based material (auth required so only registered users
+// can pull course files)
+// ---------------------------------------------------------------------------
+app.get('/api/materials/:id/download', authenticate, async (req, res) => {
+    try {
+        const { rows: [m] } = await pool.query(
+            `SELECT file_name, mime_type, file_data FROM materials WHERE id = $1 AND material_type = 'file'`,
+            [req.params.id]
+        );
+        if (!m || !m.file_data) return res.status(404).json({ error: 'File not found.' });
+        if (req.user.role === 'student') {
+            pool.query(
+                `INSERT INTO material_progress (student_email, material_id, downloaded, viewed, updated_at)
+                 VALUES ($1,$2,TRUE,TRUE,NOW())
+                 ON CONFLICT (student_email, material_id) DO UPDATE SET downloaded = TRUE, viewed = TRUE, updated_at = NOW()`,
+                [req.user.email, req.params.id]
+            ).catch(() => {}); // best-effort tracking, never blocks the download
+        }
+        res.setHeader('Content-Type', m.mime_type || 'application/octet-stream');
+        res.setHeader('Content-Disposition', `attachment; filename="${m.file_name.replace(/"/g, '')}"`);
+        res.send(m.file_data);
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: 'Server error while downloading material.' });
+    }
+});
+
 app.get('/api/admin/analytics-summary', async (req, res) => {
     const { rows } = await pool.query(`
         SELECT s.email, s.name, s.category, s.aim,
@@ -694,7 +878,8 @@ app.get('/api/error-atlas/:email', async (req, res) => {
 app.post('/api/faculty/tests', authenticate, requireRole('faculty'), async (req, res) => {
     const {
         title, subject, chapter, difficulty, timeLimitMin,
-        negativeMarking, randomize, scheduledAt, questions
+        negativeMarking, randomize, scheduledAt, questions,
+        assignedEmails, groupName
     } = req.body;
 
     if (!title?.trim() || !subject?.trim())
@@ -733,6 +918,21 @@ app.post('/api/faculty/tests', authenticate, requireRole('faculty'), async (req,
             );
         }
 
+        // Optional assignment to specific students/groups (Section 4.1 of
+        // the Physics Student Module spec). If no emails are given, the
+        // test stays visible to every student — identical to prior behaviour.
+        if (Array.isArray(assignedEmails) && assignedEmails.length > 0) {
+            for (const email of assignedEmails) {
+                const clean = (email || '').trim().toLowerCase();
+                if (!clean) continue;
+                await client.query(
+                    `INSERT INTO test_assignments (test_id, student_email, group_name)
+                     VALUES ($1,$2,$3) ON CONFLICT (test_id, student_email) DO NOTHING`,
+                    [test.id, clean, groupName || null]
+                );
+            }
+        }
+
         await client.query('COMMIT');
         res.status(201).json({ success: true, test });
     } catch (err) {
@@ -741,6 +941,34 @@ app.post('/api/faculty/tests', authenticate, requireRole('faculty'), async (req,
         res.status(500).json({ error: 'Server error while creating test.' });
     } finally {
         client.release();
+    }
+});
+
+// ---------------------------------------------------------------------------
+// FACULTY: assign (or re-assign) an existing test to specific students
+// ---------------------------------------------------------------------------
+app.post('/api/faculty/tests/:id/assign', authenticate, requireRole('faculty'), async (req, res) => {
+    const { emails, groupName } = req.body;
+    if (!Array.isArray(emails) || emails.length === 0)
+        return res.status(400).json({ error: 'Provide at least one student email.' });
+
+    try {
+        const { rows: [test] } = await pool.query(`SELECT id FROM tests WHERE id = $1 AND created_by = $2`, [req.params.id, req.user.email]);
+        if (!test) return res.status(404).json({ error: 'Test not found or not owned by you.' });
+
+        for (const email of emails) {
+            const clean = (email || '').trim().toLowerCase();
+            if (!clean) continue;
+            await pool.query(
+                `INSERT INTO test_assignments (test_id, student_email, group_name)
+                 VALUES ($1,$2,$3) ON CONFLICT (test_id, student_email) DO UPDATE SET group_name = $3`,
+                [test.id, clean, groupName || null]
+            );
+        }
+        res.json({ success: true, assignedCount: emails.length });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server error while assigning the test.' });
     }
 });
 
@@ -767,11 +995,62 @@ app.get('/api/student/tests', authenticate, requireRole('student'), async (req, 
                 (SELECT COUNT(*) FROM test_questions q WHERE q.test_id = t.id) AS question_count,
                 EXISTS(SELECT 1 FROM test_attempts a WHERE a.test_id = t.id AND a.student_email = $1) AS attempted
          FROM tests t
-         WHERE t.scheduled_at IS NULL OR t.scheduled_at <= NOW()
+         WHERE (t.scheduled_at IS NULL OR t.scheduled_at <= NOW())
+           AND (
+                NOT EXISTS (SELECT 1 FROM test_assignments ta WHERE ta.test_id = t.id)
+                OR EXISTS (SELECT 1 FROM test_assignments ta WHERE ta.test_id = t.id AND ta.student_email = $1)
+           )
          ORDER BY t.created_at DESC`,
         [req.user.email]
     );
     res.json(rows);
+});
+
+// ---------------------------------------------------------------------------
+// STUDENT: test history (Section 4.4 — scores, trends, comparative performance)
+// ---------------------------------------------------------------------------
+app.get('/api/student/tests/history', authenticate, requireRole('student'), async (req, res) => {
+    try {
+        const { rows } = await pool.query(
+            `SELECT a.id, a.test_id, t.title, t.subject, t.chapter, a.score, a.total, a.submitted_at
+             FROM test_attempts a JOIN tests t ON a.test_id = t.id
+             WHERE a.student_email = $1
+             ORDER BY a.submitted_at ASC`,
+            [req.user.email]
+        );
+
+        const withAccuracy = rows.map(r => ({
+            ...r,
+            accuracy: r.total > 0 ? Math.round((r.score / r.total) * 1000) / 10 : null
+        }));
+
+        let improvementTrend = null;
+        if (withAccuracy.length >= 2) {
+            const first = withAccuracy[0].accuracy ?? 0;
+            const last = withAccuracy[withAccuracy.length - 1].accuracy ?? 0;
+            improvementTrend = Math.round((last - first) * 10) / 10;
+        }
+
+        // Comparative performance: how this student's average stacks up
+        // against the average of everyone else who attempted the same tests.
+        const { rows: cohort } = await pool.query(
+            `SELECT AVG(a.score::float / NULLIF(a.total,0)) * 100 AS cohort_avg_accuracy
+             FROM test_attempts a JOIN tests t ON a.test_id = t.id
+             WHERE t.id IN (SELECT DISTINCT test_id FROM test_attempts WHERE student_email = $1)`,
+            [req.user.email]
+        );
+
+        res.json({
+            history: withAccuracy,
+            improvementTrend,
+            cohortAverageAccuracy: cohort[0]?.cohort_avg_accuracy != null
+                ? Math.round(parseFloat(cohort[0].cohort_avg_accuracy) * 10) / 10
+                : null
+        });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server error while fetching test history.' });
+    }
 });
 
 // ---------------------------------------------------------------------------
@@ -997,6 +1276,412 @@ app.get('/api/faculty/analytics', authenticate, requireRole('faculty'), async (r
 });
 
 
+// ---------------------------------------------------------------------------
+// FETCH STUDENT PROFILE (moved here, after all literal /api/student/...
+// sub-routes, so this :email wildcard can no longer shadow them — see note
+// at its original location above)
+// ---------------------------------------------------------------------------
+app.get('/api/student/:email', async (req, res) => {
+    const bundle = await getStudentBundle(req.params.email);
+    if (!bundle) return res.status(404).json({ error: 'Student not found.' });
+    res.json(bundle);
+});
+
+
+// ===========================================================================
+// PHYSICS STUDENT MODULE (additive)
+// Implements: entry-level diagnostics with proficiency classification,
+// Term-organised materials, lecture/material progress tracking, topic-wise
+// Physics analytics, personalised recommendations, and a dashboard summary.
+// Mirrors the existing patterns above; does not modify any pre-existing
+// Biology/Chemistry/general-Physics behaviour.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// Shared helper: aggregate this student's Physics topic-wise accuracy from
+// their entry-test attempts, plus raw mistake counts from any Physics test
+// (entry or faculty-assigned) they've taken.
+// ---------------------------------------------------------------------------
+async function computePhysicsTopicAnalytics(email) {
+    const { rows: attempts } = await pool.query(
+        `SELECT topic_breakdown FROM physics_entry_attempts WHERE student_email = $1`,
+        [email]
+    );
+
+    const agg = {}; // topic -> { correct, total }
+    for (const a of attempts) {
+        const breakdown = a.topic_breakdown || {};
+        for (const topic of Object.keys(breakdown)) {
+            agg[topic] = agg[topic] || { correct: 0, total: 0 };
+            agg[topic].correct += breakdown[topic].correct || 0;
+            agg[topic].total += breakdown[topic].total || 0;
+        }
+    }
+
+    const topicAccuracy = Object.keys(agg).map(topic => ({
+        topic,
+        correct: agg[topic].correct,
+        total: agg[topic].total,
+        accuracy: agg[topic].total > 0 ? Math.round((agg[topic].correct / agg[topic].total) * 1000) / 10 : 0
+    })).sort((a, b) => b.accuracy - a.accuracy);
+
+    const strongTopics = topicAccuracy.filter(t => t.accuracy >= 70 && t.total >= 2);
+    const weakTopics = topicAccuracy.filter(t => t.accuracy < 50 && t.total >= 1).sort((a, b) => a.accuracy - b.accuracy);
+
+    const { rows: mistakeRows } = await pool.query(
+        `SELECT topic, mistake_type, COUNT(*) AS count
+         FROM mistakes WHERE student_email = $1 AND subject = 'Physics'
+         GROUP BY topic, mistake_type ORDER BY count DESC`,
+        [email]
+    );
+    const mistakeBreakdown = mistakeRows.map(r => ({ topic: r.topic, mistakeType: r.mistake_type, count: parseInt(r.count, 10) }));
+
+    return { topicAccuracy, strongTopics, weakTopics, mistakeBreakdown };
+}
+
+// ---------------------------------------------------------------------------
+// STUDENT: list the 3 entry-level Physics tests, with each one's mandatory
+// flag and this student's attempt status (Section 1.1)
+// ---------------------------------------------------------------------------
+app.get('/api/physics/entry-tests', authenticate, requireRole('student'), async (req, res) => {
+    try {
+        const { rows: tests } = await pool.query(`SELECT * FROM physics_entry_tests ORDER BY test_number ASC`);
+        const { rows: attempts } = await pool.query(
+            `SELECT test_number, score, total, proficiency_level, submitted_at
+             FROM physics_entry_attempts WHERE student_email = $1 ORDER BY submitted_at DESC`,
+            [req.user.email]
+        );
+        const latestByTest = {};
+        for (const a of attempts) if (!latestByTest[a.test_number]) latestByTest[a.test_number] = a;
+
+        res.json(tests.map(t => ({
+            testNumber: t.test_number,
+            title: t.title,
+            mandatory: t.mandatory,
+            attempted: !!latestByTest[t.test_number],
+            lastAttempt: latestByTest[t.test_number] || null
+        })));
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server error while listing entry tests.' });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// STUDENT: fetch an entry test's questions (correct answers withheld)
+// ---------------------------------------------------------------------------
+app.get('/api/physics/entry-tests/:testNumber', authenticate, requireRole('student'), async (req, res) => {
+    const testNumber = parseInt(req.params.testNumber, 10);
+    if (![1, 2, 3].includes(testNumber)) return res.status(400).json({ error: 'Invalid test number.' });
+
+    try {
+        const { rows: [test] } = await pool.query(`SELECT * FROM physics_entry_tests WHERE test_number = $1`, [testNumber]);
+        if (!test) return res.status(404).json({ error: 'Entry test not found.' });
+
+        const { rows: questions } = await pool.query(
+            `SELECT id, topic, question_text, options, position FROM physics_entry_questions
+             WHERE test_number = $1 ORDER BY position ASC`,
+            [testNumber]
+        );
+        res.json({ test, questions });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server error while fetching the entry test.' });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// STUDENT: submit an entry test -> grade, topic breakdown, proficiency
+// classification (Sections 1.3 – 1.5)
+// ---------------------------------------------------------------------------
+app.post('/api/physics/entry-tests/:testNumber/submit', authenticate, requireRole('student'), async (req, res) => {
+    const testNumber = parseInt(req.params.testNumber, 10);
+    const { answers, timeTakenSeconds } = req.body; // [{ questionId, answer }] answer = option index
+    const email = req.user.email;
+    if (![1, 2, 3].includes(testNumber)) return res.status(400).json({ error: 'Invalid test number.' });
+    if (!Array.isArray(answers)) return res.status(400).json({ error: 'answers must be an array.' });
+
+    try {
+        const { rows: questions } = await pool.query(
+            `SELECT * FROM physics_entry_questions WHERE test_number = $1`, [testNumber]
+        );
+        if (questions.length === 0) return res.status(404).json({ error: 'Entry test not found.' });
+        const qMap = new Map(questions.map(q => [q.id, q]));
+
+        let correctCount = 0;
+        const topicBreakdown = {}; // topic -> { correct, total }
+        const mistakesToLog = [];
+
+        for (const q of questions) {
+            const given = answers.find(a => a.questionId === q.id);
+            const givenAnswer = given && given.answer !== '' && given.answer !== null && given.answer !== undefined
+                ? parseInt(given.answer, 10) : null;
+            const isCorrect = givenAnswer !== null && givenAnswer === q.correct_answer;
+
+            topicBreakdown[q.topic] = topicBreakdown[q.topic] || { correct: 0, total: 0 };
+            topicBreakdown[q.topic].total += 1;
+            if (isCorrect) {
+                topicBreakdown[q.topic].correct += 1;
+                correctCount += 1;
+            } else {
+                mistakesToLog.push({ topic: q.topic, mistakeType: givenAnswer === null ? 'unattempted' : 'conceptual' });
+            }
+        }
+
+        const total = questions.length;
+        const percent = Math.round((correctCount / total) * 1000) / 10;
+        const proficiencyLevel = classifyPhysicsProficiency(percent);
+
+        await pool.query(
+            `INSERT INTO physics_entry_attempts (student_email, test_number, answers, score, total, topic_breakdown, proficiency_level, time_taken_seconds)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+            [email, testNumber, JSON.stringify(answers), correctCount, total, JSON.stringify(topicBreakdown), proficiencyLevel, timeTakenSeconds || null]
+        );
+
+        await pool.query(`UPDATE students SET physics_proficiency = $1 WHERE email = $2`, [proficiencyLevel, email]);
+
+        // Feed the same mistakes table used by the existing Mistake Analysis
+        // Engine, so faculty Physics analytics and the student's general
+        // mistake-analysis view also reflect entry-test performance.
+        for (const m of mistakesToLog) {
+            await pool.query(
+                `INSERT INTO mistakes (student_email, test_id, question_id, subject, topic, mistake_type)
+                 VALUES ($1, NULL, NULL, 'Physics', $2, $3)`,
+                [email, m.topic, m.mistakeType]
+            );
+        }
+
+        res.json({
+            score: correctCount,
+            total,
+            accuracy: percent,
+            proficiencyLevel,
+            topicBreakdown
+        });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server error while submitting the entry test.' });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// STUDENT: current Physics proficiency + entry-test attempt history
+// ---------------------------------------------------------------------------
+app.get('/api/physics/proficiency', authenticate, requireRole('student'), async (req, res) => {
+    try {
+        const { rows: [student] } = await pool.query(`SELECT physics_proficiency FROM students WHERE email = $1`, [req.user.email]);
+        const { rows: attempts } = await pool.query(
+            `SELECT test_number, score, total, proficiency_level, submitted_at FROM physics_entry_attempts
+             WHERE student_email = $1 ORDER BY submitted_at ASC`,
+            [req.user.email]
+        );
+        res.json({
+            currentLevel: student?.physics_proficiency || null,
+            attempts
+        });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server error while fetching proficiency.' });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// Physics materials, organised topic-wise and Term-wise (Section 2 & 3)
+// ---------------------------------------------------------------------------
+app.get('/api/physics/materials', authenticate, async (req, res) => {
+    try {
+        const { rows } = await pool.query(
+            `SELECT m.id, m.title, m.chapter AS topic, m.term, m.material_type, m.file_name, m.mime_type,
+                    m.file_size, m.external_url, m.description, m.created_at,
+                    COALESCE(mp.viewed, FALSE) AS viewed, COALESCE(mp.downloaded, FALSE) AS downloaded,
+                    COALESCE(mp.completed, FALSE) AS completed
+             FROM materials m
+             LEFT JOIN material_progress mp ON mp.material_id = m.id AND mp.student_email = $1
+             WHERE m.subject = 'Physics'
+             ORDER BY m.chapter ASC NULLS LAST, m.term ASC NULLS LAST, m.created_at ASC`,
+            [req.user.role === 'student' ? req.user.email : null]
+        );
+
+        // Group into { topic -> { 1: [...], 2: [...], 3: [...], untagged: [...] } }
+        const grouped = {};
+        for (const topic of PHYSICS_TOPICS) grouped[topic] = { 1: [], 2: [], 3: [], untagged: [] };
+        for (const m of rows) {
+            const topicKey = grouped[m.topic] ? m.topic : '__other__';
+            if (!grouped[topicKey]) grouped[topicKey] = { 1: [], 2: [], 3: [], untagged: [] };
+            const bucket = [1, 2, 3].includes(m.term) ? m.term : 'untagged';
+            grouped[topicKey][bucket].push(m);
+        }
+        res.json({ topics: PHYSICS_TOPICS, materialsByTopic: grouped });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server error while listing Physics materials.' });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// STUDENT: mark a material as viewed / completed (Section 5.2 tracking)
+// ---------------------------------------------------------------------------
+app.post('/api/physics/materials/:id/view', authenticate, requireRole('student'), async (req, res) => {
+    await pool.query(
+        `INSERT INTO material_progress (student_email, material_id, viewed, updated_at)
+         VALUES ($1,$2,TRUE,NOW())
+         ON CONFLICT (student_email, material_id) DO UPDATE SET viewed = TRUE, updated_at = NOW()`,
+        [req.user.email, req.params.id]
+    );
+    res.json({ success: true });
+});
+
+app.post('/api/physics/materials/:id/complete', authenticate, requireRole('student'), async (req, res) => {
+    await pool.query(
+        `INSERT INTO material_progress (student_email, material_id, viewed, completed, updated_at)
+         VALUES ($1,$2,TRUE,TRUE,NOW())
+         ON CONFLICT (student_email, material_id) DO UPDATE SET completed = TRUE, viewed = TRUE, updated_at = NOW()`,
+        [req.user.email, req.params.id]
+    );
+    res.json({ success: true });
+});
+
+// ---------------------------------------------------------------------------
+// Physics lectures merged with this student's watch progress (Section 5.1)
+// ---------------------------------------------------------------------------
+app.get('/api/physics/lectures', authenticate, async (req, res) => {
+    try {
+        const { rows } = await pool.query(
+            `SELECT l.id, l.title, l.subject, l.url, l.lecturer_name,
+                    COALESCE(lp.percent_watched, 0) AS percent_watched,
+                    COALESCE(lp.last_position_seconds, 0) AS last_position_seconds,
+                    COALESCE(lp.completed, FALSE) AS completed
+             FROM lectures l
+             LEFT JOIN lecture_progress lp ON lp.lecture_id = l.id AND lp.student_email = $1
+             WHERE l.subject = 'Physics' AND l.approved = 1
+             ORDER BY l.created_at DESC`,
+            [req.user.role === 'student' ? req.user.email : null]
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server error while listing Physics lectures.' });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// STUDENT: update lecture watch progress (percent watched + resume position)
+// ---------------------------------------------------------------------------
+app.post('/api/physics/lectures/:id/progress', authenticate, requireRole('student'), async (req, res) => {
+    const percentWatched = Math.max(0, Math.min(100, parseFloat(req.body.percentWatched) || 0));
+    const lastPositionSeconds = Math.max(0, parseInt(req.body.lastPositionSeconds, 10) || 0);
+    const completed = percentWatched >= 95;
+
+    await pool.query(
+        `INSERT INTO lecture_progress (student_email, lecture_id, percent_watched, last_position_seconds, completed, updated_at)
+         VALUES ($1,$2,$3,$4,$5,NOW())
+         ON CONFLICT (student_email, lecture_id) DO UPDATE SET
+            percent_watched = GREATEST(lecture_progress.percent_watched, $3),
+            last_position_seconds = $4,
+            completed = lecture_progress.completed OR $5,
+            updated_at = NOW()`,
+        [req.user.email, req.params.id, percentWatched, lastPositionSeconds, completed]
+    );
+    res.json({ success: true });
+});
+
+// ---------------------------------------------------------------------------
+// STUDENT: topic-wise Physics analytics — strengths, weaknesses, mistakes
+// (Section 6)
+// ---------------------------------------------------------------------------
+app.get('/api/physics/analytics', authenticate, requireRole('student'), async (req, res) => {
+    try {
+        const analytics = await computePhysicsTopicAnalytics(req.user.email);
+        res.json(analytics);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server error while computing Physics analytics.' });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// STUDENT: personalised Physics recommendations (Section 7)
+// ---------------------------------------------------------------------------
+app.get('/api/physics/recommendations', authenticate, requireRole('student'), async (req, res) => {
+    try {
+        const { weakTopics } = await computePhysicsTopicAnalytics(req.user.email);
+        const recommendations = generatePhysicsRecommendations(weakTopics);
+        res.json({ recommendations });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server error while generating recommendations.' });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// STUDENT: Physics dashboard summary (Section 8)
+// ---------------------------------------------------------------------------
+app.get('/api/physics/dashboard', authenticate, requireRole('student'), async (req, res) => {
+    const email = req.user.email;
+    try {
+        const { rows: [student] } = await pool.query(`SELECT physics_proficiency FROM students WHERE email = $1`, [email]);
+
+        const { rows: [lectureTotals] } = await pool.query(
+            `SELECT COUNT(*) AS total FROM lectures WHERE subject = 'Physics' AND approved = 1`
+        );
+        const { rows: [lectureDone] } = await pool.query(
+            `SELECT COUNT(*) AS done FROM lecture_progress lp JOIN lectures l ON lp.lecture_id = l.id
+             WHERE lp.student_email = $1 AND l.subject = 'Physics' AND lp.completed = TRUE`,
+            [email]
+        );
+
+        const { rows: [materialTotals] } = await pool.query(
+            `SELECT COUNT(*) AS total FROM materials WHERE subject = 'Physics'`
+        );
+        const { rows: [materialDone] } = await pool.query(
+            `SELECT COUNT(*) AS done FROM material_progress mp JOIN materials m ON mp.material_id = m.id
+             WHERE mp.student_email = $1 AND m.subject = 'Physics' AND mp.completed = TRUE`,
+            [email]
+        );
+
+        const { rows: [entryAgg] } = await pool.query(
+            `SELECT COUNT(*) AS count, AVG(score::float / NULLIF(total,0)) * 100 AS avg_pct
+             FROM physics_entry_attempts WHERE student_email = $1`,
+            [email]
+        );
+        const { rows: [facultyAgg] } = await pool.query(
+            `SELECT COUNT(*) AS count, AVG(a.score::float / NULLIF(a.total,0)) * 100 AS avg_pct
+             FROM test_attempts a JOIN tests t ON a.test_id = t.id
+             WHERE a.student_email = $1 AND t.subject = 'Physics'`,
+            [email]
+        );
+
+        const entryCount = parseInt(entryAgg.count, 10) || 0;
+        const facultyCount = parseInt(facultyAgg.count, 10) || 0;
+        const testsAttempted = entryCount + facultyCount;
+        const avgPcts = [entryAgg.avg_pct, facultyAgg.avg_pct].filter(v => v !== null).map(parseFloat);
+        const averageScore = avgPcts.length ? Math.round((avgPcts.reduce((s, v) => s + v, 0) / avgPcts.length) * 10) / 10 : null;
+
+        const { strongTopics, weakTopics } = await computePhysicsTopicAnalytics(email);
+
+        const { rows: [test1] } = await pool.query(
+            `SELECT 1 FROM physics_entry_attempts WHERE student_email = $1 AND test_number = 1 LIMIT 1`, [email]
+        );
+
+        res.json({
+            currentLevel: student?.physics_proficiency || 'Not yet assessed',
+            entryTest1Required: !test1,
+            lecturesCompleted: parseInt(lectureDone.done, 10),
+            lecturesTotal: parseInt(lectureTotals.total, 10),
+            materialsCompleted: parseInt(materialDone.done, 10),
+            materialsTotal: parseInt(materialTotals.total, 10),
+            testsAttempted,
+            averageScore,
+            strongTopics: strongTopics.map(t => t.topic),
+            weakTopics: weakTopics.map(t => t.topic)
+        });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server error while building the Physics dashboard.' });
+    }
+});
+
+
 app.get(/^\/(?!api).*/, (req, res) => {
     res.sendFile(path.join(__dirname, '..', 'frontend', 'index.html'));
 });
@@ -1005,7 +1690,16 @@ app.get(/^\/(?!api).*/, (req, res) => {
 // START
 // ---------------------------------------------------------------------------
 initSchema()
-    .then(() => app.listen(PORT, () =>
-        console.log(`🚀  NEET CTK IGNITION running on http://localhost:${PORT}`)
-    ))
+    .then(() => app.listen(PORT, () => {
+        console.log(`🚀  NEET CTK IGNITION running on http://localhost:${PORT}`);
+
+        // Kick off a background fetch of real, current NEET cutoff data
+        // (free web search + free AI extraction) without blocking startup.
+        // Refreshes the upcoming exam year, then re-checks every 24h —
+        // refreshCutoffCache itself is cheap to call repeatedly since it
+        // only does real work when the cache is missing/stale.
+        const targetYear = new Date().getFullYear() + 1;
+        refreshCutoffCache(targetYear).catch(() => {});
+        setInterval(() => refreshCutoffCache(targetYear).catch(() => {}), 24 * 60 * 60 * 1000);
+    }))
     .catch(err => { console.error('Failed to initialise database:', err); process.exit(1); });

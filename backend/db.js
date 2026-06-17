@@ -160,6 +160,119 @@ async function initSchema() {
             mistake_type    TEXT, -- 'conceptual' | 'calculation' | 'memory' | 'unattempted'
             created_at      TIMESTAMPTZ DEFAULT NOW()
         );
+
+        -- Live-researched NEET cutoff data (replaces static guesses once
+        -- populated). One row per (year, category). Refreshed periodically
+        -- by research.js via free web search + free LLM extraction.
+        CREATE TABLE IF NOT EXISTS cutoff_cache (
+            year        INTEGER NOT NULL,
+            category    TEXT NOT NULL,
+            aiims       REAL NOT NULL,
+            govt        REAL NOT NULL,
+            private     REAL NOT NULL,
+            source      TEXT DEFAULT 'web-research-ai',
+            fetched_at  TIMESTAMPTZ DEFAULT NOW(),
+            PRIMARY KEY (year, category)
+        );
+
+        -- Faculty-uploaded study materials (PDFs, PPTs, DOCX, images, or
+        -- YouTube/external links). File bytes are stored directly in
+        -- Postgres (bytea) so they survive redeploys on free hosting tiers
+        -- that have an ephemeral filesystem.
+        CREATE TABLE IF NOT EXISTS materials (
+            id              SERIAL PRIMARY KEY,
+            title           TEXT NOT NULL,
+            subject         TEXT NOT NULL,
+            chapter         TEXT,
+            material_type   TEXT NOT NULL DEFAULT 'file' CHECK (material_type IN ('file','link')),
+            file_name       TEXT,
+            mime_type       TEXT,
+            file_size       INTEGER,
+            file_data       BYTEA,
+            external_url    TEXT,
+            description     TEXT,
+            uploaded_by     TEXT REFERENCES faculty(email) ON DELETE SET NULL,
+            created_at      TIMESTAMPTZ DEFAULT NOW()
+        );
+
+        -- ===================================================================
+        -- PHYSICS STUDENT MODULE (additive — see README "Physics Student
+        -- Module" section). The platform's curriculum-aligned subjects keep
+        -- working exactly as before; these tables add a dedicated,
+        -- Physics-curated experience: entry diagnostics, Term-organised
+        -- materials, granular lecture/material progress, and per-student
+        -- test assignment.
+        -- ===================================================================
+
+        -- The 3 fixed Physics entry-level diagnostics (Test 1 mandatory).
+        CREATE TABLE IF NOT EXISTS physics_entry_tests (
+            test_number     INTEGER PRIMARY KEY CHECK (test_number IN (1,2,3)),
+            title           TEXT NOT NULL,
+            mandatory       BOOLEAN NOT NULL DEFAULT FALSE
+        );
+
+        -- Questions belonging to each entry test (seeded with 10 dummy MCQs
+        -- per test for development purposes, per the spec).
+        CREATE TABLE IF NOT EXISTS physics_entry_questions (
+            id              SERIAL PRIMARY KEY,
+            test_number     INTEGER NOT NULL REFERENCES physics_entry_tests(test_number) ON DELETE CASCADE,
+            topic           TEXT NOT NULL,
+            question_text   TEXT NOT NULL,
+            options         JSONB NOT NULL,
+            correct_answer  INTEGER NOT NULL,
+            position        INTEGER DEFAULT 0
+        );
+
+        -- A student's attempt at an entry test, including the topic-wise
+        -- breakdown and the resulting proficiency classification.
+        CREATE TABLE IF NOT EXISTS physics_entry_attempts (
+            id                  SERIAL PRIMARY KEY,
+            student_email       TEXT REFERENCES students(email) ON DELETE CASCADE,
+            test_number         INTEGER NOT NULL,
+            answers             JSONB,
+            score               INTEGER,
+            total               INTEGER,
+            topic_breakdown     JSONB,
+            proficiency_level   TEXT,
+            time_taken_seconds  INTEGER,
+            submitted_at        TIMESTAMPTZ DEFAULT NOW()
+        );
+
+        -- Granular lecture-watch tracking (percentage watched + resume
+        -- position), one row per student per lecture.
+        CREATE TABLE IF NOT EXISTS lecture_progress (
+            student_email           TEXT REFERENCES students(email) ON DELETE CASCADE,
+            lecture_id              INTEGER REFERENCES lectures(id) ON DELETE CASCADE,
+            percent_watched         REAL DEFAULT 0,
+            last_position_seconds   INTEGER DEFAULT 0,
+            completed               BOOLEAN DEFAULT FALSE,
+            updated_at              TIMESTAMPTZ DEFAULT NOW(),
+            PRIMARY KEY (student_email, lecture_id)
+        );
+
+        -- Material view / download / completion tracking, one row per
+        -- student per material (feeds the Physics Progress Tracking System).
+        CREATE TABLE IF NOT EXISTS material_progress (
+            student_email   TEXT REFERENCES students(email) ON DELETE CASCADE,
+            material_id     INTEGER REFERENCES materials(id) ON DELETE CASCADE,
+            viewed          BOOLEAN DEFAULT FALSE,
+            downloaded      BOOLEAN DEFAULT FALSE,
+            completed       BOOLEAN DEFAULT FALSE,
+            updated_at      TIMESTAMPTZ DEFAULT NOW(),
+            PRIMARY KEY (student_email, material_id)
+        );
+
+        -- Optional per-student/per-group test assignment. A test with NO
+        -- rows here remains visible to every student (preserves existing
+        -- behaviour for tests created before this feature existed); a test
+        -- WITH rows here becomes visible only to the assigned students.
+        CREATE TABLE IF NOT EXISTS test_assignments (
+            test_id         INTEGER REFERENCES tests(id) ON DELETE CASCADE,
+            student_email   TEXT REFERENCES students(email) ON DELETE CASCADE,
+            group_name      TEXT,
+            assigned_at     TIMESTAMPTZ DEFAULT NOW(),
+            PRIMARY KEY (test_id, student_email)
+        );
     `);
 
     // -----------------------------------------------------------------
@@ -172,6 +285,19 @@ async function initSchema() {
         ALTER TABLE students ADD COLUMN IF NOT EXISTS daily_study_hours REAL;
         ALTER TABLE students ADD COLUMN IF NOT EXISTS prep_level TEXT;
         ALTER TABLE students ADD COLUMN IF NOT EXISTS target_exam TEXT DEFAULT 'NEET';
+        ALTER TABLE students ADD COLUMN IF NOT EXISTS physics_proficiency TEXT;
+    `);
+
+    // -----------------------------------------------------------------
+    // MIGRATIONS for pre-existing 'materials' table — Term tagging
+    // (Term 1 / Term 2 / Term 3) for the Physics Student Module, and a
+    // 'note' material_type so curated text content (not just files/links)
+    // can be published per topic/term.
+    // -----------------------------------------------------------------
+    await pool.query(`
+        ALTER TABLE materials ADD COLUMN IF NOT EXISTS term INTEGER;
+        ALTER TABLE materials DROP CONSTRAINT IF EXISTS materials_material_type_check;
+        ALTER TABLE materials ADD CONSTRAINT materials_material_type_check CHECK (material_type IN ('file','link','note'));
     `);
 
     // Add a foreign-key style soft link from students.email -> users.email
@@ -198,6 +324,55 @@ async function initSchema() {
             ('Thermodynamics - Connecting Concepts',     'Physics',   'https://www.youtube.com/embed/4i1MUWJoI0U', 'Prof. Anil Kapoor',  1),
             ('Chemical Bonding - VSEPR & Hybridisation', 'Chemistry', 'https://www.youtube.com/embed/v=uVBSBFxbUlA', 'Dr. Priya Nair',    1)
         `);
+    }
+
+    // -----------------------------------------------------------------
+    // PHYSICS STUDENT MODULE — seed the 3 entry tests + dummy questions
+    // -----------------------------------------------------------------
+    const { rows: entryTestRows } = await pool.query(`SELECT COUNT(*) AS c FROM physics_entry_tests`);
+    if (parseInt(entryTestRows[0].c, 10) === 0) {
+        await pool.query(`
+            INSERT INTO physics_entry_tests (test_number, title, mandatory) VALUES
+            (1, 'Physics Entry Test 1 — Foundation Diagnostic', TRUE),
+            (2, 'Physics Entry Test 2 — Extended Diagnostic',   FALSE),
+            (3, 'Physics Entry Test 3 — Advanced Diagnostic',   FALSE)
+        `);
+
+        for (const [testNumber, questions] of Object.entries(PHYSICS_ENTRY_QUESTIONS)) {
+            for (let i = 0; i < questions.length; i++) {
+                const q = questions[i];
+                await pool.query(
+                    `INSERT INTO physics_entry_questions (test_number, topic, question_text, options, correct_answer, position)
+                     VALUES ($1,$2,$3,$4,$5,$6)`,
+                    [parseInt(testNumber, 10), q.topic, q.text, JSON.stringify(q.options), q.answer, i]
+                );
+            }
+        }
+        console.log('✅  Seeded 3 Physics entry tests (10 dummy MCQs each)');
+    }
+
+    // -----------------------------------------------------------------
+    // PHYSICS STUDENT MODULE — seed Term 1 / Term 2 / Term 3 materials
+    // for every Physics topic (published as 'note' type materials, owned
+    // by the platform rather than a specific faculty account).
+    // -----------------------------------------------------------------
+    const { rows: physicsNoteRows } = await pool.query(
+        `SELECT COUNT(*) AS c FROM materials WHERE subject = 'Physics' AND material_type = 'note'`
+    );
+    if (parseInt(physicsNoteRows[0].c, 10) === 0) {
+        const TERM_LABEL = { 1: 'Conceptual Understanding', 2: 'Definitions & Formulae', 3: 'Advanced Applications' };
+        for (const topic of PHYSICS_TOPICS) {
+            const content = PHYSICS_TERM_CONTENT[topic];
+            if (!content) continue;
+            for (const term of [1, 2, 3]) {
+                await pool.query(
+                    `INSERT INTO materials (title, subject, chapter, material_type, description, term)
+                     VALUES ($1,'Physics',$2,'note',$3,$4)`,
+                    [`${topic} — Term ${term}: ${TERM_LABEL[term]}`, topic, content[term], term]
+                );
+            }
+        }
+        console.log(`✅  Seeded Term 1–3 Physics materials for ${PHYSICS_TOPICS.length} topics`);
     }
 
     // Seed a default admin account if none exists
@@ -297,15 +472,15 @@ const QUESTIONS = [
 ];
 
 // ---------------------------------------------------------------------------
-// HISTORICAL NEET CUTOFF DATA (2021-2024, NEET out of 720)
-// Source pattern: NEET UG counselling qualifying/closing cutoff trends
-// published by NTA/MCC for All-India quota, by category.
-// These are representative aggregate figures used as the model's training
-// data — admins can extend this table via /api/admin/cutoff-data as more
-// official data becomes available, and the model recomputes automatically.
+// FALLBACK BASELINE — NEET cutoff data (2021-2024, NEET out of 720)
+// Used ONLY when the live `cutoff_cache` table (populated via real web
+// search + AI extraction, see research.js) has no usable data yet — e.g.
+// first run before any refresh has succeeded, or if the deployment
+// environment has no outbound internet/AI access. Once real data is
+// cached, this baseline is ignored.
 // ---------------------------------------------------------------------------
 const HISTORICAL_CUTOFFS = [
-    // year, category, AIIMS_closing, GovtMedical_closing, PrivateMedical_closing, qualifying_percentile_score
+    // year, category, AIIMS_closing, GovtMedical_closing, PrivateMedical_closing
     { year: 2021, category: 'General', aiims: 686, govt: 620, private: 480 },
     { year: 2021, category: 'EWS',     aiims: 678, govt: 605, private: 460 },
     { year: 2021, category: 'OBC',     aiims: 670, govt: 590, private: 440 },
@@ -354,6 +529,90 @@ const INSTITUTION_KEY = {
 const NEET_MAX_SCORE = 720;
 const NEET_MAX_RANK  = 1500000; // approx All-India candidates
 
+// How long cached real-data stays "fresh" before a background refresh is
+// attempted again (cutoffs only change once a year, around results time,
+// but we re-check periodically in case of corrections/updates).
+const CUTOFF_CACHE_TTL_DAYS = 30;
+
+/**
+ * Reads cached real cutoff rows from the DB for a given year.
+ * Returns [] if nothing cached yet for that year.
+ */
+async function getCachedCutoffRows(year) {
+    const { rows } = await pool.query(
+        `SELECT year, category, aiims, govt, private, fetched_at FROM cutoff_cache WHERE year = $1`,
+        [year]
+    );
+    return rows;
+}
+
+/**
+ * Returns true if the cache for this year is missing or stale enough to
+ * warrant a refresh attempt.
+ */
+async function isCutoffCacheStale(year) {
+    const rows = await getCachedCutoffRows(year);
+    if (rows.length < 3) return true; // not enough categories cached
+    const oldest = rows.reduce((min, r) => Math.min(min, new Date(r.fetched_at).getTime()), Date.now());
+    const ageDays = (Date.now() - oldest) / (1000 * 60 * 60 * 24);
+    return ageDays > CUTOFF_CACHE_TTL_DAYS;
+}
+
+/**
+ * Attempts a real-data refresh for the given year using research.js
+ * (free web search + free LLM extraction) and writes successful rows
+ * into cutoff_cache. Safe to call frequently — it no-ops on failure.
+ */
+async function refreshCutoffCache(year) {
+    let fetchRealCutoffData;
+    try {
+        ({ fetchRealCutoffData } = require('./research'));
+    } catch (err) {
+        return { success: false, reason: 'research module unavailable' };
+    }
+
+    try {
+        const rows = await fetchRealCutoffData(year);
+        for (const r of rows) {
+            await pool.query(
+                `INSERT INTO cutoff_cache (year, category, aiims, govt, private, source, fetched_at)
+                 VALUES ($1,$2,$3,$4,$5,'web-research-ai', NOW())
+                 ON CONFLICT (year, category) DO UPDATE SET
+                    aiims = $3, govt = $4, private = $5, source = 'web-research-ai', fetched_at = NOW()`,
+                [r.year, r.category, r.aiims, r.govt, r.private]
+            );
+        }
+        console.log(`✅  Cutoff cache refreshed for ${year} (${rows.length} categories, live web data)`);
+        return { success: true, rowCount: rows.length };
+    } catch (err) {
+        console.warn(`⚠️  Cutoff cache refresh failed for ${year}: ${err.message} — using existing cache / static baseline.`);
+        return { success: false, reason: err.message };
+    }
+}
+
+/**
+ * Builds the regression training set for a (category, institution),
+ * preferring real cached data and only filling in gaps from the static
+ * baseline if a given year has no cached entry at all. Also reports
+ * whether any live-fetched rows were actually used.
+ */
+async function buildTrainingRows(category, instKey) {
+    const cachedAll = await pool.query(`SELECT * FROM cutoff_cache WHERE category = $1 ORDER BY year ASC`, [category]);
+    const cachedYears = new Set(cachedAll.rows.map(r => r.year));
+
+    const rows = cachedAll.rows.map(r => ({ x: r.year, y: r[instKey] }));
+
+    // Fill in any years missing from the cache using the static baseline,
+    // so the regression always has enough points even on a partial cache.
+    for (const baseline of HISTORICAL_CUTOFFS.filter(r => r.category === category)) {
+        if (!cachedYears.has(baseline.year)) {
+            rows.push({ x: baseline.year, y: baseline[instKey] });
+        }
+    }
+
+    return { rows: rows.sort((a, b) => a.x - b.x), usingLiveData: cachedAll.rows.length > 0 };
+}
+
 /**
  * Simple linear regression: returns {slope, intercept} for y = slope*x + intercept
  */
@@ -370,11 +629,11 @@ function linearRegression(points) {
 }
 
 /**
- * AI-based cutoff & rank prediction.
- * Trains a per-(category, institution) linear regression on HISTORICAL_CUTOFFS
- * (2021-2024) and extrapolates to the target exam year, then applies a
- * state-quota adjustment. Outputs Safe / Target / Stretch scores, an
- * estimated rank band, and an admission probability.
+ * AI-based cutoff & rank prediction — now backed by REAL, periodically
+ * refreshed web data (see research.js / cutoff_cache) rather than a fixed
+ * table. Falls back to a static historical baseline only where live data
+ * is not yet available for a given year, so the feature degrades
+ * gracefully but always prefers real numbers when present.
  *
  * @param {string} aim       - 'AIIMS' | 'Government Medical College' | 'Private Medical College'
  * @param {string} category  - 'General' | 'EWS' | 'OBC' | 'SC' | 'ST' | 'PwD' | 'Others'
@@ -382,18 +641,24 @@ function linearRegression(points) {
  * @param {string|Date} examDate
  * @param {number} [currentAccuracyPct] - student's current average accuracy (0-100), optional
  */
-function predictCutoff(aim, category, state, examDate, currentAccuracyPct = null) {
+async function predictCutoff(aim, category, state, examDate, currentAccuracyPct = null) {
     const instKey = INSTITUTION_KEY[aim] || 'govt';
     const cat = HISTORICAL_CUTOFFS.some(r => r.category === category)
         ? category
         : (CATEGORY_FALLBACK[category] || 'General');
 
-    const rows = HISTORICAL_CUTOFFS.filter(r => r.category === cat)
-        .map(r => ({ x: r.year, y: r[instKey] }));
+    const targetYear = examDate ? new Date(examDate).getFullYear() : (new Date().getFullYear() + 1);
+
+    // Kick off a background refresh if the cache looks stale — don't block
+    // this request on it; the next request will benefit from fresh data.
+    isCutoffCacheStale(targetYear).then(stale => {
+        if (stale) refreshCutoffCache(targetYear).catch(() => {});
+    }).catch(() => {});
+
+    const { rows, usingLiveData } = await buildTrainingRows(cat, instKey);
 
     const { slope, intercept } = linearRegression(rows);
 
-    const targetYear = examDate ? new Date(examDate).getFullYear() : (new Date().getFullYear() + 1);
     let predicted = slope * targetYear + intercept;
 
     // Apply state quota adjustment
@@ -436,7 +701,10 @@ function predictCutoff(aim, category, state, examDate, currentAccuracyPct = null
         estimatedRank: { low: rankLow, high: rankHigh, mid: estimatedRank },
         admissionProbability,
         modelInfo: {
-            method: 'linear-regression-on-historical-cutoffs',
+            method: usingLiveData
+                ? 'linear-regression-on-live-web-researched-cutoffs'
+                : 'linear-regression-on-static-baseline (live data not yet fetched)',
+            dataSource: usingLiveData ? 'web-research-ai' : 'static-baseline',
             trainingPoints: rows.length,
             slope: Math.round(slope * 100) / 100,
             stateAdjustmentPct: Math.round(stateAdj * 1000) / 10
@@ -487,7 +755,148 @@ const TOPIC_BANK = {
     ]
 };
 
+// ===========================================================================
+// PHYSICS STUDENT MODULE — additive constants
+// (entry diagnostics, Term-organised materials, proficiency classification)
+// ===========================================================================
+
+// Canonical Physics topic list, as specified in the Physics Student Module
+// requirements. Used for entry-test question tagging, Term-based material
+// organisation, and topic-wise analytics.
+const PHYSICS_TOPICS = [
+    'Units and Dimensions',
+    'Kinematics',
+    'Laws of Motion',
+    'Work, Energy and Power',
+    'Rotational Motion',
+    'Gravitation',
+    'Oscillations and Waves',
+    'Thermodynamics',
+    'Electrostatics',
+    'Current Electricity',
+    'Magnetism',
+    'Optics',
+    'Modern Physics'
+];
+
+// Term 1 (Conceptual Understanding) / Term 2 (Definitions & Formulae) /
+// Term 3 (Advanced Applications) seed content for every Physics topic.
+// This is starter content, intended to demonstrate the three-stage
+// learning model end-to-end — faculty can add further file/link materials
+// per topic/term from the Lecturer Hub at any time.
+const PHYSICS_TERM_CONTENT = {
+    'Units and Dimensions': {
+        1: "Every physical quantity is built from a few base quantities — length, mass, time, and others. Dimensional analysis lets you check whether an equation could possibly be correct just by tracking these building blocks, without doing any arithmetic.",
+        2: "Dimensional formula notation: [M^a L^b T^c …]. SI base units: metre (m), kilogram (kg), second (s), ampere (A), kelvin (K), mole (mol), candela (cd). Principle of homogeneity: only quantities with the same dimensions can be added, subtracted, or equated.",
+        3: "Use dimensional analysis to check whether a formula (e.g. T = 2π√(l/g)) is dimensionally a time, to derive how one quantity depends on others up to a dimensionless constant, and to convert between unit systems in multi-step numericals."
+    },
+    'Kinematics': {
+        1: "Kinematics describes how position changes with time, independent of what causes the motion. Velocity tells you how fast position changes; acceleration tells you how fast velocity changes — think of a car speeding up, not why the engine pushes it.",
+        2: "v = u + at, s = ut + ½at², v² = u² + 2as (uniform acceleration). Relative velocity: v_AB = v_A − v_B. Projectile motion: range R = u²sin2θ/g, max height H = u²sin²θ/2g, time of flight T = 2u sinθ/g.",
+        3: "Apply the kinematic equations to multi-stage motion (e.g. a ball thrown up and later caught), combine projectile motion with relative velocity (river–boat problems), and read acceleration/displacement from the slope/area of v-t and x-t graphs."
+    },
+    'Laws of Motion': {
+        1: "Newton's three laws explain why objects keep moving, speed up, or stop. A body resists changes to its motion (inertia); a net push or pull is needed to change that motion; and every push has an equal push back.",
+        2: "First law: a body remains at rest or in uniform motion unless acted on by a net external force. Second law: F = dp/dt = ma. Third law: F_AB = −F_BA. Friction: f = μN (limiting static friction ≥ kinetic friction).",
+        3: "Solve connected-block and pulley systems using free-body diagrams, analyse motion on inclined planes with friction, and apply circular-motion force balance (tension or friction supplying the centripetal force)."
+    },
+    'Work, Energy and Power': {
+        1: "Work is done when a force causes displacement. Energy is the capacity to do work, and it doesn't disappear — it just changes form, like kinetic energy converting to potential energy as a ball rises.",
+        2: "W = F·s·cosθ. KE = ½mv². Gravitational PE = mgh. Work-energy theorem: W_net = ΔKE. Power: P = W/t = F·v. Conservation of mechanical energy: KE + PE = constant when no non-conservative force acts.",
+        3: "Apply energy conservation to pendulum and spring-block problems, use the work-energy theorem to find speeds without solving for acceleration directly, and compute power output on inclined planes with friction."
+    },
+    'Rotational Motion': {
+        1: "Just as linear motion has mass, velocity, and force, rotational motion has moment of inertia, angular velocity, and torque — each rotational quantity is a direct analogue of a linear one.",
+        2: "Torque: τ = r × F. Moment of inertia: disc = ½MR², ring = MR², rod about centre = ML²/12. Angular momentum: L = Iω. Rotational KE = ½Iω². Parallel axis theorem: I = I_cm + Md².",
+        3: "Solve rolling-without-slipping problems (combining translational and rotational KE), apply conservation of angular momentum (e.g. a figure skater pulling arms in), and find moment of inertia for composite bodies."
+    },
+    'Gravitation': {
+        1: "Every mass attracts every other mass. The same force that pulls an apple down keeps the Moon orbiting the Earth — gravity is universal and follows one simple rule based on mass and distance.",
+        2: "F = Gm₁m₂/r². g = GM/R². Orbital velocity: v = √(GM/r). Escape velocity: v_e = √(2GM/R). Kepler's third law: T² ∝ r³. Gravitational potential energy: U = −GMm/r.",
+        3: "Calculate satellite orbital periods and energies, find how g varies with height and depth, and apply Kepler's laws to compare planetary or satellite orbits."
+    },
+    'Oscillations and Waves': {
+        1: "Oscillations are repetitive back-and-forth motion around a stable point, like a swing settling into a rhythm. Waves are how that disturbance travels outward through a medium without the medium itself travelling along.",
+        2: "SHM: x = A sin(ωt + φ); T = 2π√(m/k) for a spring, T = 2π√(l/g) for a pendulum. Wave speed: v = fλ. Beats: f_beat = |f₁ − f₂|. Doppler effect: f' = f(v ± v_o)/(v ∓ v_s).",
+        3: "Analyse spring-mass and pendulum systems for changes in time period, solve standing-wave and resonance problems in strings and pipes, and apply the Doppler effect to moving-source/observer numericals."
+    },
+    'Thermodynamics': {
+        1: "Thermodynamics tracks energy as heat and work flow into or out of a system. The first law is simply energy conservation applied to heat engines, while entropy describes which processes happen naturally on their own.",
+        2: "First law: ΔQ = ΔU + ΔW. Ideal gas law: PV = nRT. Cp − Cv = R. Carnot efficiency: η = 1 − T_cold/T_hot. Adiabatic process: PV^γ = constant.",
+        3: "Apply the first law to isothermal, adiabatic, isochoric and isobaric processes on a P-V diagram, find work done as the area under the curve, and compute Carnot efficiency given reservoir temperatures."
+    },
+    'Electrostatics': {
+        1: "Electric charge creates a field around itself that pushes or pulls other charges, similar to how mass creates a gravitational field — Coulomb's law is the electrical analogue of Newton's law of gravitation.",
+        2: "Coulomb's law: F = kq₁q₂/r². Electric field: E = F/q = kq/r². Potential: V = kq/r. Parallel-plate capacitance: C = ε₀A/d. Gauss's law: ∮E·dA = Q_enc/ε₀.",
+        3: "Use Gauss's law for symmetric charge distributions (spheres, cylinders, sheets), solve series/parallel capacitor combination and energy-stored problems, and apply potential energy to charged-particle motion."
+    },
+    'Current Electricity': {
+        1: "Current is the organised flow of charge through a conductor, driven by a potential difference — much like water flows downhill because of a height difference, charge flows because of a voltage difference.",
+        2: "Ohm's law: V = IR. Resistivity: R = ρl/A. Kirchhoff's laws: ΣI = 0 at a junction, ΣV = 0 around a loop. Power: P = VI = I²R. Series: R = R₁+R₂; Parallel: 1/R = 1/R₁+1/R₂.",
+        3: "Solve resistor-network problems with Kirchhoff's laws, analyse Wheatstone bridge and potentiometer circuits, and calculate heating effects and electrical energy consumption in multi-component circuits."
+    },
+    'Magnetism': {
+        1: "Moving charges create magnetic fields, and magnetic fields push on moving charges — magnetism is fundamentally about charges in motion, which is why a stationary charge feels no magnetic force at all.",
+        2: "Force on a moving charge: F = qvB sinθ. Force on a current-carrying wire: F = BIL sinθ. Field of a long straight wire: B = μ₀I/2πr. Torque on a current loop: τ = NIAB sinθ.",
+        3: "Apply circular/helical motion of charged particles in magnetic fields (radius r = mv/qB) to velocity-selector and cyclotron problems, and find the field due to combinations of wires, loops, and solenoids."
+    },
+    'Optics': {
+        1: "Light can be treated as rays that travel in straight lines, bend at surfaces, and reflect off mirrors — ray optics explains everyday experiences like why a straw looks bent in water or why mirrors flip your image.",
+        2: "Mirror formula: 1/v + 1/u = 1/f. Lens formula: 1/v − 1/u = 1/f. Magnification: m = v/u = h'/h. Lens maker's formula: 1/f = (n−1)(1/R₁ − 1/R₂). Snell's law: n₁ sinθ₁ = n₂ sinθ₂.",
+        3: "Solve lens/mirror combination problems for image position and nature, apply Snell's law to total internal reflection and prism deviation, and find the magnifying power of simple microscopes and telescopes."
+    },
+    'Modern Physics': {
+        1: "At very small scales, energy and matter behave in chunks rather than continuously — light arrives as photons, and atoms emit or absorb energy only in fixed steps, not gradually.",
+        2: "Photoelectric equation: hf = φ + KE_max. Bohr model: E_n = −13.6/n² eV. Radioactive decay: N = N₀e^(−λt), half-life t½ = 0.693/λ. Mass-energy equivalence: E = mc².",
+        3: "Solve photoelectric threshold-frequency and stopping-potential problems, apply Bohr's model to transition energies/wavelengths in hydrogen-like atoms, and use decay laws to find remaining activity over time."
+    }
+};
+
+// 10 dummy MCQs per entry test (development-stage content, per spec),
+// cycling through the canonical topic list so every test samples broadly
+// across the Physics syllabus. answer = index of correct option.
+function buildPhysicsEntryQuestions() {
+    const bank = [
+        { topic: 'Units and Dimensions', text: 'Which of these is a fundamental (base) SI unit?', options: ['Newton', 'Joule', 'Kilogram', 'Watt'], answer: 2 },
+        { topic: 'Kinematics', text: 'A body moving with uniform acceleration covers a distance given by which equation?', options: ['s = ut + ½at²', 's = ut', 's = at²', 's = u + at'], answer: 0 },
+        { topic: 'Laws of Motion', text: "Newton's First Law is also known as the law of:", options: ['Acceleration', 'Inertia', 'Action-reaction', 'Gravitation'], answer: 1 },
+        { topic: 'Work, Energy and Power', text: 'The SI unit of power is the:', options: ['Joule', 'Newton', 'Watt', 'Pascal'], answer: 2 },
+        { topic: 'Rotational Motion', text: 'The rotational analogue of mass is:', options: ['Torque', 'Angular velocity', 'Moment of inertia', 'Angular momentum'], answer: 2 },
+        { topic: 'Gravitation', text: "The value of escape velocity from Earth's surface is approximately:", options: ['1.1 km/s', '7.9 km/s', '11.2 km/s', '29.8 km/s'], answer: 2 },
+        { topic: 'Oscillations and Waves', text: 'The time period of a simple pendulum depends on:', options: ['Mass of the bob', 'Amplitude only', 'Length of the pendulum and g', 'Material of the string'], answer: 2 },
+        { topic: 'Thermodynamics', text: 'The first law of thermodynamics is a statement of:', options: ['Entropy increase', 'Conservation of energy', 'Absolute zero', 'Ideal gas behaviour'], answer: 1 },
+        { topic: 'Electrostatics', text: 'The SI unit of electric potential is the:', options: ['Ampere', 'Volt', 'Ohm', 'Farad'], answer: 1 },
+        { topic: 'Current Electricity', text: "Ohm's Law relates voltage, current and:", options: ['Power', 'Resistance', 'Charge', 'Energy'], answer: 1 },
+        { topic: 'Magnetism', text: 'The SI unit of magnetic field strength is the:', options: ['Tesla', 'Weber', 'Henry', 'Gauss'], answer: 0 },
+        { topic: 'Optics', text: 'A converging lens is also called a:', options: ['Concave lens', 'Convex lens', 'Plano lens', 'Diverging lens'], answer: 1 },
+        { topic: 'Modern Physics', text: 'The photoelectric effect was explained by:', options: ['Newton', 'Maxwell', 'Einstein', 'Bohr'], answer: 2 }
+    ];
+
+    // Build 3 tests of 10 questions each, cycling through the bank with a
+    // varied starting offset per test so each diagnostic samples a
+    // slightly different slice of the syllabus.
+    const tests = { 1: [], 2: [], 3: [] };
+    for (const t of [1, 2, 3]) {
+        for (let i = 0; i < 10; i++) {
+            const base = bank[(i + (t - 1) * 4) % bank.length];
+            tests[t].push({ ...base, text: `[Entry Test ${t} · Q${i + 1}] ${base.text}` });
+        }
+    }
+    return tests;
+}
+const PHYSICS_ENTRY_QUESTIONS = buildPhysicsEntryQuestions();
+
+// Beginner / Intermediate / Advanced classification thresholds, applied to
+// a percentage score on an entry test (Section 1.5 of the spec).
+function classifyPhysicsProficiency(percentScore) {
+    if (percentScore >= 75) return 'Advanced';
+    if (percentScore >= 45) return 'Intermediate';
+    return 'Beginner';
+}
+
 module.exports = {
     pool, initSchema, QUESTIONS, computeTargets, TOPIC_BANK, AIM_BASE_TARGETS, RESERVED_CATEGORIES,
-    predictCutoff, HISTORICAL_CUTOFFS, STATE_ADJUSTMENT
+    predictCutoff, HISTORICAL_CUTOFFS, STATE_ADJUSTMENT,
+    refreshCutoffCache, getCachedCutoffRows, isCutoffCacheStale,
+    PHYSICS_TOPICS, PHYSICS_TERM_CONTENT, PHYSICS_ENTRY_QUESTIONS, classifyPhysicsProficiency
 };

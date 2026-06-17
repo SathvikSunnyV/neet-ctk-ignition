@@ -85,4 +85,26 @@ async function generateRecommendations(rows) {
     }
 }
 
-module.exports = { generateRecommendations, ruleBasedRecommendation };
+module.exports = { generateRecommendations, ruleBasedRecommendation, generatePhysicsRecommendations };
+
+// ---------------------------------------------------------------------------
+// PHYSICS STUDENT MODULE — personalised Physics recommendations
+// (Section 7 of the Physics Student Module spec). Deterministic and driven
+// entirely by the student's own topic accuracy — nothing hardcoded.
+// ---------------------------------------------------------------------------
+function generatePhysicsRecommendations(topicStats) {
+    // topicStats: [{ topic, accuracy, weakestTermLabel }]
+    return topicStats.map(t => {
+        const actions = [];
+        if (t.accuracy < 75) actions.push('Review Term 1 conceptual materials');
+        actions.push(`Revise the Term 2 formula sheet for "${t.topic}"`);
+        actions.push(`Watch the related Physics lecture on "${t.topic}"`);
+        actions.push('Attempt a fresh practice test on this topic');
+        return {
+            topic: t.topic,
+            accuracy: t.accuracy,
+            message: `Your accuracy in ${t.topic} is ${t.accuracy}%.`,
+            actions
+        };
+    });
+}
