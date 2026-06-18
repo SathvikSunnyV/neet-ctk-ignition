@@ -548,10 +548,50 @@
       <div id="mySubmissionsList" class="mt-2"></div>
     </div>
 
+    <!-- ===== CHAPTER MANAGEMENT ===== -->
+    <div class="card">
+      <h3>📂 Chapter management</h3>
+      <p style="color:var(--ink-soft); font-size:0.92rem; margin-bottom:1rem;">The whole platform is organised chapter-wise. Create chapters here, then assign materials, tests and lecture links to them below. Drag the ↕ handles to reorder; the order shown here is the order students see.</p>
+      <div class="grid-2">
+        <div class="field-group">
+          <label class="field-label" for="chapterSubjectSelect">Subject</label>
+          <select id="chapterSubjectSelect"><option>Physics</option><option>Chemistry</option><option>Biology</option></select>
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="newChapterName">New chapter name</label>
+          <input type="text" id="newChapterName" placeholder="e.g. Thermodynamics">
+        </div>
+        <div class="field-group" style="grid-column:1/-1;">
+          <label class="field-label" for="newChapterDesc">Description (optional)</label>
+          <input type="text" id="newChapterDesc" placeholder="What does this chapter cover?">
+        </div>
+      </div>
+      <button id="createChapterBtn" class="btn btn-primary">+ Add chapter</button>
+      <div id="chapterMessage" class="mt-2"></div>
+      <div id="chapterList" class="mt-2"></div>
+    </div>
+
     <!-- ===== TEST SCHEDULING ===== -->
     <div class="card">
       <h3>📝 Schedule a test</h3>
-      <p style="color:var(--ink-soft); font-size:0.92rem; margin-bottom:1rem;">Create MCQ or fill-in-the-blank questions. Students see the test once the scheduled time has passed (leave blank to publish immediately).</p>
+      <p style="color:var(--ink-soft); font-size:0.92rem; margin-bottom:1rem;">Create MCQ or fill-in-the-blank questions manually, or upload a PDF / image of an existing test and let OCR extract the questions for you to review.</p>
+
+      <div class="flex-row mt-1" style="margin-bottom:1rem;">
+        <div class="field-group" style="flex:1; min-width:220px; margin-bottom:0;">
+          <label class="field-label" for="ocrFileInput">OCR upload (PDF or image of a test paper)</label>
+          <input type="file" id="ocrFileInput" accept=".pdf,.png,.jpg,.jpeg,.webp">
+        </div>
+        <button id="ocrExtractBtn" class="btn btn-outline" style="align-self:flex-end;">Extract questions</button>
+      </div>
+      <div id="ocrStatus"></div>
+      <div id="ocrPreviewContainer" class="mt-1"></div>
+
+      <hr class="divider">
+
+      <div id="testEditingBanner" class="mt-1" style="display:none;">
+        <span class="badge warn">Editing an existing test — saving will update it in place.</span>
+        <button id="cancelTestEditBtn" class="btn btn-outline" style="margin-left:0.5rem;">Cancel edit</button>
+      </div>
 
       <div class="grid-2">
         <div class="field-group">
@@ -564,7 +604,7 @@
         </div>
         <div class="field-group">
           <label class="field-label" for="testChapter">Chapter</label>
-          <input type="text" id="testChapter" placeholder="e.g. Rotational Mechanics">
+          <select id="testChapter"><option value="">— No chapter —</option></select>
         </div>
         <div class="field-group">
           <label class="field-label" for="testDifficulty">Difficulty</label>
@@ -621,8 +661,12 @@
           <select id="materialSubject"><option>Physics</option><option>Chemistry</option><option>Biology</option></select>
         </div>
         <div class="field-group">
-          <label class="field-label" for="materialChapter">Chapter / Topic (optional)</label>
-          <input type="text" id="materialChapter" placeholder="e.g. Human Physiology">
+          <label class="field-label" for="materialChapter">Chapter</label>
+          <select id="materialChapter"><option value="">— No chapter —</option></select>
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="materialTopic">Topic (optional)</label>
+          <input type="text" id="materialTopic" placeholder="e.g. Projectile motion">
         </div>
         <div class="field-group" id="materialTermGroup" style="display:none;">
           <label class="field-label" for="materialTerm">Term (Physics Student Module)</label>
@@ -655,6 +699,10 @@
         </div>
       </div>
 
+      <div id="materialEditingBanner" style="display:none;" class="mt-1">
+        <span class="badge warn">Editing an existing material.</span>
+        <button id="cancelMaterialEditBtn" class="btn btn-outline" style="margin-left:0.5rem;">Cancel edit</button>
+      </div>
       <button id="uploadMaterialBtn" class="btn btn-primary btn-block mt-1">Publish to students</button>
       <div id="materialUploadMessage" class="mt-2"></div>
     </div>
@@ -665,6 +713,58 @@
         <button id="refreshFacultyMaterialsBtn" class="btn btn-outline">Refresh</button>
       </div>
       <div id="facultyMaterialsList" class="mt-2"></div>
+    </div>
+
+    <!-- ===== FACULTY LECTURE LINKS (chapter-wise, instant publish) ===== -->
+    <div class="card">
+      <h3>🎬 Lecture links (chapter-wise)</h3>
+      <p style="color:var(--ink-soft); font-size:0.92rem; margin-bottom:1rem;">Add, edit or remove your own lecture links, organised by chapter. Published instantly — separate from the "Submit for approval" queue above.</p>
+      <div class="grid-2">
+        <div class="field-group" style="grid-column:1/-1;">
+          <label class="field-label" for="facLectureTitle">Title</label>
+          <input type="text" id="facLectureTitle" placeholder="e.g. Kinematics — full walkthrough">
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="facLectureSubject">Subject</label>
+          <select id="facLectureSubject"><option>Physics</option><option>Chemistry</option><option>Biology</option></select>
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="facLectureChapter">Chapter</label>
+          <select id="facLectureChapter"><option value="">— No chapter —</option></select>
+        </div>
+        <div class="field-group" style="grid-column:1/-1;">
+          <label class="field-label" for="facLectureUrl">Video URL</label>
+          <input type="url" id="facLectureUrl" placeholder="https://www.youtube.com/watch?v=...">
+        </div>
+      </div>
+      <div id="facLectureEditingBanner" style="display:none;" class="mt-1">
+        <span class="badge warn">Editing an existing lecture link.</span>
+        <button id="cancelFacLectureEditBtn" class="btn btn-outline" style="margin-left:0.5rem;">Cancel edit</button>
+      </div>
+      <button id="facLectureSaveBtn" class="btn btn-primary btn-block mt-1">Publish lecture link</button>
+      <div id="facLectureMessage" class="mt-2"></div>
+      <div id="facLectureList" class="mt-2"></div>
+    </div>
+
+    <!-- ===== INDIVIDUAL STUDENT ANALYTICS ===== -->
+    <div class="card">
+      <h3>🧑‍🎓 Individual student analytics</h3>
+      <p style="color:var(--ink-soft); font-size:0.92rem; margin-bottom:1rem;">Pick a student who has engaged with your tests, materials or lectures to see their complete performance history.</p>
+      <div class="flex-row">
+        <select id="studentAnalyticsSelect" style="flex:1; min-width:240px;"><option value="">Select a student…</option></select>
+        <button id="loadStudentAnalyticsBtn" class="btn btn-outline">View analytics</button>
+      </div>
+      <div id="studentAnalyticsResult" class="mt-2"></div>
+    </div>
+
+    <!-- ===== ERROR ATLAS (HOTSPOT ANALYSIS) ===== -->
+    <div class="card">
+      <div class="flex-between">
+        <h3 style="margin-bottom:0;">🗺️ Error Atlas — hotspot analysis</h3>
+        <button id="refreshErrorAtlasBtn" class="btn btn-outline">Refresh</button>
+      </div>
+      <p style="color:var(--ink-soft); font-size:0.92rem; margin:0.5rem 0 1rem;">Chapter-wise breakdown of the questions and concepts students most often get wrong across your tests.</p>
+      <div id="errorAtlasContainer"></div>
     </div>
 
     <!-- ===== LECTURER ANALYTICS DASHBOARD ===== -->

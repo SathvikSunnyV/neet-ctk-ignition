@@ -782,12 +782,69 @@ window.toggleTqOptions = (idx) => {
   row.querySelector('.tq-fill-answer').style.display = type === 'fill_blank' ? '' : 'none';
 };
 
+let testEditingId = null;
+
+function resetTestForm() {
+  testEditingId = null;
+  document.getElementById('testEditingBanner').style.display = 'none';
+  document.getElementById('createTestBtn').textContent = 'Schedule test';
+  document.getElementById('testTitle').value = '';
+  document.getElementById('testChapter').value = '';
+  document.getElementById('testAssignEmails').value = '';
+  document.getElementById('testQuestionsContainer').innerHTML = '';
+  testQuestionCount = 0;
+}
+
+function loadQuestionIntoForm(q) {
+  const idx = testQuestionCount; // addTestQuestionRow() increments this itself and uses this exact value for the row id — do not increment here too.
+  addTestQuestionRow();
+  const row = document.getElementById(`tq-${idx}`);
+  row.querySelector('.tq-type').value = q.qType || q.q_type || 'mcq';
+  toggleTqOptions(idx);
+  row.querySelector('.tq-topic').value = q.topic || '';
+  row.querySelector('.tq-text').value = q.questionText || q.question_text || '';
+  const qType = q.qType || q.q_type;
+  if (qType === 'mcq') {
+    const opts = q.options || [];
+    const optInputs = row.querySelectorAll('.tq-opt');
+    opts.forEach((o, i) => { if (optInputs[i]) optInputs[i].value = o; });
+    const correctIdx = (q.correctAnswer ?? q.correct_answer);
+    row.querySelector('.tq-correct-mcq').value = correctIdx !== null && correctIdx !== undefined && correctIdx !== '' ? (parseInt(correctIdx, 10) + 1) : 1;
+  } else {
+    row.querySelector('.tq-correct-fill').value = q.correctAnswer || q.correct_answer || '';
+  }
+}
+
+window.editTest = async (id) => {
+  try {
+    const data = await api(`/api/faculty/tests/${id}`);
+    testEditingId = id;
+    document.getElementById('testEditingBanner').style.display = '';
+    document.getElementById('createTestBtn').textContent = 'Save changes';
+    document.getElementById('testTitle').value = data.test.title;
+    document.getElementById('testSubject').value = data.test.subject;
+    document.getElementById('testChapter').value = data.test.chapter_id || '';
+    document.getElementById('testDifficulty').value = data.test.difficulty;
+    document.getElementById('testTimeLimit').value = data.test.time_limit_min;
+    document.getElementById('testScheduledAt').value = data.test.scheduled_at ? new Date(data.test.scheduled_at).toISOString().slice(0, 16) : '';
+    document.getElementById('testNegativeMarking').checked = !!data.test.negative_marking;
+    document.getElementById('testRandomize').checked = !!data.test.randomize;
+    document.getElementById('testAssignEmails').value = (data.assignments || []).map(a => a.student_email).join(', ');
+    document.getElementById('testQuestionsContainer').innerHTML = '';
+    testQuestionCount = 0;
+    data.questions.forEach(loadQuestionIntoForm);
+    document.getElementById('testTitle').scrollIntoView({ behavior: 'smooth', block: 'center' });
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+};
+
 async function createTest() {
   const btn = document.getElementById('createTestBtn');
   const msgEl = document.getElementById('createTestMessage');
   const title = document.getElementById('testTitle').value.trim();
   const subject = document.getElementById('testSubject').value;
-  const chapter = document.getElementById('testChapter').value.trim();
+  const chapterId = document.getElementById('testChapter').value || null;
   const difficulty = document.getElementById('testDifficulty').value;
   const timeLimitMin = parseInt(document.getElementById('testTimeLimit').value, 10) || 30;
   const scheduledAtRaw = document.getElementById('testScheduledAt').value;
@@ -824,25 +881,30 @@ async function createTest() {
   let scheduledAt = null;
   if (scheduledAtRaw) scheduledAt = new Date(scheduledAtRaw).toISOString();
 
-  btn.disabled = true; btn.textContent = 'Scheduling...';
+  btn.disabled = true; btn.textContent = testEditingId ? 'Saving...' : 'Scheduling...';
   try {
-    await api('/api/faculty/tests', {
-      method: 'POST',
-      body: JSON.stringify({ title, subject, chapter, difficulty, timeLimitMin, negativeMarking, randomize, scheduledAt, questions, assignedEmails })
-    });
-    msgEl.innerHTML = `<span class="badge success">✅ Test scheduled successfully${assignedEmails.length ? ` and assigned to ${assignedEmails.length} student(s)` : ''}.</span>`;
-    showToast('Test scheduled.', 'success');
-    document.getElementById('testTitle').value = '';
-    document.getElementById('testChapter').value = '';
-    document.getElementById('testAssignEmails').value = '';
-    document.getElementById('testQuestionsContainer').innerHTML = '';
-    testQuestionCount = 0;
+    if (testEditingId) {
+      await api(`/api/faculty/tests/${testEditingId}`, {
+        method: 'PUT',
+        body: JSON.stringify({ title, subject, chapterId, difficulty, timeLimitMin, negativeMarking, randomize, scheduledAt, questions })
+      });
+      msgEl.innerHTML = `<span class="badge success">✅ Test updated.</span>`;
+      showToast('Test updated.', 'success');
+    } else {
+      await api('/api/faculty/tests', {
+        method: 'POST',
+        body: JSON.stringify({ title, subject, chapterId, difficulty, timeLimitMin, negativeMarking, randomize, scheduledAt, questions, assignedEmails })
+      });
+      msgEl.innerHTML = `<span class="badge success">✅ Test scheduled successfully${assignedEmails.length ? ` and assigned to ${assignedEmails.length} student(s)` : ''}.</span>`;
+      showToast('Test scheduled.', 'success');
+    }
+    resetTestForm();
     renderFacultyTests();
   } catch (err) {
     msgEl.innerHTML = `<span class="badge danger">${err.message}</span>`;
     showToast(err.message, 'error');
   } finally {
-    btn.disabled = false; btn.textContent = 'Schedule test';
+    btn.disabled = false; btn.textContent = testEditingId ? 'Save changes' : 'Schedule test';
   }
 }
 
@@ -858,9 +920,12 @@ async function renderFacultyTests() {
           <strong>${t.title}</strong>
           <div class="helper-text">${t.subject}${t.chapter ? ' · ' + t.chapter : ''} · ${t.question_count} question(s) · ${t.attempt_count} attempt(s)</div>
         </div>
-        <span class="badge ${t.scheduled_at && new Date(t.scheduled_at) > new Date() ? 'warn' : 'success'}">
-          ${t.scheduled_at ? new Date(t.scheduled_at).toLocaleString() : 'Live now'}
-        </span>
+        <div class="flex-row">
+          <span class="badge ${t.scheduled_at && new Date(t.scheduled_at) > new Date() ? 'warn' : 'success'}">
+            ${t.scheduled_at ? new Date(t.scheduled_at).toLocaleString() : 'Live now'}
+          </span>
+          <button class="btn btn-outline" onclick="editTest(${t.id})">Edit</button>
+        </div>
       </div>`).join('') : `<div class="empty-state"><p>No tests scheduled yet.</p></div>`;
   } catch (err) {
     container.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
@@ -906,6 +971,383 @@ async function renderFacultyAnalytics() {
 }
 
 // ====================================================================
+// CHAPTER MANAGEMENT — FACULTY
+// ====================================================================
+let lastChaptersBySubject = {};
+
+async function populateChapterSelects() {
+  const subject = document.getElementById('chapterSubjectSelect') ? document.getElementById('chapterSubjectSelect').value : 'Physics';
+  try {
+    const chapters = await api(`/api/chapters?subject=${encodeURIComponent(subject)}`);
+    lastChaptersBySubject[subject] = chapters;
+    const optionsHtml = `<option value="">— No chapter —</option>` + chapters.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+    ['testChapter', 'materialChapter', 'facLectureChapter'].forEach(id => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const prevValue = el.value;
+      el.innerHTML = optionsHtml;
+      if (chapters.some(c => String(c.id) === prevValue)) el.value = prevValue;
+    });
+    return chapters;
+  } catch (err) {
+    showToast(err.message, 'error');
+    return [];
+  }
+}
+
+async function renderChapterList() {
+  const container = document.getElementById('chapterList');
+  if (!container) return;
+  const subject = document.getElementById('chapterSubjectSelect').value;
+  container.innerHTML = `<div class="loading-row"><div class="spinner"></div></div>`;
+  try {
+    const chapters = await api(`/api/chapters?subject=${encodeURIComponent(subject)}`);
+    lastChaptersBySubject[subject] = chapters;
+    container.innerHTML = chapters.length ? chapters.map((c, i) => `
+      <div class="flex-between" style="padding:0.55rem 0; border-bottom:1px solid var(--border);">
+        <div>
+          <strong>${c.name}</strong>
+          ${c.description ? `<div class="helper-text">${c.description}</div>` : ''}
+          <div class="helper-text">${c.material_count} material(s) · ${c.test_count} test(s) · ${c.lecture_count} lecture(s)</div>
+        </div>
+        <div class="flex-row">
+          <button class="btn btn-outline" title="Move up" ${i === 0 ? 'disabled' : ''} onclick="moveChapter(${i},-1)">↑</button>
+          <button class="btn btn-outline" title="Move down" ${i === chapters.length - 1 ? 'disabled' : ''} onclick="moveChapter(${i},1)">↓</button>
+          <button class="btn btn-outline" onclick="renameChapter(${c.id}, '${c.name.replace(/'/g, "\\'")}')">Rename</button>
+          <button class="btn btn-outline" onclick="removeChapter(${c.id})">Delete</button>
+        </div>
+      </div>`).join('') : `<div class="empty-state"><p>No chapters yet for ${subject} — add one above.</p></div>`;
+  } catch (err) {
+    container.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
+  }
+}
+
+async function createChapter() {
+  const btn = document.getElementById('createChapterBtn');
+  const msgEl = document.getElementById('chapterMessage');
+  const subject = document.getElementById('chapterSubjectSelect').value;
+  const name = document.getElementById('newChapterName').value.trim();
+  const description = document.getElementById('newChapterDesc').value.trim();
+  if (!name) { msgEl.innerHTML = `<span class="badge danger">Please enter a chapter name.</span>`; return; }
+  btn.disabled = true;
+  try {
+    await api('/api/faculty/chapters', { method: 'POST', body: JSON.stringify({ subject, name, description }) });
+    msgEl.innerHTML = `<span class="badge success">✅ Chapter added.</span>`;
+    document.getElementById('newChapterName').value = '';
+    document.getElementById('newChapterDesc').value = '';
+    showToast('Chapter added.', 'success');
+    renderChapterList();
+    populateChapterSelects();
+  } catch (err) {
+    msgEl.innerHTML = `<span class="badge danger">${err.message}</span>`;
+    showToast(err.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+window.renameChapter = async (id, currentName) => {
+  const name = prompt('Rename chapter:', currentName);
+  if (!name || name.trim() === currentName) return;
+  try {
+    await api(`/api/faculty/chapters/${id}`, { method: 'PUT', body: JSON.stringify({ name: name.trim() }) });
+    showToast('Chapter renamed.', 'success');
+    renderChapterList();
+    populateChapterSelects();
+    renderFacultyTests();
+    renderFacultyMaterials();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+};
+
+window.removeChapter = async (id) => {
+  if (!confirm('Delete this chapter? Materials, tests and lectures linked to it will stay, just unlinked.')) return;
+  try {
+    await api(`/api/faculty/chapters/${id}`, { method: 'DELETE' });
+    showToast('Chapter deleted.', '');
+    renderChapterList();
+    populateChapterSelects();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+};
+
+window.moveChapter = async (index, direction) => {
+  const subject = document.getElementById('chapterSubjectSelect').value;
+  const chapters = lastChaptersBySubject[subject] || [];
+  const target = index + direction;
+  if (target < 0 || target >= chapters.length) return;
+  const order = chapters.map(c => c.id);
+  [order[index], order[target]] = [order[target], order[index]];
+  try {
+    await api('/api/faculty/chapters/reorder', { method: 'POST', body: JSON.stringify({ order }) });
+    renderChapterList();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+};
+
+// ====================================================================
+// OCR TEST UPLOAD — FACULTY
+// ====================================================================
+let ocrExtractedQuestions = [];
+
+async function ocrExtractQuestions() {
+  const fileInput = document.getElementById('ocrFileInput');
+  const statusEl = document.getElementById('ocrStatus');
+  const btn = document.getElementById('ocrExtractBtn');
+  const file = fileInput.files[0];
+  if (!file) { statusEl.innerHTML = `<span class="badge danger">Please choose a PDF or image first.</span>`; return; }
+
+  btn.disabled = true; btn.textContent = 'Extracting...';
+  statusEl.innerHTML = `<div class="loading-row"><div class="spinner"></div></div>`;
+  try {
+    const formData = new FormData();
+    formData.append('file', file);
+    const data = await apiUpload('/api/faculty/tests/ocr-extract', formData);
+    ocrExtractedQuestions = data.questions;
+    statusEl.innerHTML = `<span class="badge success">✅ Extracted ${data.questions.length} question(s) via ${data.method === 'ai-assisted' ? 'AI-assisted parsing' : 'pattern matching'}. Review and edit below, then click "Add to test form".</span>`;
+    renderOcrPreview();
+  } catch (err) {
+    statusEl.innerHTML = `<span class="badge danger">${err.message}</span>`;
+    showToast(err.message, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Extract questions';
+  }
+}
+
+function renderOcrPreview() {
+  const container = document.getElementById('ocrPreviewContainer');
+  if (!ocrExtractedQuestions.length) { container.innerHTML = ''; return; }
+  container.innerHTML = `
+    <div class="card" style="background:var(--cream-deep); border:none;">
+      <h4 style="margin-bottom:0.6rem;">Extracted questions (${ocrExtractedQuestions.length}) — edit before adding</h4>
+      ${ocrExtractedQuestions.map((q, i) => `
+        <div class="quiz-item" style="background:var(--paper);">
+          <div class="flex-between"><span class="q-meta">Question ${i + 1}${q.needsReview ? ' · <span class="badge warn">needs review</span>' : ''}</span>
+            <button class="btn btn-outline" onclick="removeOcrQuestion(${i})">Remove</button></div>
+          <textarea class="ocr-q-text" rows="2" data-idx="${i}" style="margin-bottom:0.5rem;">${q.questionText}</textarea>
+          ${q.options.map((o, oi) => `<input type="text" class="ocr-q-opt" data-idx="${i}" data-oi="${oi}" value="${o.replace(/"/g, '&quot;')}" style="margin-bottom:0.4rem;">`).join('')}
+          <label class="field-label">Correct option (1-${q.options.length})</label>
+          <input type="number" class="ocr-q-correct" data-idx="${i}" min="1" max="${q.options.length}" value="${q.correctAnswerIndex !== null ? q.correctAnswerIndex + 1 : ''}" placeholder="?">
+        </div>`).join('')}
+      <button class="btn btn-primary" onclick="addOcrQuestionsToTestForm()">Add ${ocrExtractedQuestions.length} question(s) to test form</button>
+    </div>`;
+}
+
+window.removeOcrQuestion = (idx) => {
+  ocrExtractedQuestions.splice(idx, 1);
+  renderOcrPreview();
+};
+
+window.addOcrQuestionsToTestForm = () => {
+  // Sync any edits made in the preview textareas/inputs back into the array first.
+  document.querySelectorAll('.ocr-q-text').forEach(el => { ocrExtractedQuestions[el.dataset.idx].questionText = el.value; });
+  document.querySelectorAll('.ocr-q-opt').forEach(el => { ocrExtractedQuestions[el.dataset.idx].options[el.dataset.oi] = el.value; });
+  document.querySelectorAll('.ocr-q-correct').forEach(el => {
+    const v = parseInt(el.value, 10);
+    ocrExtractedQuestions[el.dataset.idx].correctAnswerIndex = Number.isNaN(v) ? null : v - 1;
+  });
+
+  for (const q of ocrExtractedQuestions) {
+    if (q.correctAnswerIndex === null || q.correctAnswerIndex === undefined) {
+      showToast('Please fill in the correct option for every question before adding (marked "?").', 'error');
+      return;
+    }
+    loadQuestionIntoForm({ qType: 'mcq', questionText: q.questionText, topic: q.topic, options: q.options, correctAnswer: String(q.correctAnswerIndex) });
+  }
+  showToast(`${ocrExtractedQuestions.length} question(s) added to the test form below.`, 'success');
+  ocrExtractedQuestions = [];
+  document.getElementById('ocrPreviewContainer').innerHTML = '';
+  document.getElementById('ocrFileInput').value = '';
+  document.getElementById('testTitle').scrollIntoView({ behavior: 'smooth', block: 'center' });
+};
+
+// ====================================================================
+// FACULTY LECTURE LINKS (chapter-wise CRUD, instant publish)
+// ====================================================================
+let facLectureEditingId = null;
+
+function resetFacLectureForm() {
+  facLectureEditingId = null;
+  document.getElementById('facLectureEditingBanner').style.display = 'none';
+  document.getElementById('facLectureSaveBtn').textContent = 'Publish lecture link';
+  document.getElementById('facLectureTitle').value = '';
+  document.getElementById('facLectureUrl').value = '';
+  document.getElementById('facLectureChapter').value = '';
+}
+
+window.editFacLecture = (id, lectures) => {
+  const l = lectures.find(x => x.id === id);
+  if (!l) return;
+  facLectureEditingId = id;
+  document.getElementById('facLectureEditingBanner').style.display = '';
+  document.getElementById('facLectureSaveBtn').textContent = 'Save changes';
+  document.getElementById('facLectureTitle').value = l.title;
+  document.getElementById('facLectureSubject').value = l.subject || 'Physics';
+  document.getElementById('facLectureChapter').value = l.chapter_id || '';
+  document.getElementById('facLectureUrl').value = l.url;
+  document.getElementById('facLectureTitle').scrollIntoView({ behavior: 'smooth', block: 'center' });
+};
+
+window.deleteFacLecture = async (id) => {
+  if (!confirm('Delete this lecture link?')) return;
+  try {
+    await api(`/api/faculty/lectures/${id}`, { method: 'DELETE' });
+    showToast('Lecture link deleted.', '');
+    renderFacLectures();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+};
+
+async function saveFacLecture() {
+  const btn = document.getElementById('facLectureSaveBtn');
+  const msgEl = document.getElementById('facLectureMessage');
+  const title = document.getElementById('facLectureTitle').value.trim();
+  const subject = document.getElementById('facLectureSubject').value;
+  const chapterId = document.getElementById('facLectureChapter').value || null;
+  const url = document.getElementById('facLectureUrl').value.trim();
+  if (!title || !url) { msgEl.innerHTML = `<span class="badge danger">Please provide a title and URL.</span>`; return; }
+
+  btn.disabled = true;
+  try {
+    if (facLectureEditingId) {
+      await api(`/api/faculty/lectures/${facLectureEditingId}`, { method: 'PUT', body: JSON.stringify({ title, subject, chapterId, url }) });
+      msgEl.innerHTML = `<span class="badge success">✅ Lecture link updated.</span>`;
+    } else {
+      await api('/api/faculty/lectures', { method: 'POST', body: JSON.stringify({ title, subject, chapterId, url }) });
+      msgEl.innerHTML = `<span class="badge success">✅ Lecture link published.</span>`;
+    }
+    resetFacLectureForm();
+    showToast('Saved.', 'success');
+    renderFacLectures();
+  } catch (err) {
+    msgEl.innerHTML = `<span class="badge danger">${err.message}</span>`;
+    showToast(err.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+let lastFacLectures = [];
+
+async function renderFacLectures() {
+  const container = document.getElementById('facLectureList');
+  if (!container) return;
+  container.innerHTML = `<div class="loading-row"><div class="spinner"></div></div>`;
+  try {
+    const lectures = await api('/api/faculty/lectures');
+    lastFacLectures = lectures;
+    container.innerHTML = lectures.length ? lectures.map(l => `
+      <div class="flex-between" style="padding:0.55rem 0; border-bottom:1px solid var(--border);">
+        <div>
+          <strong>${l.title}</strong>
+          <div class="helper-text">${l.subject}${l.chapter_name ? ' · ' + l.chapter_name : ''}</div>
+        </div>
+        <div class="flex-row">
+          <a class="btn btn-outline" href="${l.url}" target="_blank" rel="noopener">Open</a>
+          <button class="btn btn-outline" onclick="editFacLecture(${l.id}, lastFacLectures)">Edit</button>
+          <button class="btn btn-outline" onclick="deleteFacLecture(${l.id})">Delete</button>
+        </div>
+      </div>`).join('') : `<div class="empty-state"><p>No lecture links published yet.</p></div>`;
+  } catch (err) {
+    container.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
+  }
+}
+
+// ====================================================================
+// INDIVIDUAL STUDENT ANALYTICS — FACULTY
+// ====================================================================
+async function populateStudentAnalyticsSelect() {
+  const select = document.getElementById('studentAnalyticsSelect');
+  if (!select) return;
+  try {
+    const students = await api('/api/faculty/students');
+    select.innerHTML = `<option value="">Select a student…</option>` + students.map(s => `<option value="${s.email}">${s.name} (${s.email})</option>`).join('');
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function loadStudentAnalytics() {
+  const email = document.getElementById('studentAnalyticsSelect').value;
+  const container = document.getElementById('studentAnalyticsResult');
+  if (!email) { showToast('Please select a student first.', 'error'); return; }
+  container.innerHTML = `<div class="loading-row"><div class="spinner"></div></div>`;
+  try {
+    const d = await api(`/api/faculty/students/${encodeURIComponent(email)}/analytics`);
+    container.innerHTML = `
+      <div class="stat-tile-grid">
+        <div class="stat-tile"><div class="stat-value">${d.testsAttempted}</div><div class="stat-label">Tests attempted</div></div>
+        <div class="stat-tile"><div class="stat-value">${d.averageScore ?? '—'}</div><div class="stat-label">Avg score</div></div>
+        <div class="stat-tile"><div class="stat-value">${d.averageAccuracyPercent ?? '—'}%</div><div class="stat-label">Avg accuracy</div></div>
+        <div class="stat-tile"><div class="stat-value">${d.materialsCompleted}</div><div class="stat-label">Materials completed</div></div>
+        <div class="stat-tile"><div class="stat-value">${d.lecturesWatched}</div><div class="stat-label">Lectures watched</div></div>
+      </div>
+      <h4 class="mt-2" style="margin-bottom:0.5rem;">Chapter-wise performance</h4>
+      ${d.chapterWisePerformance.length ? d.chapterWisePerformance.map(c => `
+        <div class="flex-between" style="padding:0.4rem 0; border-bottom:1px solid var(--border);">
+          <span>${c.chapter} <span class="helper-text">(${c.correct}/${c.total})</span></span>
+          <span class="badge ${c.accuracyPercent >= 70 ? 'success' : c.accuracyPercent < 50 ? 'danger' : 'warn'}">${c.accuracyPercent}%</span>
+        </div>`).join('') : `<div class="empty-state"><p>No graded attempts yet.</p></div>`}
+      <div class="grid-2 mt-2">
+        <div>
+          <h4 style="margin-bottom:0.5rem;">💪 Strong chapters</h4>
+          ${d.strongChapters.length ? d.strongChapters.map(c => `<span class="badge success" style="margin:0.2rem;">${c.chapter} (${c.accuracyPercent}%)</span>`).join('') : `<p class="helper-text">None yet.</p>`}
+        </div>
+        <div>
+          <h4 style="margin-bottom:0.5rem;">⚠️ Weak chapters</h4>
+          ${d.weakChapters.length ? d.weakChapters.map(c => `<span class="badge danger" style="margin:0.2rem;">${c.chapter} (${c.accuracyPercent}%)</span>`).join('') : `<p class="helper-text">None yet.</p>`}
+        </div>
+      </div>
+      <h4 class="mt-2" style="margin-bottom:0.5rem;">Recent activity</h4>
+      ${d.recentActivity.length ? d.recentActivity.map(a => `
+        <div style="padding:0.4rem 0; border-bottom:1px solid var(--border); font-size:0.88rem;">
+          <span class="badge">${a.kind}</span> ${a.title} — ${a.detail} <span class="helper-text">· ${new Date(a.updated_at).toLocaleString()}</span>
+        </div>`).join('') : `<div class="empty-state"><p>No recent activity.</p></div>`}
+    `;
+  } catch (err) {
+    container.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
+  }
+}
+
+// ====================================================================
+// ERROR ATLAS — HOTSPOT ANALYSIS — FACULTY
+// ====================================================================
+async function renderErrorAtlas() {
+  const container = document.getElementById('errorAtlasContainer');
+  if (!container) return;
+  container.innerHTML = `<div class="loading-row"><div class="spinner"></div></div>`;
+  try {
+    const data = await api('/api/faculty/error-atlas');
+    container.innerHTML = data.chapters.length ? data.chapters.map(c => `
+      <div class="topic-group">
+        <div class="topic-group-header" onclick="this.parentElement.classList.toggle('open')">
+          <span>🔥 ${c.chapter} <span class="helper-text">(${c.totalAttempts} attempt(s))</span></span>
+          <span class="chevron">›</span>
+        </div>
+        <div class="topic-group-body">
+          <h4 style="margin:0.8rem 0 0.5rem;">Hotspot questions</h4>
+          ${c.hotspotQuestions.map(q => `
+            <div class="atlas-item">
+              <div class="topic-row flex-between">
+                <span>${q.questionText}</span>
+                <span class="badge ${q.errorPercentage >= 60 ? 'danger' : q.errorPercentage >= 30 ? 'warn' : ''}">${q.errorPercentage !== null ? q.errorPercentage + '%' : q.mistakeCount + ' miss(es)'}</span>
+              </div>
+              <div class="remedy">${q.testTitle}${q.topic ? ' · ' + q.topic : ''} · ${q.difficulty}</div>
+            </div>`).join('')}
+          <h4 style="margin:0.8rem 0 0.5rem;">Frequently misunderstood concepts</h4>
+          ${c.frequentConcepts.map(fc => `<span class="badge warn" style="margin:0.2rem;">${fc.topic} (${fc.count})</span>`).join('') || '<p class="helper-text">No concept data yet.</p>'}
+        </div>
+      </div>`).join('') : `<div class="empty-state"><p>No mistakes logged yet for your tests.</p></div>`;
+  } catch (err) {
+    container.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
+  }
+}
+
+// ====================================================================
 // STUDY MATERIALS — FACULTY (upload files or share links)
 // ====================================================================
 function toggleMaterialKindFields() {
@@ -919,12 +1361,49 @@ function toggleMaterialTermField() {
   document.getElementById('materialTermGroup').style.display = subject === 'Physics' ? '' : 'none';
 }
 
+let materialEditingId = null;
+
+function resetMaterialForm() {
+  materialEditingId = null;
+  document.getElementById('materialEditingBanner').style.display = 'none';
+  document.getElementById('uploadMaterialBtn').textContent = 'Publish to students';
+  document.getElementById('materialTitle').value = '';
+  document.getElementById('materialChapter').value = '';
+  document.getElementById('materialTopic').value = '';
+  document.getElementById('materialDescription').value = '';
+  document.getElementById('materialTerm').value = '';
+  document.getElementById('materialKind').value = 'file';
+  toggleMaterialKindFields();
+}
+
+window.editMaterial = async (id, materials) => {
+  const m = materials.find(x => x.id === id);
+  if (!m) return;
+  materialEditingId = id;
+  document.getElementById('materialEditingBanner').style.display = '';
+  document.getElementById('uploadMaterialBtn').textContent = 'Save changes';
+  document.getElementById('materialTitle').value = m.title || '';
+  document.getElementById('materialSubject').value = m.subject || 'Physics';
+  toggleMaterialTermField();
+  document.getElementById('materialChapter').value = m.chapter_id || '';
+  document.getElementById('materialTopic').value = m.topic || '';
+  document.getElementById('materialDescription').value = m.description || '';
+  document.getElementById('materialTerm').value = m.term || '';
+  if (m.material_type === 'link') {
+    document.getElementById('materialKind').value = 'link';
+    toggleMaterialKindFields();
+    document.getElementById('materialUrlInput').value = m.external_url || '';
+  }
+  document.getElementById('materialTitle').scrollIntoView({ behavior: 'smooth', block: 'center' });
+};
+
 async function uploadMaterial() {
   const btn = document.getElementById('uploadMaterialBtn');
   const msgEl = document.getElementById('materialUploadMessage');
   const title = document.getElementById('materialTitle').value.trim();
   const subject = document.getElementById('materialSubject').value;
-  const chapter = document.getElementById('materialChapter').value.trim();
+  const chapterId = document.getElementById('materialChapter').value || null;
+  const topic = document.getElementById('materialTopic').value.trim();
   const description = document.getElementById('materialDescription').value.trim();
   const kind = document.getElementById('materialKind').value;
   const term = document.getElementById('materialTerm').value;
@@ -934,9 +1413,16 @@ async function uploadMaterial() {
     return;
   }
 
-  btn.disabled = true; btn.textContent = 'Publishing...';
+  btn.disabled = true; btn.textContent = materialEditingId ? 'Saving...' : 'Publishing...';
   try {
-    if (kind === 'file') {
+    if (materialEditingId) {
+      const externalUrl = document.getElementById('materialKind').value === 'link' ? document.getElementById('materialUrlInput').value.trim() : undefined;
+      const data = await api(`/api/faculty/materials/${materialEditingId}`, {
+        method: 'PUT',
+        body: JSON.stringify({ title, chapterId, topic, description, term: term || null, externalUrl })
+      });
+      msgEl.innerHTML = `<span class="badge success">✅ ${data.message}</span>`;
+    } else if (kind === 'file') {
       const fileInput = document.getElementById('materialFileInput');
       const file = fileInput.files[0];
       if (!file) { msgEl.innerHTML = `<span class="badge danger">Please choose a file.</span>`; btn.disabled = false; btn.textContent = 'Publish to students'; return; }
@@ -944,7 +1430,8 @@ async function uploadMaterial() {
       formData.append('file', file);
       formData.append('title', title);
       formData.append('subject', subject);
-      formData.append('chapter', chapter);
+      if (chapterId) formData.append('chapterId', chapterId);
+      formData.append('topic', topic);
       formData.append('description', description);
       if (term) formData.append('term', term);
       const data = await apiUpload('/api/faculty/materials/upload', formData);
@@ -955,22 +1442,19 @@ async function uploadMaterial() {
       if (!externalUrl) { msgEl.innerHTML = `<span class="badge danger">Please provide a URL.</span>`; btn.disabled = false; btn.textContent = 'Publish to students'; return; }
       const data = await api('/api/faculty/materials/link', {
         method: 'POST',
-        body: JSON.stringify({ title, subject, chapter, description, externalUrl, term: term || null })
+        body: JSON.stringify({ title, subject, chapterId, topic, description, externalUrl, term: term || null })
       });
       msgEl.innerHTML = `<span class="badge success">✅ ${data.message}</span>`;
       document.getElementById('materialUrlInput').value = '';
     }
-    document.getElementById('materialTitle').value = '';
-    document.getElementById('materialChapter').value = '';
-    document.getElementById('materialDescription').value = '';
-    document.getElementById('materialTerm').value = '';
-    showToast('Material published to students.', 'success');
+    resetMaterialForm();
+    showToast(materialEditingId ? 'Material updated.' : 'Material published to students.', 'success');
     renderFacultyMaterials();
   } catch (err) {
     msgEl.innerHTML = `<span class="badge danger">${err.message}</span>`;
     showToast(err.message, 'error');
   } finally {
-    btn.disabled = false; btn.textContent = 'Publish to students';
+    btn.disabled = false; btn.textContent = materialEditingId ? 'Save changes' : 'Publish to students';
   }
 }
 
@@ -980,19 +1464,25 @@ function formatFileSize(bytes) {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+let lastFacultyMaterials = [];
+
 async function renderFacultyMaterials() {
   const container = document.getElementById('facultyMaterialsList');
   if (!container) return;
   container.innerHTML = `<div class="loading-row"><div class="spinner"></div></div>`;
   try {
     const materials = await api('/api/faculty/materials');
+    lastFacultyMaterials = materials;
     container.innerHTML = materials.length ? materials.map(m => `
       <div class="flex-between" style="padding:0.6rem 0; border-bottom:1px solid var(--border);">
         <div>
           <strong>${m.title}</strong>
-          <div class="helper-text">${m.subject}${m.chapter ? ' · ' + m.chapter : ''}${m.term ? ' · Term ' + m.term : ''} · ${m.material_type === 'file' ? (m.file_name + ' · ' + formatFileSize(m.file_size)) : (m.material_type === 'note' ? 'Note' : 'Link')}</div>
+          <div class="helper-text">${m.subject}${m.chapter ? ' · ' + m.chapter : ''}${m.topic ? ' · ' + m.topic : ''}${m.term ? ' · Term ' + m.term : ''} · ${m.material_type === 'file' ? (m.file_name + ' · ' + formatFileSize(m.file_size)) : (m.material_type === 'note' ? 'Note' : 'Link')}</div>
         </div>
-        <button class="btn btn-outline" onclick="deleteMaterial(${m.id})">Remove</button>
+        <div class="flex-row">
+          <button class="btn btn-outline" onclick="editMaterial(${m.id}, lastFacultyMaterials)">Edit</button>
+          <button class="btn btn-outline" onclick="deleteMaterial(${m.id})">Remove</button>
+        </div>
       </div>`).join('') : `<div class="empty-state"><p>No materials uploaded yet.</p></div>`;
   } catch (err) {
     container.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
@@ -1685,7 +2175,11 @@ function showPage(pageId) {
   if (pageId === 'practice') renderPractice();
   if (pageId === 'progress') renderProgress();
   if (pageId === 'physics') loadPhysicsModule();
-  if (pageId === 'lecturer') { renderMySubmissions(); renderFacultyTests(); renderFacultyAnalytics(); renderFacultyMaterials(); }
+  if (pageId === 'lecturer') {
+    renderMySubmissions(); renderFacultyTests(); renderFacultyAnalytics(); renderFacultyMaterials();
+    populateChapterSelects(); renderChapterList(); renderFacLectures();
+    populateStudentAnalyticsSelect(); renderErrorAtlas();
+  }
   if (pageId === 'onboarding') prefillOnboarding();
   if (pageId === 'admin') {
     if (sessionStorage.getItem('neet_ctk_admin') === '1') {
@@ -1756,6 +2250,18 @@ window.onload = () => {
   document.getElementById('materialSubject').onchange = toggleMaterialTermField;
   document.getElementById('refreshPhysicsMaterialsBtn').onclick = renderPhysicsMaterials;
   document.getElementById('physicsTopicFilter').onchange = (e) => jumpToPhysicsTopic(e.target.value);
+
+  // Faculty Module enhancements: chapters, OCR test upload, faculty lecture
+  // links, individual student analytics, Error Atlas.
+  document.getElementById('chapterSubjectSelect').onchange = () => { populateChapterSelects(); renderChapterList(); };
+  document.getElementById('createChapterBtn').onclick = createChapter;
+  document.getElementById('ocrExtractBtn').onclick = ocrExtractQuestions;
+  document.getElementById('cancelTestEditBtn').onclick = resetTestForm;
+  document.getElementById('cancelMaterialEditBtn').onclick = resetMaterialForm;
+  document.getElementById('facLectureSaveBtn').onclick = saveFacLecture;
+  document.getElementById('cancelFacLectureEditBtn').onclick = resetFacLectureForm;
+  document.getElementById('loadStudentAnalyticsBtn').onclick = loadStudentAnalytics;
+  document.getElementById('refreshErrorAtlasBtn').onclick = renderErrorAtlas;
   document.getElementById('refreshCutoffCacheBtn').onclick = refreshCutoffCache;
   document.getElementById('sendFeedbackBtn').onclick = sendFeedback;
   document.getElementById('adminLoginBtn').onclick = adminLogin;
