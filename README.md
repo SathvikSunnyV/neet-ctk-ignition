@@ -142,3 +142,158 @@ This release is **additive only** — no existing routes, tables, or pages were 
 - All changes are idempotent (`CREATE TABLE IF NOT EXISTS` /
   `ADD COLUMN IF NOT EXISTS`) — safe to run against the existing database.
 
+---
+
+## v2.2 — Live (real, non-static) cutoff data & faculty study materials
+
+This release is also **additive only**.
+
+### Upgraded: cutoff prediction now uses REAL, refreshable web data
+Previously the regression trained only on a fixed table baked into the
+code. It now works like this:
+
+1. **`backend/research.js`** runs a free web search (DuckDuckGo, no API
+   key) for the upcoming NEET exam year's cutoff trends, then sends the
+   search snippets to the same free Hugging Face model already used for
+   mistake recommendations, asking it to extract a structured
+   `{category, aiims, govt, private}` JSON array.
+2. Extracted numbers are sanity-checked (must be 100–720, and AIIMS-tier ≥
+   Govt-tier ≥ Private-tier) before being trusted.
+3. Validated results are cached in a new `cutoff_cache` table with a
+   timestamp, **replacing** the static numbers for that year/category.
+4. `predictCutoff()` always reads from this cache first; the original
+   static 2021–2024 table is now only a *fallback* used to fill gaps when
+   live data hasn't been fetched yet (e.g. immediately after first
+   deploy, or if outbound web/AI access is unavailable in some
+   environment).
+5. The cache auto-refreshes in the background (on server start, then
+   every 24h, but it only does real work when data is missing or >30 days
+   old). Admins can also force an immediate refresh.
+6. The Guidance page now shows a **"🌐 Live web data" / "📊 Baseline
+   estimate"** badge so it's transparent which source produced a given
+   student's numbers.
+
+New endpoints:
+- `GET /api/admin/cutoff-cache` — view what's currently cached (admin JWT required)
+- `POST /api/admin/cutoff-cache/refresh` — force a fresh web search + AI extraction for a given year (admin JWT required)
+
+Note: this needs `HF_TOKEN` set (already configured in this project's
+`.env`) for the AI-extraction step, and outbound internet access to
+`html.duckduckgo.com` from wherever the backend is hosted. If either is
+unavailable, the system safely falls back to the static baseline rather
+than failing.
+
+### New: Faculty study materials (files + links)
+- Faculty can upload **PDF, PPT/PPTX, DOC/DOCX, or images** (20 MB cap) or
+  share a link (e.g. YouTube), tagged by subject/chapter, with an optional
+  description.
+- Files are stored as `bytea` directly in PostgreSQL (not the local
+  filesystem), so they aren't lost on redeploys on free hosting tiers with
+  an ephemeral disk.
+- Published immediately — visible to every student on the Practice page,
+  downloadable via `GET /api/materials/:id/download`.
+- Faculty can see and remove their own uploads from the Lecturer Hub.
+
+New table: `materials`. New endpoints: `POST /api/faculty/materials/upload`,
+`POST /api/faculty/materials/link`, `GET /api/faculty/materials`,
+`DELETE /api/faculty/materials/:id`, `GET /api/materials`,
+`GET /api/materials/:id/download`.
+
+New dependency: `multer` (multipart form handling).
+
+
+## v2.3 — Physics Student Module
+
+This release is also **additive only** — every Biology/Chemistry/general-Physics
+flow from v2.1/v2.2 keeps working exactly as before. It layers a dedicated,
+Physics-curated student experience on top of the existing platform, per the
+Physics Student Module requirements spec: entry-level diagnostics, Term-organised
+materials, lecture/material progress tracking, topic-wise analytics, and
+personalised recommendations — plus an optional per-student test assignment
+mechanism for the existing Test Management System.
+
+### New: Physics Entry-Level Assessments
+- 3 fixed diagnostics — **Test 1 is mandatory**, Tests 2 & 3 are optional —
+  each seeded with 10 dummy MCQs (per the spec's "for development purposes"
+  note) spanning the 13 canonical Physics topics (Units & Dimensions through
+  Modern Physics).
+- Submitting a test grades it, computes a topic-wise breakdown, and classifies
+  the student as **Beginner / Intermediate / Advanced** (≥75% Advanced, ≥45%
+  Intermediate, else Beginner — tune via `classifyPhysicsProficiency()` in
+  `db.js` if your faculty want different thresholds).
+- Every incorrect/unattempted entry-test answer is also logged into the
+  existing `mistakes` table, so it automatically shows up in the student's
+  general Mistake Analysis view and the faculty Lecturer Analytics Dashboard
+  too — no separate reporting pipeline needed.
+
+### New: Term-organised Physics materials (the three-stage learning model)
+- Every Physics topic is organised into **Term 1 (Conceptual Understanding)**,
+  **Term 2 (Definitions & Formulae)**, and **Term 3 (Advanced Applications)**,
+  matching the spec's three-stage model.
+- Seeded with starter content (a short, accurate explanation/derivation set
+  per topic/term) so the structure works end-to-end immediately; faculty can
+  add further file/link materials per topic/term from the existing Lecturer
+  Hub upload form, which now has an optional **Term** dropdown (only shown
+  for the Physics subject).
+- The pre-existing `materials` table gained a nullable `term` column and a
+  `'note'` `material_type` (for the seeded text content) — fully backward
+  compatible; Biology/Chemistry materials are unaffected (`term` stays NULL).
+
+### New: Granular progress tracking
+- **Lectures:** percentage watched + resume position, tracked per student per
+  lecture (new `lecture_progress` table). The Physics page's lecture cards
+  include a simple slider + "Save" control; a lecture auto-marks complete at
+  ≥95% watched.
+- **Materials:** viewed / downloaded / completed flags per student per
+  material (new `material_progress` table). Downloading a file via the
+  existing `GET /api/materials/:id/download` endpoint now also marks it
+  viewed+downloaded automatically.
+
+### New: Topic-wise Physics analytics & personalised recommendations
+- Strength/weakness classification (≥70% accuracy with ≥2 attempts = strong,
+  <50% = weak) computed from the student's own entry-test history, plus a
+  separate mistake-frequency breakdown pulled from the shared `mistakes`
+  table.
+- Recommendations follow the spec's exact format — *"Your accuracy in X is
+  Y%. Recommended: review Term 1 materials, revise the Term 2 formula sheet,
+  watch the related lecture, attempt a fresh practice test."*
+
+### New: Physics Student Dashboard
+A single summary view (current proficiency level, lectures/materials
+completed vs. total, tests attempted, average score, strong/weak topics) —
+exactly the shape described in the spec — available via
+`GET /api/physics/dashboard` and rendered on the new **Physics** tab.
+
+### New: optional per-student/group test assignment
+- Faculty creating a test (existing "Schedule a test" form) can now optionally
+  list specific student emails to assign it to. **Leave it blank and nothing
+  changes** — the test stays visible to every student, identical to prior
+  behaviour. New table: `test_assignments` (a test with zero assignment rows
+  is treated as "open to everyone").
+- New endpoint `POST /api/faculty/tests/:id/assign` to assign an existing test
+  after the fact.
+- New endpoint `GET /api/student/tests/history` — full test history with an
+  improvement trend and a same-tests cohort-average comparison (Section 4.4
+  of the spec).
+
+### Bug fix (pre-existing, found while building this)
+`GET /api/student/:email` (fetch a student's own profile) was registered
+*before* `GET /api/student/tests` and `GET /api/student/mistake-analysis` in
+`server.js`. Since Express matches routes in registration order and both of
+those are single-segment paths, the generic `:email` route was silently
+shadowing them — meaning the existing "view assigned/scheduled tests" and
+"my mistake analysis" endpoints were unreachable. Fixed by moving the
+`:email` profile route to register after all of the more specific
+`/api/student/...` routes. No request/response shape changed — only the
+route registration order.
+
+New tables: `physics_entry_tests`, `physics_entry_questions`,
+`physics_entry_attempts`, `lecture_progress`, `material_progress`,
+`test_assignments`. New columns: `students.physics_proficiency`,
+`materials.term`. New endpoints (all under `/api/physics/...`):
+`GET /entry-tests`, `GET /entry-tests/:testNumber`,
+`POST /entry-tests/:testNumber/submit`, `GET /proficiency`,
+`GET /materials`, `POST /materials/:id/view`, `POST /materials/:id/complete`,
+`GET /lectures`, `POST /lectures/:id/progress`, `GET /analytics`,
+`GET /recommendations`, `GET /dashboard`. No new dependencies.
+
