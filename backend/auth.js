@@ -68,6 +68,13 @@ const brevo = new BrevoClient({
 });
 
 async function sendEmail({ to, subject, html, text }) {
+  if (!apiKey) {
+    // Documented fallback (see README) for local/dev environments without
+    // a real Brevo account configured — log instead of failing the
+    // calling flow (registration/OTP/password-reset) outright.
+    console.log(`✉️   [DEV EMAIL — no BREVO_API_KEY set] To: ${to} | Subject: ${subject}\n${text}`);
+    return { devFallback: true };
+  }
   try {
     return await brevo.transactionalEmails.sendTransacEmail({
       sender: {

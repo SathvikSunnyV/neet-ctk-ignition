@@ -196,6 +196,26 @@ async function initSchema() {
         );
 
         -- ===================================================================
+        -- CHAPTER MANAGEMENT SYSTEM (additive — Faculty Module enhancement).
+        -- A chapter is the canonical organisational unit for a subject
+        -- (e.g. "Kinematics" under Physics). Materials, tests and lectures
+        -- can all be linked to a chapter via chapter_id (see migrations
+        -- below). Faculty can create/edit/delete/reorder chapters; deleting
+        -- a chapter never deletes the resources linked to it (ON DELETE
+        -- SET NULL), it just unlinks them.
+        -- ===================================================================
+        CREATE TABLE IF NOT EXISTS chapters (
+            id              SERIAL PRIMARY KEY,
+            subject         TEXT NOT NULL DEFAULT 'Physics',
+            name            TEXT NOT NULL,
+            description     TEXT,
+            position        INTEGER NOT NULL DEFAULT 0,
+            created_by      TEXT REFERENCES faculty(email) ON DELETE SET NULL,
+            created_at      TIMESTAMPTZ DEFAULT NOW(),
+            UNIQUE (subject, name)
+        );
+
+        -- ===================================================================
         -- PHYSICS STUDENT MODULE (additive — see README "Physics Student
         -- Module" section). The platform's curriculum-aligned subjects keep
         -- working exactly as before; these tables add a dedicated,
@@ -299,6 +319,57 @@ async function initSchema() {
         ALTER TABLE materials DROP CONSTRAINT IF EXISTS materials_material_type_check;
         ALTER TABLE materials ADD CONSTRAINT materials_material_type_check CHECK (material_type IN ('file','link','note'));
     `);
+
+    // -----------------------------------------------------------------
+    // MIGRATIONS — Chapter Management System linkage. Faculty resources
+    // (materials, tests, lectures) can now reference a row in `chapters`.
+    // The pre-existing free-text `chapter` column on each table is kept
+    // untouched for backward compatibility (older rows / older frontend
+    // code keep working); chapter_id is the new canonical link used by
+    // the Chapter Management UI. `materials.topic` is a new, separate,
+    // optional sub-classification within a chapter (per the Faculty
+    // Materials spec: "Chapter" + "Topic (optional)").
+    // -----------------------------------------------------------------
+    await pool.query(`
+        ALTER TABLE materials ADD COLUMN IF NOT EXISTS chapter_id INTEGER REFERENCES chapters(id) ON DELETE SET NULL;
+        ALTER TABLE materials ADD COLUMN IF NOT EXISTS topic TEXT;
+        ALTER TABLE tests ADD COLUMN IF NOT EXISTS chapter_id INTEGER REFERENCES chapters(id) ON DELETE SET NULL;
+        ALTER TABLE lectures ADD COLUMN IF NOT EXISTS chapter_id INTEGER REFERENCES chapters(id) ON DELETE SET NULL;
+        ALTER TABLE lectures ADD COLUMN IF NOT EXISTS lecturer_email TEXT;
+        ALTER TABLE test_questions ADD COLUMN IF NOT EXISTS ocr_source BOOLEAN DEFAULT FALSE;
+    `);
+
+    // -----------------------------------------------------------------
+    // SEED — one chapter row per canonical Physics topic, so the existing
+    // topic-organised Physics content (entry tests, Term materials) is
+    // immediately usable through the new Chapter Management System
+    // without faculty having to recreate chapters that conceptually
+    // already exist. Idempotent: only runs once (when `chapters` is
+    // empty for Physics).
+    // -----------------------------------------------------------------
+    const { rows: chapterRows } = await pool.query(`SELECT COUNT(*) AS c FROM chapters WHERE subject = 'Physics'`);
+    if (parseInt(chapterRows[0].c, 10) === 0) {
+        for (let i = 0; i < PHYSICS_TOPICS.length; i++) {
+            await pool.query(
+                `INSERT INTO chapters (subject, name, position) VALUES ('Physics', $1, $2)
+                 ON CONFLICT (subject, name) DO NOTHING`,
+                [PHYSICS_TOPICS[i], i]
+            );
+        }
+        console.log(`✅  Seeded ${PHYSICS_TOPICS.length} Physics chapters`);
+    }
+
+    // Backfill chapter_id on existing rows whose free-text `chapter` value
+    // matches a chapter name for the same subject (best-effort, safe to
+    // re-run — only fills rows that are currently NULL).
+    await pool.query(`
+        UPDATE materials m SET chapter_id = c.id
+        FROM chapters c WHERE m.chapter_id IS NULL AND m.chapter = c.name AND m.subject = c.subject;
+
+        UPDATE tests t SET chapter_id = c.id
+        FROM chapters c WHERE t.chapter_id IS NULL AND t.chapter = c.name AND t.subject = c.subject;
+    `);
+
 
     // Add a foreign-key style soft link from students.email -> users.email
     // (kept soft / no FK constraint to avoid breaking pre-existing rows
