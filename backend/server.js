@@ -6,10 +6,10 @@ const cors    = require('cors');
 const path    = require('path');
 const multer  = require('multer');
 require('dotenv').config();
-const { pool, initSchema, QUESTIONS, computeTargets, TOPIC_BANK, predictCutoff, refreshCutoffCache,
+const { pool, initSchema, computeTargets, TOPIC_BANK, predictCutoff, refreshCutoffCache,
     PHYSICS_TOPICS, classifyPhysicsProficiency } = require('./db');
 const { generateRecommendations, generatePhysicsRecommendations } = require('./ai');
-const { extractQuestionsFromFile } = require('./ocr');
+const { structureWithAI, parseQuestionsRuleBased } = require('./ocr');
 const {
     hashPassword, verifyPassword, signToken,
     generateOTP, otpExpiry, isOtpExpired,
@@ -491,7 +491,7 @@ app.get('/api/admin/exam-date', async (req, res) => {
     res.json({ examDate: row ? row.value : null });
 });
 
-app.post('/api/admin/exam-date', async (req, res) => {
+app.post('/api/admin/exam-date', authenticate, requireRole('admin'), async (req, res) => {
     const { examDate } = req.body;
     if (!examDate) return res.status(400).json({ error: 'examDate is required.' });
     await pool.query(
@@ -500,62 +500,6 @@ app.post('/api/admin/exam-date', async (req, res) => {
         [examDate]
     );
     res.json({ examDate });
-});
-
-// ---------------------------------------------------------------------------
-// QUESTIONS — never expose the correct answer
-// ---------------------------------------------------------------------------
-app.get('/api/questions', (req, res) => {
-    res.json(QUESTIONS.map(({ id, subject, topic, text, options }) => ({ id, subject, topic, text, options })));
-});
-
-// ---------------------------------------------------------------------------
-// SUBMIT QUIZ
-// ---------------------------------------------------------------------------
-app.post('/api/submit-quiz', async (req, res) => {
-    const { email, answers } = req.body;
-    if (!email) return res.status(400).json({ error: 'email is required.' });
-    if (!Array.isArray(answers) || answers.length !== QUESTIONS.length)
-        return res.status(400).json({ error: `answers must be an array of length ${QUESTIONS.length}.` });
-
-    const { rows: [progress] } = await pool.query(`SELECT * FROM progress WHERE email = $1`, [email]);
-    if (!progress) return res.status(404).json({ error: 'Student progress not found. Please register first.' });
-
-    const stats = { Biology: { c: 0, t: 0 }, Physics: { c: 0, t: 0 }, Chemistry: { c: 0, t: 0 } };
-    let totalCorrect = 0;
-
-    QUESTIONS.forEach((q, i) => {
-        stats[q.subject].t += 1;
-        if (answers[i] === q.answer) { stats[q.subject].c += 1; totalCorrect += 1; }
-    });
-
-    const acc = s => stats[s].t > 0 ? (stats[s].c / stats[s].t) * 100 : null;
-    const blend = (old, attempt) => attempt === null
-        ? old
-        : Math.round((old * 0.7 + attempt * 0.3) * 10) / 10;
-
-    const newBio  = blend(progress.bio_accuracy,  acc('Biology'));
-    const newPhy  = blend(progress.phy_accuracy,  acc('Physics'));
-    const newChem = blend(progress.chem_accuracy, acc('Chemistry'));
-
-    let history = [];
-    try { history = JSON.parse(progress.weekly_history); } catch (_) {}
-    history.push(Math.round(((newBio + newPhy + newChem) / 3) * 10) / 10);
-    if (history.length > 7) history = history.slice(-7);
-
-    await pool.query(
-        `UPDATE progress SET bio_accuracy=$1, phy_accuracy=$2, chem_accuracy=$3,
-                             quiz_count=quiz_count+1, weekly_history=$4
-         WHERE email=$5`,
-        [newBio, newPhy, newChem, JSON.stringify(history), email]
-    );
-
-    res.json({
-        score: totalCorrect,
-        total: QUESTIONS.length,
-        accuracy: Math.round((totalCorrect / QUESTIONS.length) * 100),
-        updatedProgress: { bio_accuracy: newBio, phy_accuracy: newPhy, chem_accuracy: newChem, weekly_history: history }
-    });
 });
 
 // ---------------------------------------------------------------------------
@@ -647,18 +591,18 @@ app.get('/api/lecturer/submissions/:lecturerName', async (req, res) => {
 // ---------------------------------------------------------------------------
 // ADMIN CONSOLE
 // ---------------------------------------------------------------------------
-app.get('/api/admin/pending-lectures', async (req, res) => {
+app.get('/api/admin/pending-lectures', authenticate, requireRole('admin'), async (req, res) => {
     const { rows } = await pool.query(`SELECT * FROM lectures WHERE approved = 0 ORDER BY created_at ASC`);
     res.json(rows);
 });
 
-app.post('/api/admin/approve-lecture/:id', async (req, res) => {
+app.post('/api/admin/approve-lecture/:id', authenticate, requireRole('admin'), async (req, res) => {
     const { rowCount } = await pool.query(`UPDATE lectures SET approved = 1 WHERE id = $1`, [req.params.id]);
     if (rowCount === 0) return res.status(404).json({ error: 'Lecture not found.' });
     res.json({ success: true });
 });
 
-app.delete('/api/admin/reject-lecture/:id', async (req, res) => {
+app.delete('/api/admin/reject-lecture/:id', authenticate, requireRole('admin'), async (req, res) => {
     const { rowCount } = await pool.query(`DELETE FROM lectures WHERE id = $1`, [req.params.id]);
     if (rowCount === 0) return res.status(404).json({ error: 'Lecture not found.' });
     res.json({ success: true });
@@ -867,68 +811,24 @@ app.post('/api/faculty/chapters/reorder', authenticate, requireRole('faculty'), 
 });
 
 // ===========================================================================
-// STUDY MATERIALS (faculty uploads PDFs / PPTs / DOCX / images, or links)
-// Files are stored as bytea in Postgres so they survive redeploys on free
-// hosting tiers with an ephemeral filesystem. Published directly by the
-// authenticated faculty member — no separate approval queue, since this is
-// course material rather than open community video submissions.
+// STUDY MATERIALS (faculty share links only — Google Drive, YouTube, etc.)
+// We intentionally do NOT accept direct file uploads here any more: storing
+// files as bytea in Postgres was eating up the database's storage quota.
+// A shared link keeps the material accessible to students without that cost.
+// Published directly by the authenticated faculty member — no separate
+// approval queue, since this is course material rather than open community
+// video submissions.
 // ===========================================================================
-const MATERIAL_ALLOWED_MIME = new Set([
-    'application/pdf',
-    'application/vnd.openxmlformats-officedocument.presentationml.presentation', // .pptx
-    'application/vnd.ms-powerpoint', // .ppt
-    'application/vnd.openxmlformats-officedocument.wordprocessingml.document', // .docx
-    'application/msword', // .doc
-    'image/png', 'image/jpeg', 'image/jpg', 'image/webp'
-]);
-
-const materialUpload = multer({
-    storage: multer.memoryStorage(),
-    limits: { fileSize: 20 * 1024 * 1024 }, // 20 MB cap, generous for slide decks/PDFs
-    fileFilter: (req, file, cb) => {
-        if (MATERIAL_ALLOWED_MIME.has(file.mimetype)) cb(null, true);
-        else cb(new Error('Unsupported file type. Allowed: PDF, PPT/PPTX, DOC/DOCX, PNG, JPG, WEBP.'));
-    }
-});
 
 // ---------------------------------------------------------------------------
-// FACULTY: upload a file-based material
-// ---------------------------------------------------------------------------
-app.post('/api/faculty/materials/upload', authenticate, requireRole('faculty'), (req, res) => {
-    materialUpload.single('file')(req, res, async (err) => {
-        if (err) return res.status(400).json({ error: err.message });
-
-        const { title, subject, chapter, chapterId, topic, description, term } = req.body;
-        if (!title?.trim() || !subject?.trim()) return res.status(400).json({ error: 'Title and subject are required.' });
-        if (!req.file) return res.status(400).json({ error: 'No file was uploaded.' });
-
-        const termNum = [1, 2, 3].includes(parseInt(term, 10)) ? parseInt(term, 10) : null;
-
-        try {
-            const chapterRow = await resolveChapter(chapterId);
-            await pool.query(
-                `INSERT INTO materials (title, subject, chapter, chapter_id, topic, material_type, file_name, mime_type, file_size, file_data, description, uploaded_by, term)
-                 VALUES ($1,$2,$3,$4,$5,'file',$6,$7,$8,$9,$10,$11,$12)`,
-                [title.trim(), subject, chapterRow ? chapterRow.name : (chapter || null), chapterRow ? chapterRow.id : null,
-                 topic || null, req.file.originalname, req.file.mimetype, req.file.size, req.file.buffer, description || null, req.user.email, termNum]
-            );
-            res.status(201).json({ success: true, message: 'Material uploaded and published to students.' });
-        } catch (e) {
-            console.error(e);
-            res.status(500).json({ error: 'Server error while saving the uploaded material.' });
-        }
-    });
-});
-
-// ---------------------------------------------------------------------------
-// FACULTY: publish a link-based material (e.g. YouTube, external resource)
+// FACULTY: publish a link-based material (e.g. Google Drive, YouTube, etc.)
 // ---------------------------------------------------------------------------
 app.post('/api/faculty/materials/link', authenticate, requireRole('faculty'), async (req, res) => {
     const { title, subject, chapter, chapterId, topic, description, externalUrl, term } = req.body;
     if (!title?.trim() || !subject?.trim() || !externalUrl?.trim())
-        return res.status(400).json({ error: 'Title, subject and URL are required.' });
+        return res.status(400).json({ error: 'Title, subject and link are required.' });
     if (!/^https?:\/\//i.test(externalUrl))
-        return res.status(400).json({ error: 'Please provide a valid URL.' });
+        return res.status(400).json({ error: 'Please provide a valid link.' });
 
     const termNum = [1, 2, 3].includes(parseInt(term, 10)) ? parseInt(term, 10) : null;
 
@@ -1066,7 +966,7 @@ app.get('/api/materials/:id/download', authenticate, async (req, res) => {
     }
 });
 
-app.get('/api/admin/analytics-summary', async (req, res) => {
+app.get('/api/admin/analytics-summary', authenticate, requireRole('admin'), async (req, res) => {
     const { rows } = await pool.query(`
         SELECT s.email, s.name, s.category, s.aim,
                p.bio_accuracy, p.phy_accuracy, p.chem_accuracy, p.quiz_count
@@ -1077,7 +977,7 @@ app.get('/api/admin/analytics-summary', async (req, res) => {
     res.json(rows);
 });
 
-app.post('/api/admin/reset-all', async (req, res) => {
+app.post('/api/admin/reset-all', authenticate, requireRole('admin'), async (req, res) => {
     await pool.query(`
         DELETE FROM feedback;
         DELETE FROM lectures;
@@ -1103,7 +1003,7 @@ app.post('/api/feedback', async (req, res) => {
     res.status(201).json({ success: true });
 });
 
-app.get('/api/admin/feedback', async (req, res) => {
+app.get('/api/admin/feedback', authenticate, requireRole('admin'), async (req, res) => {
     const { rows } = await pool.query(`SELECT * FROM feedback ORDER BY created_at DESC`);
     res.json(rows);
 });
@@ -1307,46 +1207,49 @@ app.put('/api/faculty/tests/:id', authenticate, requireRole('faculty'), async (r
 });
 
 // ---------------------------------------------------------------------------
-// FACULTY: OCR-based test upload — extracts questions/options/answers from
-// an uploaded image or PDF and returns a PREVIEW only (nothing is saved to
-// the database here). The faculty member reviews/edits the result in the
-// UI, then confirms by calling the normal POST /api/faculty/tests (or PUT
-// /api/faculty/tests/:id) endpoint with the (possibly corrected) questions
-// array — reusing all of the existing validation/storage logic.
+// FACULTY: bulk test-text extraction — the faculty pastes the whole test
+// text in one go and AI (with a rule-based fallback when no AI key is
+// configured) arranges it into individual questions/options. This returns a
+// PREVIEW only (nothing is saved to the database here). Importantly, the
+// correct answer is ALWAYS stripped from the AI/rule-based result before it
+// reaches the client — the answer key is the faculty member's own call, not
+// something OCR/AI should guess. The faculty reviews/edits the result in the
+// UI and sets every correct answer themselves, then confirms by calling the
+// normal POST /api/faculty/tests (or PUT /api/faculty/tests/:id) endpoint.
 // ---------------------------------------------------------------------------
-const ocrUpload = multer({
-    storage: multer.memoryStorage(),
-    limits: { fileSize: 20 * 1024 * 1024 },
-    fileFilter: (req, file, cb) => {
-        const allowed = new Set(['application/pdf', 'image/png', 'image/jpeg', 'image/jpg', 'image/webp']);
-        if (allowed.has(file.mimetype)) cb(null, true);
-        else cb(new Error('Unsupported file type for OCR. Please upload a PDF or an image (PNG, JPG, WEBP).'));
+app.post('/api/faculty/tests/extract-questions', authenticate, requireRole('faculty'), async (req, res) => {
+    const { rawText } = req.body;
+    if (!rawText || rawText.trim().length < 20) {
+        return res.status(400).json({ error: 'Please paste more of the test text before extracting questions.' });
     }
-});
 
-app.post('/api/faculty/tests/ocr-extract', authenticate, requireRole('faculty'), (req, res) => {
-    ocrUpload.single('file')(req, res, async (err) => {
-        if (err) return res.status(400).json({ error: err.message });
-        if (!req.file) return res.status(400).json({ error: 'No file was uploaded.' });
-
-        try {
-            const result = await extractQuestionsFromFile(req.file.buffer, req.file.mimetype, req.file.originalname);
-            if (!result.success) {
-                return res.status(422).json({ error: result.error, rawTextPreview: (result.rawText || '').slice(0, 4000) });
-            }
-            res.json({
-                success: true,
-                method: result.method,
-                sourceKind: result.sourceKind,
-                fileName: result.fileName,
-                rawTextPreview: result.rawTextPreview,
-                questions: result.questions
-            });
-        } catch (e) {
-            console.error(e);
-            res.status(500).json({ error: 'Server error while processing this file for OCR. Please try again or enter questions manually.' });
+    try {
+        let questions = await structureWithAI(rawText);
+        let method = 'ai-assisted';
+        if (!questions) {
+            questions = parseQuestionsRuleBased(rawText);
+            method = 'rule-based';
         }
-    });
+        if (!questions || questions.length === 0) {
+            return res.status(422).json({ error: 'No questions could be identified in this text. Please check the formatting, or add questions manually below.' });
+        }
+
+        // Never trust an AI/pattern-matched answer key — the faculty member
+        // sets the correct option for every question themselves in the UI.
+        const cleaned = questions.map(q => ({
+            questionText: q.questionText,
+            options: q.options,
+            topic: q.topic,
+            difficulty: q.difficulty,
+            correctAnswerIndex: null,
+            needsReview: true
+        }));
+
+        res.json({ success: true, method, questions: cleaned });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: 'Server error while arranging this text into questions. Please try again or add questions manually.' });
+    }
 });
 
 

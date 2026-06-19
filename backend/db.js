@@ -464,85 +464,6 @@ async function initSchema() {
 }
 
 // ---------------------------------------------------------------------------
-// QUESTION BANK  (Level-1 topic-wise quiz, mixed subjects)
-// answer = index of correct option (never sent to the client)
-// ---------------------------------------------------------------------------
-const QUESTIONS = [
-    {
-        id: 1, subject: 'Biology', topic: 'Cell Division',
-        text: "Which organelle is known as the 'powerhouse of the cell'?",
-        options: ['Nucleus', 'Mitochondria', 'Ribosome', 'Golgi Body'],
-        answer: 1
-    },
-    {
-        id: 2, subject: 'Biology', topic: "Genetics – Mendel's Laws",
-        text: "Mendel's Law of Independent Assortment applies to genes located on:",
-        options: ['The same chromosome', 'Different chromosomes', 'The same locus', 'mRNA strands'],
-        answer: 1
-    },
-    {
-        id: 3, subject: 'Biology', topic: 'Human Physiology – Digestion',
-        text: 'Which enzyme in saliva begins the digestion of starch?',
-        options: ['Pepsin', 'Lipase', 'Salivary amylase', 'Trypsin'],
-        answer: 2
-    },
-    {
-        id: 4, subject: 'Biology', topic: 'Plant Physiology',
-        text: 'The process by which plants lose water through their leaves is called:',
-        options: ['Respiration', 'Transpiration', 'Photosynthesis', 'Osmosis'],
-        answer: 1
-    },
-    {
-        id: 5, subject: 'Physics', topic: "Newton's Laws of Motion",
-        text: "Newton's Second Law of Motion is mathematically expressed as:",
-        options: ['F = ma', 'F = mv', 'F = m/a', 'F = a/m'],
-        answer: 0
-    },
-    {
-        id: 6, subject: 'Physics', topic: 'Electrostatics',
-        text: 'The SI unit of electric potential is:',
-        options: ['Ampere', 'Volt', 'Ohm', 'Watt'],
-        answer: 1
-    },
-    {
-        id: 7, subject: 'Physics', topic: 'Optics',
-        text: 'A convex lens is also known as a:',
-        options: ['Diverging lens', 'Converging lens', 'Concave lens', 'Plano lens'],
-        answer: 1
-    },
-    {
-        id: 8, subject: 'Physics', topic: 'Thermodynamics',
-        text: 'The first law of thermodynamics is essentially a statement of:',
-        options: ['Entropy', 'Conservation of energy', 'Absolute zero', 'Ideal gas behaviour'],
-        answer: 1
-    },
-    {
-        id: 9, subject: 'Chemistry', topic: 'Chemical Bonding',
-        text: 'A chemical bond formed by the complete transfer of electrons between atoms is called:',
-        options: ['Covalent bond', 'Ionic bond', 'Metallic bond', 'Hydrogen bond'],
-        answer: 1
-    },
-    {
-        id: 10, subject: 'Chemistry', topic: 'Equilibrium',
-        text: 'The pH of a neutral aqueous solution at 25°C is:',
-        options: ['0', '7', '14', '1'],
-        answer: 1
-    },
-    {
-        id: 11, subject: 'Chemistry', topic: 'Periodic Table',
-        text: 'Which group of the periodic table contains the alkali metals?',
-        options: ['Group 1', 'Group 2', 'Group 17', 'Group 18'],
-        answer: 0
-    },
-    {
-        id: 12, subject: 'Chemistry', topic: 'Organic Chemistry – Hydrocarbons',
-        text: 'The IUPAC name of CH₃–CH₂–CH₃ is:',
-        options: ['Methane', 'Ethane', 'Propane', 'Butane'],
-        answer: 2
-    }
-];
-
-// ---------------------------------------------------------------------------
 // FALLBACK BASELINE — NEET cutoff data (2021-2024, NEET out of 720)
 // Used ONLY when the live `cutoff_cache` table (populated via real web
 // search + AI extraction, see research.js) has no usable data yet — e.g.
@@ -966,7 +887,7 @@ function classifyPhysicsProficiency(percentScore) {
 }
 
 module.exports = {
-    pool, initSchema, QUESTIONS, computeTargets, TOPIC_BANK, AIM_BASE_TARGETS, RESERVED_CATEGORIES,
+    pool, initSchema, computeTargets, TOPIC_BANK, AIM_BASE_TARGETS, RESERVED_CATEGORIES,
     predictCutoff, HISTORICAL_CUTOFFS, STATE_ADJUSTMENT,
     refreshCutoffCache, getCachedCutoffRows, isCutoffCacheStale,
     PHYSICS_TOPICS, PHYSICS_TERM_CONTENT, PHYSICS_ENTRY_QUESTIONS, classifyPhysicsProficiency
