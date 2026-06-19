@@ -2,7 +2,6 @@
 // Talks to the Express + PostgreSQL backend defined in /backend.
 
 const API_BASE = window.location.origin;
-const ADMIN_PASSCODE = 'ctk-admin'; // legacy demo gate for the old Admin tab UI
 
 // ---------------------------------------------------------------- auth state
 let authToken = localStorage.getItem('neet_ctk_token') || null;
@@ -11,7 +10,6 @@ let currentUser = JSON.parse(localStorage.getItem('neet_ctk_user') || 'null'); /
 // Legacy fields kept for backward compatibility with existing student-data code
 let currentStudentEmail = currentUser?.role === 'student' ? currentUser.email : (localStorage.getItem('neet_ctk_email') || null);
 let globalStudentData = null;
-let cachedQuestions = null;
 let pendingVerifyEmail = null; // email awaiting OTP verification
 
 function setSession(token, user) {
@@ -32,6 +30,7 @@ function clearSession() {
   localStorage.removeItem('neet_ctk_token');
   localStorage.removeItem('neet_ctk_user');
   localStorage.removeItem('neet_ctk_email');
+  sessionStorage.removeItem('neet_ctk_admin'); // retire any legacy passcode-unlocked admin session
 }
 
 // ---------------------------------------------------------------- toast
@@ -107,7 +106,6 @@ async function registerUser() {
   const email = document.getElementById('authEmail').value.trim();
   const password = document.getElementById('authPassword').value;
   const confirmPassword = document.getElementById('authConfirmPassword').value;
-  const adminCode = document.getElementById('authAdminCode').value;
   const msgEl = document.getElementById('regMessage');
 
   if (!name || !email || !password) {
@@ -125,7 +123,6 @@ async function registerUser() {
 
   try {
     const body = { name, email, password, confirmPassword, role };
-    if (role === 'admin') body.adminCode = adminCode;
     const data = await api('/api/auth/register', { method: 'POST', body: JSON.stringify(body) });
     msgEl.innerHTML = `<span class="badge success">✅ ${data.message}</span>`;
     showToast('Account created — check your email for the OTP.', 'success');
@@ -138,6 +135,87 @@ async function registerUser() {
   } finally {
     btn.disabled = false;
     btn.textContent = 'Create account & send OTP';
+  }
+}
+
+// ====================================================================
+// ADMIN PORTAL — separate registration/login flow, kept apart from the
+// student/faculty Register & Login pages so admin access never appears
+// in the main nav for a logged-in student or faculty member.
+// ====================================================================
+async function adminPortalRegister() {
+  const btn = document.getElementById('adminRegisterBtn');
+  const adminCode = document.getElementById('adminRegAdminCode').value;
+  const name = document.getElementById('adminRegName').value.trim();
+  const email = document.getElementById('adminRegEmail').value.trim();
+  const password = document.getElementById('adminRegPassword').value;
+  const confirmPassword = document.getElementById('adminRegConfirmPassword').value;
+  const msgEl = document.getElementById('adminRegMessage');
+
+  if (!name || !email || !password) {
+    msgEl.innerHTML = `<span class="badge danger">Please fill in all required fields.</span>`;
+    return;
+  }
+  if (password !== confirmPassword) {
+    msgEl.innerHTML = `<span class="badge danger">Passwords do not match.</span>`;
+    return;
+  }
+
+  btn.disabled = true;
+  btn.textContent = 'Creating account...';
+  msgEl.innerHTML = '';
+  try {
+    const body = { name, email, password, confirmPassword, role: 'admin', adminCode };
+    const data = await api('/api/auth/register', { method: 'POST', body: JSON.stringify(body) });
+    msgEl.innerHTML = `<span class="badge success">✅ ${data.message}</span>`;
+    showToast('Admin account created — check your email for the OTP.', 'success');
+    pendingVerifyEmail = data.email;
+    document.getElementById('verifyOtpEmailLabel').textContent = data.email;
+    setTimeout(() => showPage('verifyOtp'), 600);
+  } catch (err) {
+    msgEl.innerHTML = `<span class="badge danger">${err.message}</span>`;
+    showToast(err.message, 'error');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = 'Create admin account & send OTP';
+  }
+}
+
+async function adminPortalLogin() {
+  const btn = document.getElementById('adminPortalLoginBtn');
+  const email = document.getElementById('adminLoginEmail').value.trim();
+  const password = document.getElementById('adminLoginPassword').value;
+  const msgEl = document.getElementById('adminPortalLoginMessage');
+
+  if (!email || !password) {
+    msgEl.innerHTML = `<span class="badge danger">Please enter your email and password.</span>`;
+    return;
+  }
+
+  btn.disabled = true; btn.textContent = 'Logging in...';
+  try {
+    const data = await api('/api/auth/login', { method: 'POST', body: JSON.stringify({ email, password }) });
+    if (data.user.role !== 'admin') {
+      msgEl.innerHTML = `<span class="badge danger">This portal is for admin accounts only.</span>`;
+      showToast('That account is not an admin account.', 'error');
+      return;
+    }
+    setSession(data.token, data.user);
+    updateNavForAuth();
+    showToast(`Welcome back, ${data.user.name.split(' ')[0]}!`, 'success');
+    setTimeout(() => showPage('admin'), 300);
+  } catch (err) {
+    if (err.message.includes('verify your email')) {
+      pendingVerifyEmail = email;
+      document.getElementById('verifyOtpEmailLabel').textContent = email;
+      msgEl.innerHTML = `<span class="badge warn">${err.message}</span>`;
+      setTimeout(() => showPage('verifyOtp'), 800);
+    } else {
+      msgEl.innerHTML = `<span class="badge danger">${err.message}</span>`;
+    }
+    showToast(err.message, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Log in to Admin Portal';
   }
 }
 
@@ -207,7 +285,13 @@ async function loginUser() {
     } else if (data.user.role === 'faculty') {
       setTimeout(() => showPage('lecturer'), 400);
     } else {
-      setTimeout(() => showPage('admin'), 400);
+      // Admin accounts shouldn't sign in from the general Login page —
+      // send them to the dedicated Admin Portal instead.
+      clearSession();
+      updateNavForAuth();
+      msgEl.innerHTML = `<span class="badge warn">Admin accounts sign in from the separate Admin Portal (see the footer link).</span>`;
+      setTimeout(() => showPage('adminLogin'), 600);
+      return;
     }
   } catch (err) {
     if (err.message.includes('verify your email')) {
@@ -466,66 +550,10 @@ async function renderPractice() {
     approvedContainer.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
   }
 
-  const quizContainer = document.getElementById('quizContainer');
-  quizContainer.innerHTML = `<div class="loading-row"><div class="spinner"></div></div>`;
-  try {
-    const questions = await api('/api/questions');
-    cachedQuestions = questions;
-    document.getElementById('quizCountBadge').textContent = `${questions.length} questions`;
-    quizContainer.innerHTML = questions.map((q, idx) => `
-      <div class="quiz-item">
-        <div class="q-meta">${q.subject} · ${q.topic}</div>
-        <div class="q-text">${idx + 1}. ${q.text}</div>
-        <div>
-          ${q.options.map((opt, oi) => `
-            <label class="quiz-option">
-              <input type="radio" name="q${idx}" value="${oi}"> ${opt}
-            </label>`).join('')}
-        </div>
-      </div>`).join('');
-  } catch (err) {
-    quizContainer.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
-  }
-
   renderMaterials();
 
   if (currentUser?.role === 'student') {
     renderStudentTests();
-  }
-}
-
-async function submitQuiz() {
-  if (!currentStudentEmail) {
-    showToast('Please register before attempting a quiz.', 'error');
-    showPage('register');
-    return;
-  }
-  const btn = document.getElementById('submitQuizBtn');
-  const questions = cachedQuestions || await api('/api/questions');
-  const answers = questions.map((_, idx) => {
-    const selected = document.querySelector(`input[name="q${idx}"]:checked`);
-    return selected ? parseInt(selected.value, 10) : -1;
-  });
-
-  if (answers.every(a => a === -1)) {
-    showToast('Please answer at least one question before submitting.', 'error');
-    return;
-  }
-
-  btn.disabled = true;
-  btn.textContent = 'Submitting...';
-  try {
-    const result = await api('/api/submit-quiz', {
-      method: 'POST',
-      body: JSON.stringify({ email: currentStudentEmail, answers })
-    });
-    showToast(`Quiz submitted — ${result.score}/${result.total} correct (${result.accuracy}%). Progress updated!`, 'success');
-    await renderGuidance();
-  } catch (err) {
-    showToast(err.message, 'error');
-  } finally {
-    btn.disabled = false;
-    btn.textContent = 'Submit quiz';
   }
 }
 
@@ -792,6 +820,10 @@ function resetTestForm() {
   document.getElementById('testChapter').value = '';
   document.getElementById('testAssignEmails').value = '';
   document.getElementById('testQuestionsContainer').innerHTML = '';
+  document.getElementById('testRawTextInput').value = '';
+  document.getElementById('extractTestStatus').innerHTML = '';
+  document.getElementById('ocrPreviewContainer').innerHTML = '';
+  ocrExtractedQuestions = [];
   testQuestionCount = 0;
 }
 
@@ -1093,27 +1125,25 @@ window.moveChapter = async (index, direction) => {
 // ====================================================================
 let ocrExtractedQuestions = [];
 
-async function ocrExtractQuestions() {
-  const fileInput = document.getElementById('ocrFileInput');
-  const statusEl = document.getElementById('ocrStatus');
-  const btn = document.getElementById('ocrExtractBtn');
-  const file = fileInput.files[0];
-  if (!file) { statusEl.innerHTML = `<span class="badge danger">Please choose a PDF or image first.</span>`; return; }
+async function extractTestQuestionsFromText() {
+  const textInput = document.getElementById('testRawTextInput');
+  const statusEl = document.getElementById('extractTestStatus');
+  const btn = document.getElementById('extractTestQuestionsBtn');
+  const rawText = textInput.value.trim();
+  if (!rawText || rawText.length < 20) { statusEl.innerHTML = `<span class="badge danger">Please paste more of the test text first.</span>`; return; }
 
-  btn.disabled = true; btn.textContent = 'Extracting...';
+  btn.disabled = true; btn.textContent = 'Arranging into questions...';
   statusEl.innerHTML = `<div class="loading-row"><div class="spinner"></div></div>`;
   try {
-    const formData = new FormData();
-    formData.append('file', file);
-    const data = await apiUpload('/api/faculty/tests/ocr-extract', formData);
+    const data = await api('/api/faculty/tests/extract-questions', { method: 'POST', body: JSON.stringify({ rawText }) });
     ocrExtractedQuestions = data.questions;
-    statusEl.innerHTML = `<span class="badge success">✅ Extracted ${data.questions.length} question(s) via ${data.method === 'ai-assisted' ? 'AI-assisted parsing' : 'pattern matching'}. Review and edit below, then click "Add to test form".</span>`;
+    statusEl.innerHTML = `<span class="badge success">✅ Arranged ${data.questions.length} question(s) using ${data.method === 'ai-assisted' ? 'AI-assisted parsing' : 'pattern matching'}. The AI never guesses answers — set the correct option for each question below; that becomes your answer key.</span>`;
     renderOcrPreview();
   } catch (err) {
     statusEl.innerHTML = `<span class="badge danger">${err.message}</span>`;
     showToast(err.message, 'error');
   } finally {
-    btn.disabled = false; btn.textContent = 'Extract questions';
+    btn.disabled = false; btn.textContent = '✨ Arrange into questions with AI';
   }
 }
 
@@ -1160,7 +1190,8 @@ window.addOcrQuestionsToTestForm = () => {
   showToast(`${ocrExtractedQuestions.length} question(s) added to the test form below.`, 'success');
   ocrExtractedQuestions = [];
   document.getElementById('ocrPreviewContainer').innerHTML = '';
-  document.getElementById('ocrFileInput').value = '';
+  document.getElementById('testRawTextInput').value = '';
+  document.getElementById('extractTestStatus').innerHTML = '';
   document.getElementById('testTitle').scrollIntoView({ behavior: 'smooth', block: 'center' });
 };
 
@@ -1287,6 +1318,7 @@ async function loadStudentAnalytics() {
         <div class="stat-tile"><div class="stat-value">${d.lecturesWatched}</div><div class="stat-label">Lectures watched</div></div>
       </div>
       <h4 class="mt-2" style="margin-bottom:0.5rem;">Chapter-wise performance</h4>
+      <div class="chart-box"><canvas id="studentAnalyticsChapterChart"></canvas></div>
       ${d.chapterWisePerformance.length ? d.chapterWisePerformance.map(c => `
         <div class="flex-between" style="padding:0.4rem 0; border-bottom:1px solid var(--border);">
           <span>${c.chapter} <span class="helper-text">(${c.correct}/${c.total})</span></span>
@@ -1308,9 +1340,38 @@ async function loadStudentAnalytics() {
           <span class="badge">${a.kind}</span> ${a.title} — ${a.detail} <span class="helper-text">· ${new Date(a.updated_at).toLocaleString()}</span>
         </div>`).join('') : `<div class="empty-state"><p>No recent activity.</p></div>`}
     `;
+    renderStudentAnalyticsChart(d.chapterWisePerformance);
   } catch (err) {
     container.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
   }
+}
+
+let studentAnalyticsChartInstance = null;
+function renderStudentAnalyticsChart(chapterWisePerformance) {
+  const canvas = document.getElementById('studentAnalyticsChapterChart');
+  if (!canvas || typeof Chart === 'undefined') return;
+  if (studentAnalyticsChartInstance) { studentAnalyticsChartInstance.destroy(); studentAnalyticsChartInstance = null; }
+  if (!chapterWisePerformance || !chapterWisePerformance.length) {
+    canvas.parentElement.innerHTML = `<div class="empty-state"><p>No graded attempts yet — a chart will appear once this student has results.</p></div>`;
+    return;
+  }
+  studentAnalyticsChartInstance = new Chart(canvas.getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels: chapterWisePerformance.map(c => c.chapter),
+      datasets: [{
+        label: 'Accuracy %',
+        data: chapterWisePerformance.map(c => c.accuracyPercent),
+        backgroundColor: chapterWisePerformance.map(c => c.accuracyPercent >= 70 ? '#2e7d52' : c.accuracyPercent < 50 ? '#c0392b' : '#d4a017'),
+        borderRadius: 4
+      }]
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      scales: { y: { beginAtZero: true, max: 100, ticks: { callback: v => v + '%' } } },
+      plugins: { legend: { display: false } }
+    }
+  });
 }
 
 // ====================================================================
@@ -1348,14 +1409,9 @@ async function renderErrorAtlas() {
 }
 
 // ====================================================================
-// STUDY MATERIALS — FACULTY (upload files or share links)
+// STUDY MATERIALS — FACULTY (link-only — no file uploads, to keep the
+// database lean; faculty share a Drive/YouTube/etc. link instead)
 // ====================================================================
-function toggleMaterialKindFields() {
-  const kind = document.getElementById('materialKind').value;
-  document.getElementById('materialFileGroup').style.display = kind === 'file' ? '' : 'none';
-  document.getElementById('materialUrlGroup').style.display = kind === 'link' ? '' : 'none';
-}
-
 function toggleMaterialTermField() {
   const subject = document.getElementById('materialSubject').value;
   document.getElementById('materialTermGroup').style.display = subject === 'Physics' ? '' : 'none';
@@ -1372,8 +1428,7 @@ function resetMaterialForm() {
   document.getElementById('materialTopic').value = '';
   document.getElementById('materialDescription').value = '';
   document.getElementById('materialTerm').value = '';
-  document.getElementById('materialKind').value = 'file';
-  toggleMaterialKindFields();
+  document.getElementById('materialUrlInput').value = '';
 }
 
 window.editMaterial = async (id, materials) => {
@@ -1389,10 +1444,9 @@ window.editMaterial = async (id, materials) => {
   document.getElementById('materialTopic').value = m.topic || '';
   document.getElementById('materialDescription').value = m.description || '';
   document.getElementById('materialTerm').value = m.term || '';
-  if (m.material_type === 'link') {
-    document.getElementById('materialKind').value = 'link';
-    toggleMaterialKindFields();
-    document.getElementById('materialUrlInput').value = m.external_url || '';
+  document.getElementById('materialUrlInput').value = m.external_url || '';
+  if (m.material_type === 'file') {
+    showToast('This was uploaded as a file under the old system — add a link to replace it (files are no longer stored).', '');
   }
   document.getElementById('materialTitle').scrollIntoView({ behavior: 'smooth', block: 'center' });
 };
@@ -1405,47 +1459,32 @@ async function uploadMaterial() {
   const chapterId = document.getElementById('materialChapter').value || null;
   const topic = document.getElementById('materialTopic').value.trim();
   const description = document.getElementById('materialDescription').value.trim();
-  const kind = document.getElementById('materialKind').value;
   const term = document.getElementById('materialTerm').value;
+  const externalUrl = document.getElementById('materialUrlInput').value.trim();
 
   if (!title || !subject) {
     msgEl.innerHTML = `<span class="badge danger">Please provide a title and subject.</span>`;
+    return;
+  }
+  if (!externalUrl) {
+    msgEl.innerHTML = `<span class="badge danger">Please provide a link (e.g. a Google Drive share link).</span>`;
     return;
   }
 
   btn.disabled = true; btn.textContent = materialEditingId ? 'Saving...' : 'Publishing...';
   try {
     if (materialEditingId) {
-      const externalUrl = document.getElementById('materialKind').value === 'link' ? document.getElementById('materialUrlInput').value.trim() : undefined;
       const data = await api(`/api/faculty/materials/${materialEditingId}`, {
         method: 'PUT',
         body: JSON.stringify({ title, chapterId, topic, description, term: term || null, externalUrl })
       });
       msgEl.innerHTML = `<span class="badge success">✅ ${data.message}</span>`;
-    } else if (kind === 'file') {
-      const fileInput = document.getElementById('materialFileInput');
-      const file = fileInput.files[0];
-      if (!file) { msgEl.innerHTML = `<span class="badge danger">Please choose a file.</span>`; btn.disabled = false; btn.textContent = 'Publish to students'; return; }
-      const formData = new FormData();
-      formData.append('file', file);
-      formData.append('title', title);
-      formData.append('subject', subject);
-      if (chapterId) formData.append('chapterId', chapterId);
-      formData.append('topic', topic);
-      formData.append('description', description);
-      if (term) formData.append('term', term);
-      const data = await apiUpload('/api/faculty/materials/upload', formData);
-      msgEl.innerHTML = `<span class="badge success">✅ ${data.message}</span>`;
-      fileInput.value = '';
     } else {
-      const externalUrl = document.getElementById('materialUrlInput').value.trim();
-      if (!externalUrl) { msgEl.innerHTML = `<span class="badge danger">Please provide a URL.</span>`; btn.disabled = false; btn.textContent = 'Publish to students'; return; }
       const data = await api('/api/faculty/materials/link', {
         method: 'POST',
         body: JSON.stringify({ title, subject, chapterId, topic, description, externalUrl, term: term || null })
       });
       msgEl.innerHTML = `<span class="badge success">✅ ${data.message}</span>`;
-      document.getElementById('materialUrlInput').value = '';
     }
     resetMaterialForm();
     showToast(materialEditingId ? 'Material updated.' : 'Material published to students.', 'success');
@@ -1477,13 +1516,13 @@ async function renderFacultyMaterials() {
       <div class="flex-between" style="padding:0.6rem 0; border-bottom:1px solid var(--border);">
         <div>
           <strong>${m.title}</strong>
-          <div class="helper-text">${m.subject}${m.chapter ? ' · ' + m.chapter : ''}${m.topic ? ' · ' + m.topic : ''}${m.term ? ' · Term ' + m.term : ''} · ${m.material_type === 'file' ? (m.file_name + ' · ' + formatFileSize(m.file_size)) : (m.material_type === 'note' ? 'Note' : 'Link')}</div>
+          <div class="helper-text">${m.subject}${m.chapter ? ' · ' + m.chapter : ''}${m.topic ? ' · ' + m.topic : ''}${m.term ? ' · Term ' + m.term : ''} · ${m.material_type === 'file' ? ('legacy file: ' + (m.file_name || '') + ' ' + formatFileSize(m.file_size)) : (m.material_type === 'note' ? 'Note' : 'Link')}</div>
         </div>
         <div class="flex-row">
           <button class="btn btn-outline" onclick="editMaterial(${m.id}, lastFacultyMaterials)">Edit</button>
           <button class="btn btn-outline" onclick="deleteMaterial(${m.id})">Remove</button>
         </div>
-      </div>`).join('') : `<div class="empty-state"><p>No materials uploaded yet.</p></div>`;
+      </div>`).join('') : `<div class="empty-state"><p>No materials shared yet.</p></div>`;
   } catch (err) {
     container.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
   }
@@ -1620,19 +1659,6 @@ async function submitTest() {
   }
 }
 
-
-function adminLogin() {
-  const passcode = document.getElementById('adminPasscode').value;
-  const errEl = document.getElementById('adminLoginError');
-  if (passcode === ADMIN_PASSCODE) {
-    sessionStorage.setItem('neet_ctk_admin', '1');
-    document.getElementById('adminLoginCard').style.display = 'none';
-    document.getElementById('adminConsole').style.display = 'block';
-    renderAdmin();
-  } else {
-    errEl.innerHTML = `<span class="badge danger">Incorrect passcode.</span>`;
-  }
-}
 
 async function renderAdmin() {
   try {
@@ -1786,19 +1812,6 @@ async function resetAllData() {
 // ====================================================================
 // FEEDBACK
 // ====================================================================
-async function sendFeedback() {
-  const msg = document.getElementById('feedbackMsg').value.trim();
-  const respEl = document.getElementById('feedbackResp');
-  if (!msg) { respEl.innerHTML = `<span class="badge danger">Please write a message first.</span>`; return; }
-  try {
-    await api('/api/feedback', { method: 'POST', body: JSON.stringify({ message: msg }) });
-    respEl.innerHTML = `<span class="badge success">Thanks — your feedback has been recorded.</span>`;
-    document.getElementById('feedbackMsg').value = '';
-  } catch (err) {
-    respEl.innerHTML = `<span class="badge danger">${err.message}</span>`;
-  }
-}
-
 // ====================================================================
 // PHYSICS STUDENT MODULE
 // A dedicated, Physics-curated student experience layered on top of the
@@ -2147,7 +2160,7 @@ async function renderPhysicsRecommendations() {
 // ====================================================================
 const AUTH_REQUIRED_PAGES = {
   guidance: 'student', practice: 'student', progress: 'student', physics: 'student',
-  onboarding: 'student', lecturer: 'faculty', facultyDashboard: 'faculty'
+  onboarding: 'student', lecturer: 'faculty', facultyDashboard: 'faculty', admin: 'admin'
 };
 
 function showPage(pageId) {
@@ -2182,14 +2195,7 @@ function showPage(pageId) {
   }
   if (pageId === 'onboarding') prefillOnboarding();
   if (pageId === 'admin') {
-    if (sessionStorage.getItem('neet_ctk_admin') === '1') {
-      document.getElementById('adminLoginCard').style.display = 'none';
-      document.getElementById('adminConsole').style.display = 'block';
-      renderAdmin();
-    } else {
-      document.getElementById('adminLoginCard').style.display = 'block';
-      document.getElementById('adminConsole').style.display = 'none';
-    }
+    renderAdmin();
   }
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
@@ -2209,6 +2215,12 @@ function updateNavForAuth() {
   document.getElementById('navProgress').style.display    = (loggedIn && role === 'student') ? '' : 'none';
   document.getElementById('navPhysics').style.display     = (loggedIn && role === 'student') ? '' : 'none';
   document.getElementById('navLecturer').style.display    = (loggedIn && role === 'faculty') ? '' : 'none';
+  // The Admin tab only ever appears for a verified admin-role session — it
+  // is never shown to students or faculty, and admins reach it only via
+  // the separate Admin Portal login (see footer), never the main Login page.
+  document.getElementById('navAdmin').style.display       = (loggedIn && role === 'admin') ? '' : 'none';
+  const footerAdminLink = document.getElementById('footerAdminLink');
+  if (footerAdminLink) footerAdminLink.style.display = loggedIn ? 'none' : '';
 }
 
 window.showPage = showPage;
@@ -2231,12 +2243,17 @@ window.onload = () => {
   document.getElementById('goToRegisterLink').onclick = (e) => { e.preventDefault(); showPage('register'); };
   document.getElementById('goToForgotLink').onclick = (e) => { e.preventDefault(); showPage('forgotPassword'); };
 
-  document.getElementById('authRole').onchange = (e) => {
-    document.getElementById('adminCodeGroup').style.display = e.target.value === 'admin' ? '' : 'none';
-  };
+  // Admin Portal — kept entirely separate from the student/faculty auth flow
+  document.getElementById('footerAdminLink').onclick = (e) => { e.preventDefault(); showPage('adminLogin'); };
+  document.getElementById('adminPortalLoginBtn').onclick = adminPortalLogin;
+  document.getElementById('adminRegisterBtn').onclick = adminPortalRegister;
+  document.getElementById('goToAdminRegisterLink').onclick = (e) => { e.preventDefault(); showPage('adminRegister'); };
+  document.getElementById('goToAdminLoginLink').onclick = (e) => { e.preventDefault(); showPage('adminLogin'); };
+  document.getElementById('setExamDateBtn').onclick = setExamDate;
+  document.getElementById('resetAllDataBtn').onclick = resetAllData;
+  document.getElementById('refreshCutoffCacheBtn').onclick = refreshCutoffCache;
 
   // Existing app features
-  document.getElementById('submitQuizBtn').onclick = submitQuiz;
   document.getElementById('submitLectureBtn').onclick = submitLecture;
   document.getElementById('refreshSubmissionsBtn').onclick = renderMySubmissions;
   document.getElementById('addTestQuestionBtn').onclick = addTestQuestionRow;
@@ -2246,29 +2263,21 @@ window.onload = () => {
   document.getElementById('uploadMaterialBtn').onclick = uploadMaterial;
   document.getElementById('refreshFacultyMaterialsBtn').onclick = renderFacultyMaterials;
   document.getElementById('refreshMaterialsBtn').onclick = renderMaterials;
-  document.getElementById('materialKind').onchange = toggleMaterialKindFields;
   document.getElementById('materialSubject').onchange = toggleMaterialTermField;
   document.getElementById('refreshPhysicsMaterialsBtn').onclick = renderPhysicsMaterials;
   document.getElementById('physicsTopicFilter').onchange = (e) => jumpToPhysicsTopic(e.target.value);
 
-  // Faculty Module enhancements: chapters, OCR test upload, faculty lecture
+  // Faculty Module: chapters, bulk-paste AI test creation, faculty lecture
   // links, individual student analytics, Error Atlas.
   document.getElementById('chapterSubjectSelect').onchange = () => { populateChapterSelects(); renderChapterList(); };
   document.getElementById('createChapterBtn').onclick = createChapter;
-  document.getElementById('ocrExtractBtn').onclick = ocrExtractQuestions;
+  document.getElementById('extractTestQuestionsBtn').onclick = extractTestQuestionsFromText;
   document.getElementById('cancelTestEditBtn').onclick = resetTestForm;
   document.getElementById('cancelMaterialEditBtn').onclick = resetMaterialForm;
   document.getElementById('facLectureSaveBtn').onclick = saveFacLecture;
   document.getElementById('cancelFacLectureEditBtn').onclick = resetFacLectureForm;
   document.getElementById('loadStudentAnalyticsBtn').onclick = loadStudentAnalytics;
   document.getElementById('refreshErrorAtlasBtn').onclick = renderErrorAtlas;
-  document.getElementById('refreshCutoffCacheBtn').onclick = refreshCutoffCache;
-  document.getElementById('sendFeedbackBtn').onclick = sendFeedback;
-  document.getElementById('adminLoginBtn').onclick = adminLogin;
-  document.getElementById('setExamDateBtn').onclick = setExamDate;
-  document.getElementById('resetAllDataBtn').onclick = resetAllData;
-  document.getElementById('upgradeProBtn').onclick = () => showToast('Payment integration coming soon — this is a demo upgrade flow.', '');
-  document.getElementById('upgradePremiumBtn').onclick = () => showToast('Please use the Contact page to arrange Premium payment.', '');
   document.getElementById('startNowBtn').onclick = () => showPage(currentUser ? (currentUser.role === 'student' ? 'guidance' : 'lecturer') : 'register');
 
   document.querySelectorAll('.nav-btn').forEach(btn =>
@@ -2276,6 +2285,13 @@ window.onload = () => {
       const page = btn.getAttribute('data-page');
       if (page) showPage(page);
     })
+  );
+
+  // Faculty sub-navigation — splits the Lecturer Hub into separate tracks
+  // (Overview, Chapters, Tests, Materials, Student Analytics, Error Atlas,
+  // Class Analytics) so faculty aren't scrolling through one giant page.
+  document.querySelectorAll('.subnav-btn').forEach(btn =>
+    btn.addEventListener('click', () => showFacultySection(btn.getAttribute('data-fsec')))
   );
 
   updateNavForAuth();
@@ -2286,3 +2302,9 @@ window.onload = () => {
     showPage('welcome');
   }
 };
+
+function showFacultySection(sectionId) {
+  document.querySelectorAll('.faculty-section').forEach(sec => sec.classList.toggle('active', sec.id === sectionId));
+  document.querySelectorAll('.subnav-btn').forEach(btn => btn.classList.toggle('active', btn.getAttribute('data-fsec') === sectionId));
+  window.scrollTo({ top: 0, behavior: 'smooth' });
+}

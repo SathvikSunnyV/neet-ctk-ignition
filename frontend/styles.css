@@ -154,6 +154,33 @@ textarea{ resize: vertical; min-height: 100px; }
 /* ---------------------------------------------------------------- pages */
 .page{ display:none; animation: fadeIn .45s ease; }
 .page.active{ display:block; }
+
+/* ===== Faculty sub-navigation (splits Lecturer Hub into separate tracks) ===== */
+.subnav{
+  display:flex; flex-wrap:wrap; gap:0.4rem;
+  background: var(--cream-deep); border-radius: var(--radius-md);
+  padding: 0.5rem; margin-bottom: 1.25rem;
+  position: sticky; top: 0.5rem; z-index: 5;
+}
+.subnav-btn{
+  font-family: var(--font-body); font-size:0.85rem; font-weight:600;
+  padding:0.5rem 0.85rem; border-radius: var(--radius-sm); border:1px solid transparent;
+  background: transparent; color: var(--ink-soft); cursor:pointer; transition: all .15s ease;
+}
+.subnav-btn:hover{ color: var(--ink); background: var(--paper); }
+.subnav-btn.active{ background: var(--accent); color:#fff; }
+.faculty-section{ display:none; }
+.faculty-section.active{ display:block; animation: fadeIn .35s ease; }
+
+/* ===== Footer admin portal link (intentionally low-key, not in main nav) ===== */
+.footer-admin-link{
+  display:inline-block; margin-top:0.5rem; font-size:0.78rem;
+  color: var(--ink-soft); opacity:0.6; text-decoration:underline;
+}
+.footer-admin-link:hover{ opacity:1; }
+
+/* ===== Chart containers (Chart.js canvases) ===== */
+.chart-box{ position:relative; height:260px; margin: 0.75rem 0 1rem; }
 @keyframes fadeIn{ from{ opacity:0; transform: translateY(8px); } to{ opacity:1; transform:none; } }
 
 /* ---------------------------------------------------------------- hero */

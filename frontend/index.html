@@ -28,10 +28,8 @@
       <button class="nav-btn" data-page="practice" id="navPractice" style="display:none;">Practice</button>
       <button class="nav-btn" data-page="progress" id="navProgress" style="display:none;">Progress</button>
       <button class="nav-btn" data-page="physics" id="navPhysics" style="display:none;">Physics</button>
-      <button class="nav-btn" data-page="pricing">Pricing</button>
-      <button class="nav-btn" data-page="contact">Contact</button>
-      <button class="nav-btn" data-page="admin">Admin</button>
       <button class="nav-btn" data-page="lecturer" id="navLecturer" style="display:none;">Lecturer Hub</button>
+      <button class="nav-btn" data-page="admin" id="navAdmin" style="display:none;">Admin</button>
       <button class="nav-btn" id="navLogout" style="display:none;">Logout</button>
     </div>
   </div>
@@ -97,19 +95,14 @@
   <div id="registerPage" class="page">
     <div class="card" style="max-width:560px; margin:0 auto;">
       <h2>Create your account</h2>
-      <p style="color:var(--ink-soft); margin-bottom:1.25rem; font-size:0.92rem;">Register as a Student, Faculty member, or Admin. We'll send a one-time code to verify your email.</p>
+      <p style="color:var(--ink-soft); margin-bottom:1.25rem; font-size:0.92rem;">Register as a Student or Faculty member. We'll send a one-time code to verify your email.</p>
 
       <div class="field-group">
         <label class="field-label" for="authRole">I am registering as</label>
         <select id="authRole">
           <option value="student">Student</option>
           <option value="faculty">Faculty / Lecturer</option>
-          <option value="admin">Admin</option>
         </select>
-      </div>
-      <div class="field-group" id="adminCodeGroup" style="display:none;">
-        <label class="field-label" for="authAdminCode">Admin invite code</label>
-        <input type="text" id="authAdminCode" placeholder="Provided by the institution">
       </div>
       <div class="field-group">
         <label class="field-label" for="authName">Full name</label>
@@ -305,14 +298,6 @@
     </div>
     <div class="card">
       <div class="flex-between">
-        <h3 style="margin-bottom:0;">📝 Topic-wise quiz · Level 1</h3>
-        <span class="badge" id="quizCountBadge">6 questions</span>
-      </div>
-      <div id="quizContainer" class="mt-2"></div>
-      <button id="submitQuizBtn" class="btn btn-primary mt-2">Submit quiz</button>
-    </div>
-    <div class="card">
-      <div class="flex-between">
         <h3 style="margin-bottom:0;">📋 Scheduled tests from faculty</h3>
         <button id="refreshStudentTestsBtn" class="btn btn-outline">Refresh</button>
       </div>
@@ -391,88 +376,61 @@
     </div>
   </div>
 
-  <!-- ===================== PRICING ===================== -->
-  <div id="pricingPage" class="page">
-    <div class="hero" style="padding-top:0;">
-      <div class="eyebrow">Pricing</div>
-      <h1 style="font-size:clamp(1.8rem,4vw,2.6rem);">Choose your climbing pace</h1>
-      <p class="lead">Every plan includes the Connectomic framework. Higher tiers unlock deeper analytics and faculty access.</p>
-    </div>
-    <div class="grid-3">
-      <div class="card price-card">
-        <h3>📖 Free</h3>
-        <div class="price">₹0</div>
-        <ul>
-          <li>✔️ 30% of chapter library</li>
-          <li>✔️ Basic Level-1 quizzes</li>
-          <li>✔️ Community discussion access</li>
-          <li>✔️ Welcome &amp; Seven Hills guide</li>
-        </ul>
-        <button class="btn btn-outline btn-block" disabled>Current plan</button>
+  <!-- ===================== ADMIN PORTAL (separate from student/faculty login) ===================== -->
+  <div id="adminLoginPage" class="page">
+    <div class="card" style="max-width:480px; margin:0 auto;">
+      <h2>🔐 Admin Portal</h2>
+      <p style="color:var(--ink-soft); margin-bottom:1.25rem; font-size:0.92rem;">This is a separate sign-in for platform administrators only. Students and faculty should use the regular Login page.</p>
+
+      <div class="field-group">
+        <label class="field-label" for="adminLoginEmail">Admin email</label>
+        <input type="email" id="adminLoginEmail" placeholder="admin@example.com" required>
       </div>
-      <div class="card price-card featured">
-        <h3>🚀 Pro</h3>
-        <div class="price">₹999<span style="font-size:0.9rem; color:var(--ink-soft);">/month</span></div>
-        <ul>
-          <li>✔️ Full e-books &amp; lecture library</li>
-          <li>✔️ Error Atlas + Remedial Ladder</li>
-          <li>✔️ Personalised Seven Hills plan</li>
-          <li>✔️ Advanced practice mode (once unlocked)</li>
-        </ul>
-        <button class="btn btn-primary btn-block" id="upgradeProBtn">Upgrade to Pro</button>
+      <div class="field-group">
+        <label class="field-label" for="adminLoginPassword">Password</label>
+        <input type="password" id="adminLoginPassword" placeholder="Your password" required>
       </div>
-      <div class="card price-card">
-        <h3>🏆 Premium</h3>
-        <div class="price">₹1999<span style="font-size:0.9rem; color:var(--ink-soft);">/year</span></div>
-        <ul>
-          <li>✔️ Everything in Pro</li>
-          <li>✔️ Live doubt-clearing sessions</li>
-          <li>✔️ Priority support</li>
-          <li>✔️ Extra full-length mock tests</li>
-        </ul>
-        <button class="btn btn-primary btn-block" id="upgradePremiumBtn">Contact for payment</button>
-      </div>
-    </div>
-    <div class="card" style="text-align:center;">
-      <p class="badge warn">📢 Institutional &amp; bulk discounts available — write to <strong>admin@neetctk.com</strong></p>
+      <button id="adminPortalLoginBtn" class="btn btn-primary btn-block mt-1">Log in to Admin Portal</button>
+      <div id="adminPortalLoginMessage" class="mt-2"></div>
+      <p class="helper-text mt-2">Need an admin account? <a href="#" id="goToAdminRegisterLink">Register with an invite code</a></p>
     </div>
   </div>
 
-  <!-- ===================== CONTACT ===================== -->
-  <div id="contactPage" class="page">
-    <div class="grid-2">
-      <div class="card">
-        <h3>📞 Get in touch</h3>
-        <p style="margin:0.4rem 0;">✉️ support@neetctk.com</p>
-        <p style="margin:0.4rem 0;">📱 +91-9876543210</p>
-        <p style="margin:0.4rem 0;">📍 CTK Learning Hub, Delhi NCR</p>
-        <p class="helper-text mt-2">We typically respond within one working day. For urgent exam-date queries, please use the feedback form — admin reviews these daily.</p>
+  <div id="adminRegisterPage" class="page">
+    <div class="card" style="max-width:480px; margin:0 auto;">
+      <h2>🔐 Register an Admin account</h2>
+      <p style="color:var(--ink-soft); margin-bottom:1.25rem; font-size:0.92rem;">Requires an institution-issued invite code. We'll send a one-time code to verify your email.</p>
+      <div class="field-group">
+        <label class="field-label" for="adminRegAdminCode">Admin invite code</label>
+        <input type="text" id="adminRegAdminCode" placeholder="Provided by the institution">
       </div>
-      <div class="card">
-        <h3>💬 Send feedback or a query</h3>
+      <div class="field-group">
+        <label class="field-label" for="adminRegName">Full name</label>
+        <input type="text" id="adminRegName" placeholder="e.g. Dr. Priya Nair" required>
+      </div>
+      <div class="field-group">
+        <label class="field-label" for="adminRegEmail">Email</label>
+        <input type="email" id="adminRegEmail" placeholder="you@example.com" required>
+      </div>
+      <div class="grid-2">
         <div class="field-group">
-          <textarea id="feedbackMsg" rows="5" placeholder="Tell us what's on your mind — a bug, a suggestion, or a question about your plan."></textarea>
+          <label class="field-label" for="adminRegPassword">Password</label>
+          <input type="password" id="adminRegPassword" placeholder="At least 8 characters" required>
         </div>
-        <button id="sendFeedbackBtn" class="btn btn-primary">Send feedback</button>
-        <div id="feedbackResp" class="mt-2"></div>
+        <div class="field-group">
+          <label class="field-label" for="adminRegConfirmPassword">Confirm password</label>
+          <input type="password" id="adminRegConfirmPassword" placeholder="Re-enter password" required>
+        </div>
       </div>
+      <button id="adminRegisterBtn" class="btn btn-primary btn-block mt-2">Create admin account &amp; send OTP</button>
+      <div id="adminRegMessage" class="mt-2"></div>
+      <p class="helper-text mt-2">Already have an admin account? <a href="#" id="goToAdminLoginLink">Log in</a></p>
     </div>
   </div>
 
-  <!-- ===================== ADMIN ===================== -->
+  <!-- ===================== ADMIN CONSOLE (only reachable after a verified admin-role login) ===================== -->
   <div id="adminPage" class="page">
-    <div class="card" id="adminLoginCard">
-      <h2>🔐 Admin console</h2>
-      <p style="color:var(--ink-soft); font-size:0.92rem; margin-bottom:1rem;">Enter the admin passcode to manage exam dates, lecture approvals, analytics and platform data.</p>
-      <div class="flex-row">
-        <input type="password" id="adminPasscode" placeholder="Admin passcode" style="max-width:260px;">
-        <button id="adminLoginBtn" class="btn btn-primary">Unlock console</button>
-      </div>
-      <p class="helper-text mt-1">Demo passcode: <strong>ctk-admin</strong> (set <code>ADMIN_PASSCODE</code> in production).</p>
-      <div id="adminLoginError" class="mt-1"></div>
-    </div>
-
-    <div id="adminConsole" style="display:none;">
+    <div id="adminConsole">
       <div class="card">
         <h3>📅 Platform exam date</h3>
         <p class="helper-text">This date drives every student's personalised plan on the Guidance page.</p>
@@ -484,7 +442,7 @@
 
       <div class="card">
         <h3>🎯 Live NEET cutoff data</h3>
-        <p class="helper-text">Real cutoff figures fetched from the open web and parsed by AI (see backend). Refreshes automatically every 30 days, or trigger manually below. Requires logging in as Admin via the Login page (the passcode above only unlocks this legacy console).</p>
+        <p class="helper-text">Real cutoff figures fetched from the open web and parsed by AI (see backend). Refreshes automatically every 30 days, or trigger manually below.</p>
         <button id="refreshCutoffCacheBtn" class="btn btn-primary mt-1">Refresh live cutoff data now</button>
         <div id="cutoffCacheMessage" class="mt-2"></div>
         <div id="cutoffCacheTable" class="mt-2"></div>
@@ -512,9 +470,19 @@
       </div>
     </div>
   </div>
-
   <!-- ===================== LECTURER HUB ===================== -->
   <div id="lecturerPage" class="page">
+    <div class="subnav" id="facultySubnav">
+      <button class="subnav-btn active" data-fsec="fsecOverview">🏠 Overview &amp; Lectures</button>
+      <button class="subnav-btn" data-fsec="fsecChapters">📂 Chapters</button>
+      <button class="subnav-btn" data-fsec="fsecTests">📝 Tests</button>
+      <button class="subnav-btn" data-fsec="fsecMaterials">📚 Materials</button>
+      <button class="subnav-btn" data-fsec="fsecStudents">🧑‍🎓 Student Analytics</button>
+      <button class="subnav-btn" data-fsec="fsecAtlas">🗺️ Error Atlas</button>
+      <button class="subnav-btn" data-fsec="fsecClassAnalytics">📊 Class Analytics</button>
+    </div>
+
+    <div class="faculty-section active" id="fsecOverview">
     <div class="card">
       <h2>👨‍🏫 Senior Lecturer Portal</h2>
       <p style="color:var(--ink-soft); font-size:0.92rem; margin-bottom:1rem;">Submit a lecture for admin review. Once approved, it appears immediately on the Practice page for every student.</p>
@@ -547,8 +515,10 @@
       </div>
       <div id="mySubmissionsList" class="mt-2"></div>
     </div>
+    </div><!-- /fsecOverview -->
 
     <!-- ===== CHAPTER MANAGEMENT ===== -->
+    <div class="faculty-section" id="fsecChapters">
     <div class="card">
       <h3>📂 Chapter management</h3>
       <p style="color:var(--ink-soft); font-size:0.92rem; margin-bottom:1rem;">The whole platform is organised chapter-wise. Create chapters here, then assign materials, tests and lecture links to them below. Drag the ↕ handles to reorder; the order shown here is the order students see.</p>
@@ -570,20 +540,20 @@
       <div id="chapterMessage" class="mt-2"></div>
       <div id="chapterList" class="mt-2"></div>
     </div>
+    </div><!-- /fsecChapters -->
 
     <!-- ===== TEST SCHEDULING ===== -->
+    <div class="faculty-section" id="fsecTests">
     <div class="card">
-      <h3>📝 Schedule a test</h3>
-      <p style="color:var(--ink-soft); font-size:0.92rem; margin-bottom:1rem;">Create MCQ or fill-in-the-blank questions manually, or upload a PDF / image of an existing test and let OCR extract the questions for you to review.</p>
+      <h3>📝 Create a test — paste the whole text, let AI arrange the questions</h3>
+      <p style="color:var(--ink-soft); font-size:0.92rem; margin-bottom:1rem;">Paste the entire test/question paper text below in one go — no need to type each question separately. An AI model (with a rule-based fallback if no AI key is configured) will arrange it into individual questions and options. <strong>It will never guess the correct answers</strong> — review each extracted question below and set the correct option yourself; that's your answer key.</p>
 
-      <div class="flex-row mt-1" style="margin-bottom:1rem;">
-        <div class="field-group" style="flex:1; min-width:220px; margin-bottom:0;">
-          <label class="field-label" for="ocrFileInput">OCR upload (PDF or image of a test paper)</label>
-          <input type="file" id="ocrFileInput" accept=".pdf,.png,.jpg,.jpeg,.webp">
-        </div>
-        <button id="ocrExtractBtn" class="btn btn-outline" style="align-self:flex-end;">Extract questions</button>
+      <div class="field-group">
+        <label class="field-label" for="testRawTextInput">Paste full test text</label>
+        <textarea id="testRawTextInput" rows="8" placeholder="Paste the whole set of questions here, e.g.:&#10;1. What is the SI unit of force?&#10;A) Joule  B) Newton  C) Watt  D) Pascal&#10;2. ..."></textarea>
       </div>
-      <div id="ocrStatus"></div>
+      <button id="extractTestQuestionsBtn" class="btn btn-outline">✨ Arrange into questions with AI</button>
+      <div id="extractTestStatus" class="mt-1"></div>
       <div id="ocrPreviewContainer" class="mt-1"></div>
 
       <hr class="divider">
@@ -631,8 +601,10 @@
         </div>
       </div>
 
+      <h4 class="mt-2" style="margin-bottom:0.4rem;">Questions &amp; your answer key</h4>
+      <p class="helper-text" style="margin-bottom:0.6rem;">Questions extracted above appear here for review. Set "Correct option" for each one yourself — that's the official answer key.</p>
       <div id="testQuestionsContainer" class="mt-1"></div>
-      <button id="addTestQuestionBtn" class="btn btn-outline mt-1">+ Add question</button>
+      <button id="addTestQuestionBtn" class="btn btn-outline mt-1">+ Add question manually</button>
 
       <button id="createTestBtn" class="btn btn-primary btn-block mt-2">Schedule test</button>
       <div id="createTestMessage" class="mt-2"></div>
@@ -645,11 +617,13 @@
       </div>
       <div id="facultyTestsList" class="mt-2"></div>
     </div>
+    </div><!-- /fsecTests -->
 
     <!-- ===== STUDY MATERIALS ===== -->
+    <div class="faculty-section" id="fsecMaterials">
     <div class="card">
       <h3>📚 Share study material</h3>
-      <p style="color:var(--ink-soft); font-size:0.92rem; margin-bottom:1rem;">Upload a PDF, PPT/PPTX, DOC/DOCX, or image — or share a link (e.g. a YouTube video). Published immediately to all students.</p>
+      <p style="color:var(--ink-soft); font-size:0.92rem; margin-bottom:1rem;">Share a link to your material — a Google Drive link, YouTube video, or any other external resource. We no longer accept direct file uploads here, since storing files would quickly eat up the platform's database storage; a shared link keeps the same material accessible without that cost.</p>
 
       <div class="grid-2">
         <div class="field-group">
@@ -677,21 +651,10 @@
             <option value="3">Term 3 · Advanced Applications</option>
           </select>
         </div>
-        <div class="field-group">
-          <label class="field-label" for="materialKind">Type</label>
-          <select id="materialKind">
-            <option value="file">Upload a file (PDF / PPT / DOCX / image)</option>
-            <option value="link">Share a link (e.g. YouTube)</option>
-          </select>
-        </div>
-        <div class="field-group" id="materialFileGroup" style="grid-column:1/-1;">
-          <label class="field-label" for="materialFileInput">File</label>
-          <input type="file" id="materialFileInput" accept=".pdf,.ppt,.pptx,.doc,.docx,.png,.jpg,.jpeg,.webp">
-          <p class="helper-text">Max 20 MB. PDF, PPT/PPTX, DOC/DOCX, PNG, JPG, WEBP.</p>
-        </div>
-        <div class="field-group" id="materialUrlGroup" style="grid-column:1/-1; display:none;">
-          <label class="field-label" for="materialUrlInput">URL</label>
-          <input type="url" id="materialUrlInput" placeholder="https://www.youtube.com/watch?v=...">
+        <div class="field-group" id="materialUrlGroup" style="grid-column:1/-1;">
+          <label class="field-label" for="materialUrlInput">Link (Google Drive, YouTube, etc.)</label>
+          <input type="url" id="materialUrlInput" placeholder="https://drive.google.com/file/d/...">
+          <p class="helper-text">Tip: in Google Drive, right-click the file → Share → "Anyone with the link" → copy link.</p>
         </div>
         <div class="field-group" style="grid-column:1/-1;">
           <label class="field-label" for="materialDescription">Description (optional)</label>
@@ -745,19 +708,23 @@
       <div id="facLectureMessage" class="mt-2"></div>
       <div id="facLectureList" class="mt-2"></div>
     </div>
+    </div><!-- /fsecMaterials -->
 
     <!-- ===== INDIVIDUAL STUDENT ANALYTICS ===== -->
+    <div class="faculty-section" id="fsecStudents">
     <div class="card">
       <h3>🧑‍🎓 Individual student analytics</h3>
-      <p style="color:var(--ink-soft); font-size:0.92rem; margin-bottom:1rem;">Pick a student who has engaged with your tests, materials or lectures to see their complete performance history.</p>
+      <p style="color:var(--ink-soft); font-size:0.92rem; margin-bottom:1rem;">Pick a student who has engaged with your tests, materials or lectures to see their complete performance history, with graphs.</p>
       <div class="flex-row">
         <select id="studentAnalyticsSelect" style="flex:1; min-width:240px;"><option value="">Select a student…</option></select>
         <button id="loadStudentAnalyticsBtn" class="btn btn-outline">View analytics</button>
       </div>
       <div id="studentAnalyticsResult" class="mt-2"></div>
     </div>
+    </div><!-- /fsecStudents -->
 
     <!-- ===== ERROR ATLAS (HOTSPOT ANALYSIS) ===== -->
+    <div class="faculty-section" id="fsecAtlas">
     <div class="card">
       <div class="flex-between">
         <h3 style="margin-bottom:0;">🗺️ Error Atlas — hotspot analysis</h3>
@@ -766,8 +733,10 @@
       <p style="color:var(--ink-soft); font-size:0.92rem; margin:0.5rem 0 1rem;">Chapter-wise breakdown of the questions and concepts students most often get wrong across your tests.</p>
       <div id="errorAtlasContainer"></div>
     </div>
+    </div><!-- /fsecAtlas -->
 
     <!-- ===== LECTURER ANALYTICS DASHBOARD ===== -->
+    <div class="faculty-section" id="fsecClassAnalytics">
     <div class="card">
       <h3>📊 Analytics — weak topics across your tests</h3>
       <div id="facultyWeakTopics"></div>
@@ -782,11 +751,15 @@
       <h3>🧑‍🎓 Recent student attempts</h3>
       <div id="facultyRecentAttempts"></div>
     </div>
+    </div><!-- /fsecClassAnalytics -->
   </div>
 
 
 
-  <div class="site-footer">NEET CTK IGNITION · Built on the Connectomic Theory of Knowledge · Seven Hills of Knowledge</div>
+  <div class="site-footer">
+    NEET CTK IGNITION · Built on the Connectomic Theory of Knowledge · Seven Hills of Knowledge<br>
+    <a href="#" class="footer-admin-link" id="footerAdminLink">Admin Portal</a>
+  </div>
 </div>
 
 <div id="toast"></div>
