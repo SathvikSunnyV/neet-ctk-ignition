@@ -1,8 +1,5 @@
 node_modules/
-*.sqlite
-*.sqlite-shm
-*.sqlite-wal
 .env
-.envexample
-.env.local
+*.log
 .DS_Store
+.envexample

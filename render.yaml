@@ -3,7 +3,7 @@
 
 services:
   - type: web
-    name: neet-ctk-ignition
+    name: ctk-bridge-course
     runtime: node
     rootDir: backend
     buildCommand: npm install
