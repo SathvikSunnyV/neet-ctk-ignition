@@ -1,7 +1,7 @@
 {
-  "name": "neet-ctk-ignition-backend",
-  "version": "2.0.0",
-  "description": "NEET CTK IGNITION backend — PostgreSQL edition (Render / Railway ready)",
+  "name": "ctk-bridge-course-backend",
+  "version": "3.0.0",
+  "description": "CTK Bridge Course backend — NEET & JEE preparation platform (PostgreSQL, Render/Railway ready)",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",

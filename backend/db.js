@@ -1,6 +1,6 @@
-// db.js — NEET CTK IGNITION  |  PostgreSQL edition
-// Replaces better-sqlite3 with `pg` (node-postgres).
-// All queries are async; the pool is exported and used directly in server.js.
+// db.js — CTK BRIDGE COURSE  |  PostgreSQL edition
+// Expanded from NEET CTK IGNITION to support both NEET & JEE,
+// centralized question bank, all test types, and faculty approval workflow.
 
 const { Pool } = require('pg');
 
@@ -12,12 +12,10 @@ const pool = new Pool({
 });
 
 // ---------------------------------------------------------------------------
-// SCHEMA — run once at startup (idempotent)
+// SCHEMA
 // ---------------------------------------------------------------------------
 async function initSchema() {
-    // -----------------------------------------------------------------
-    // AUTH: users table (Student / Faculty / Admin)
-    // -----------------------------------------------------------------
+    // AUTH
     await pool.query(`
         CREATE TABLE IF NOT EXISTS users (
             id              SERIAL PRIMARY KEY,
@@ -33,31 +31,29 @@ async function initSchema() {
             onboarding_done BOOLEAN DEFAULT FALSE,
             created_at      TIMESTAMPTZ DEFAULT NOW()
         );
-
-        -- simple in-DB rate limiting for OTP / login attempts
         CREATE TABLE IF NOT EXISTS auth_attempts (
             id          SERIAL PRIMARY KEY,
             email       TEXT NOT NULL,
-            kind        TEXT NOT NULL, -- 'login' | 'otp' | 'reset'
+            kind        TEXT NOT NULL,
             created_at  TIMESTAMPTZ DEFAULT NOW()
         );
     `);
 
     await pool.query(`
         CREATE TABLE IF NOT EXISTS students (
-            email       TEXT PRIMARY KEY,
-            name        TEXT NOT NULL,
-            phone       TEXT,
-            category    TEXT,
-            aim         TEXT,
-            exam_date   TEXT,
+            email               TEXT PRIMARY KEY,
+            name                TEXT NOT NULL,
+            phone               TEXT,
+            category            TEXT,
+            aim                 TEXT,
+            exam_date           TEXT,
             target_institution  TEXT,
             state               TEXT,
             current_class       TEXT,
             daily_study_hours   REAL,
             prep_level          TEXT,
-            target_exam         TEXT DEFAULT 'NEET',
-            created_at  TIMESTAMPTZ DEFAULT NOW()
+            target_exam         TEXT DEFAULT 'NEET' CHECK (target_exam IN ('NEET','JEE','BOTH')),
+            created_at          TIMESTAMPTZ DEFAULT NOW()
         );
 
         CREATE TABLE IF NOT EXISTS progress (
@@ -65,6 +61,8 @@ async function initSchema() {
             bio_accuracy    REAL DEFAULT 40,
             phy_accuracy    REAL DEFAULT 35,
             chem_accuracy   REAL DEFAULT 38,
+            zoo_accuracy    REAL DEFAULT 40,
+            math_accuracy   REAL DEFAULT 35,
             quiz_count      INTEGER DEFAULT 0,
             weekly_history  TEXT DEFAULT '[40,40,40,40,40,40,40]'
         );
@@ -73,22 +71,15 @@ async function initSchema() {
             email   TEXT PRIMARY KEY REFERENCES students(email) ON DELETE CASCADE,
             bio     REAL,
             phy     REAL,
-            chem    REAL
+            chem    REAL,
+            zoo     REAL,
+            math    REAL
         );
 
-        CREATE TABLE IF NOT EXISTS lectures (
-            id              SERIAL PRIMARY KEY,
-            title           TEXT NOT NULL,
-            subject         TEXT NOT NULL,
-            url             TEXT NOT NULL,
-            lecturer_name   TEXT NOT NULL,
-            approved        INTEGER DEFAULT 0,
-            created_at      TIMESTAMPTZ DEFAULT NOW()
-        );
-
-        CREATE TABLE IF NOT EXISTS feedback (
-            id          SERIAL PRIMARY KEY,
-            message     TEXT NOT NULL,
+        CREATE TABLE IF NOT EXISTS faculty (
+            email       TEXT PRIMARY KEY REFERENCES users(email) ON DELETE CASCADE,
+            name        TEXT NOT NULL,
+            department  TEXT,
             created_at  TIMESTAMPTZ DEFAULT NOW()
         );
 
@@ -97,20 +88,160 @@ async function initSchema() {
             value   TEXT
         );
 
-        -- Faculty profile (linked to users)
-        CREATE TABLE IF NOT EXISTS faculty (
-            email       TEXT PRIMARY KEY REFERENCES users(email) ON DELETE CASCADE,
-            name        TEXT NOT NULL,
-            department  TEXT,
+        CREATE TABLE IF NOT EXISTS feedback (
+            id          SERIAL PRIMARY KEY,
+            message     TEXT NOT NULL,
             created_at  TIMESTAMPTZ DEFAULT NOW()
         );
 
-        -- Faculty-created tests
+        -- ===================================================================
+        -- CENTRALIZED QUESTION BANK (core asset — single source of truth)
+        -- All test types draw exclusively from here.
+        -- ===================================================================
+        CREATE TABLE IF NOT EXISTS question_bank (
+            id              SERIAL PRIMARY KEY,
+            course_type     TEXT NOT NULL DEFAULT 'NEET' CHECK (course_type IN ('NEET','JEE','BOTH')),
+            subject         TEXT NOT NULL,
+            chapter_name    TEXT NOT NULL,
+            topic           TEXT,
+            subtopic        TEXT,
+            question_text   TEXT NOT NULL,
+            option_a        TEXT NOT NULL,
+            option_b        TEXT NOT NULL,
+            option_c        TEXT NOT NULL,
+            option_d        TEXT NOT NULL,
+            correct_answer  TEXT NOT NULL CHECK (correct_answer IN ('A','B','C','D')),
+            explanation     TEXT,
+            difficulty      TEXT NOT NULL DEFAULT 'Moderate' CHECK (difficulty IN ('Easy','Moderate','Difficult')),
+            estimated_time  INTEGER DEFAULT 60,  -- seconds
+            -- approval workflow
+            status          TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','approved','rejected')),
+            submitted_by    TEXT REFERENCES faculty(email) ON DELETE SET NULL,
+            approved_by     TEXT REFERENCES faculty(email) ON DELETE SET NULL,
+            approved_at     TIMESTAMPTZ,
+            rejection_note  TEXT,
+            -- usage tracking (critical requirement)
+            usage_count     INTEGER DEFAULT 0,
+            created_at      TIMESTAMPTZ DEFAULT NOW()
+        );
+
+        -- Student-level exposure history (which questions a student has seen)
+        CREATE TABLE IF NOT EXISTS question_exposure (
+            student_email   TEXT REFERENCES students(email) ON DELETE CASCADE,
+            question_id     INTEGER REFERENCES question_bank(id) ON DELETE CASCADE,
+            last_seen_at    TIMESTAMPTZ DEFAULT NOW(),
+            times_seen      INTEGER DEFAULT 1,
+            PRIMARY KEY (student_email, question_id)
+        );
+
+        -- ===================================================================
+        -- CHAPTERS (organized under course_type > subject)
+        -- ===================================================================
+        CREATE TABLE IF NOT EXISTS chapters (
+            id              SERIAL PRIMARY KEY,
+            course_type     TEXT NOT NULL DEFAULT 'NEET' CHECK (course_type IN ('NEET','JEE','BOTH')),
+            subject         TEXT NOT NULL,
+            name            TEXT NOT NULL,
+            description     TEXT,
+            position        INTEGER NOT NULL DEFAULT 0,
+            created_by      TEXT REFERENCES faculty(email) ON DELETE SET NULL,
+            created_at      TIMESTAMPTZ DEFAULT NOW(),
+            UNIQUE (course_type, subject, name)
+        );
+
+        -- ===================================================================
+        -- TEST INSTANCES — all generated tests (entry, daily, weekly, monthly,
+        -- grand, mock) are stored here with type classification
+        -- ===================================================================
+        CREATE TABLE IF NOT EXISTS generated_tests (
+            id              SERIAL PRIMARY KEY,
+            test_type       TEXT NOT NULL CHECK (test_type IN (
+                                'entry','daily','weekly','monthly','grand','mock','chapter_combo','faculty')),
+            course_type     TEXT NOT NULL DEFAULT 'NEET',
+            title           TEXT NOT NULL,
+            subject_filter  TEXT,           -- NULL = all subjects
+            chapter_filter  TEXT,           -- for chapter-combo tests
+            difficulty_mode TEXT DEFAULT 'Moderate' CHECK (difficulty_mode IN ('Easy','Moderate','Difficult','Mixed')),
+            question_count  INTEGER DEFAULT 90,
+            time_limit_min  INTEGER DEFAULT 180,
+            negative_marking BOOLEAN DEFAULT FALSE,
+            -- for faculty tests
+            created_by      TEXT REFERENCES faculty(email) ON DELETE SET NULL,
+            -- for auto-generated daily/weekly/monthly
+            generated_for_date DATE,
+            -- schedule metadata
+            scheduled_at    TIMESTAMPTZ,
+            created_at      TIMESTAMPTZ DEFAULT NOW()
+        );
+
+        -- Questions assigned to a generated test (ordered, with randomised options)
+        CREATE TABLE IF NOT EXISTS generated_test_questions (
+            id              SERIAL PRIMARY KEY,
+            test_id         INTEGER REFERENCES generated_tests(id) ON DELETE CASCADE,
+            question_id     INTEGER REFERENCES question_bank(id) ON DELETE CASCADE,
+            position        INTEGER DEFAULT 0,
+            -- randomized option order stored as JSON array of original indices [2,0,3,1]
+            option_order    JSONB DEFAULT '[0,1,2,3]'
+        );
+
+        -- Student attempts at any generated test. test_id intentionally has
+        -- no FK constraint: it's shared by the legacy faculty "tests" table
+        -- (server.js) and the Bridge Course "generated_tests" table
+        -- (qbank.js) — a single FK could only validate against one of them.
+        CREATE TABLE IF NOT EXISTS test_attempts (
+            id              SERIAL PRIMARY KEY,
+            test_id         INTEGER,
+            student_email   TEXT REFERENCES students(email) ON DELETE CASCADE,
+            answers         JSONB,          -- {question_id: 'A'|'B'|'C'|'D'|null}
+            score           REAL,
+            total           INTEGER,
+            correct_count   INTEGER DEFAULT 0,
+            wrong_count     INTEGER DEFAULT 0,
+            skipped_count   INTEGER DEFAULT 0,
+            neet_equiv_score REAL,
+            percentile_est  REAL,
+            time_taken_sec  INTEGER,
+            submitted_at    TIMESTAMPTZ DEFAULT NOW()
+        );
+
+        -- Per-question mistake log. test_id and question_id intentionally
+        -- have no FK constraints: both are shared between the legacy
+        -- faculty-created test system (server.js — test_id -> tests.id,
+        -- question_id -> test_questions.id) and the Bridge Course engine
+        -- (qbank.js — test_id -> generated_tests.id, question_id ->
+        -- question_bank.id). A single FK could only validate one pairing.
+        CREATE TABLE IF NOT EXISTS mistakes (
+            id              SERIAL PRIMARY KEY,
+            student_email   TEXT REFERENCES students(email) ON DELETE CASCADE,
+            test_id         INTEGER,
+            question_id     INTEGER,
+            subject         TEXT,
+            chapter_name    TEXT,
+            topic           TEXT,
+            subtopic        TEXT,
+            concept         TEXT,
+            difficulty      TEXT,
+            mistake_type    TEXT,
+            created_at      TIMESTAMPTZ DEFAULT NOW()
+        );
+
+        -- Fixed entry tests per course type (3 per course, pre-generated)
+        CREATE TABLE IF NOT EXISTS entry_tests (
+            id              SERIAL PRIMARY KEY,
+            course_type     TEXT NOT NULL CHECK (course_type IN ('NEET','JEE')),
+            test_number     INTEGER NOT NULL CHECK (test_number IN (1,2,3)),
+            test_id         INTEGER REFERENCES generated_tests(id) ON DELETE SET NULL,
+            title           TEXT NOT NULL,
+            UNIQUE (course_type, test_number)
+        );
+
+        -- Legacy faculty-created tests (preserved from original)
         CREATE TABLE IF NOT EXISTS tests (
             id              SERIAL PRIMARY KEY,
             title           TEXT NOT NULL,
             subject         TEXT NOT NULL,
             chapter         TEXT,
+            chapter_id      INTEGER REFERENCES chapters(id) ON DELETE SET NULL,
             difficulty      TEXT DEFAULT 'Medium',
             time_limit_min  INTEGER DEFAULT 30,
             negative_marking BOOLEAN DEFAULT FALSE,
@@ -120,71 +251,51 @@ async function initSchema() {
             created_at      TIMESTAMPTZ DEFAULT NOW()
         );
 
-        -- Questions belonging to a test (MCQ or fill-in-the-blank)
         CREATE TABLE IF NOT EXISTS test_questions (
             id              SERIAL PRIMARY KEY,
             test_id         INTEGER REFERENCES tests(id) ON DELETE CASCADE,
             q_type          TEXT NOT NULL DEFAULT 'mcq' CHECK (q_type IN ('mcq','fill_blank')),
             question_text   TEXT NOT NULL,
-            options         JSONB,          -- for MCQ: array of option strings
-            correct_answer  TEXT NOT NULL,  -- option index (as string) for MCQ, or expected text for fill-in
+            options         JSONB,
+            correct_answer  TEXT NOT NULL,
             topic           TEXT,
             subtopic        TEXT,
             concept         TEXT,
             difficulty      TEXT DEFAULT 'Medium',
-            position        INTEGER DEFAULT 0
+            position        INTEGER DEFAULT 0,
+            ocr_source      BOOLEAN DEFAULT FALSE
         );
 
-        -- Student attempts at a test
-        CREATE TABLE IF NOT EXISTS test_attempts (
-            id              SERIAL PRIMARY KEY,
+        CREATE TABLE IF NOT EXISTS test_assignments (
             test_id         INTEGER REFERENCES tests(id) ON DELETE CASCADE,
             student_email   TEXT REFERENCES students(email) ON DELETE CASCADE,
-            answers         JSONB,
-            score           REAL,
-            total           INTEGER,
-            submitted_at    TIMESTAMPTZ DEFAULT NOW()
+            group_name      TEXT,
+            assigned_at     TIMESTAMPTZ DEFAULT NOW(),
+            PRIMARY KEY (test_id, student_email)
         );
 
-        -- Per-question mistake log (feeds the Mistake Analysis Engine)
-        CREATE TABLE IF NOT EXISTS mistakes (
+        -- Study materials
+        CREATE TABLE IF NOT EXISTS lectures (
             id              SERIAL PRIMARY KEY,
-            student_email   TEXT REFERENCES students(email) ON DELETE CASCADE,
-            test_id         INTEGER REFERENCES tests(id) ON DELETE SET NULL,
-            question_id     INTEGER,
-            subject         TEXT,
-            topic           TEXT,
-            subtopic        TEXT,
-            concept         TEXT,
-            difficulty      TEXT,
-            mistake_type    TEXT, -- 'conceptual' | 'calculation' | 'memory' | 'unattempted'
+            title           TEXT NOT NULL,
+            subject         TEXT NOT NULL,
+            url             TEXT NOT NULL,
+            lecturer_name   TEXT NOT NULL,
+            lecturer_email  TEXT,
+            chapter_id      INTEGER REFERENCES chapters(id) ON DELETE SET NULL,
+            course_type     TEXT DEFAULT 'NEET',
+            approved        INTEGER DEFAULT 0,
             created_at      TIMESTAMPTZ DEFAULT NOW()
         );
 
-        -- Live-researched NEET cutoff data (replaces static guesses once
-        -- populated). One row per (year, category). Refreshed periodically
-        -- by research.js via free web search + free LLM extraction.
-        CREATE TABLE IF NOT EXISTS cutoff_cache (
-            year        INTEGER NOT NULL,
-            category    TEXT NOT NULL,
-            aiims       REAL NOT NULL,
-            govt        REAL NOT NULL,
-            private     REAL NOT NULL,
-            source      TEXT DEFAULT 'web-research-ai',
-            fetched_at  TIMESTAMPTZ DEFAULT NOW(),
-            PRIMARY KEY (year, category)
-        );
-
-        -- Faculty-uploaded study materials (PDFs, PPTs, DOCX, images, or
-        -- YouTube/external links). File bytes are stored directly in
-        -- Postgres (bytea) so they survive redeploys on free hosting tiers
-        -- that have an ephemeral filesystem.
         CREATE TABLE IF NOT EXISTS materials (
             id              SERIAL PRIMARY KEY,
             title           TEXT NOT NULL,
             subject         TEXT NOT NULL,
             chapter         TEXT,
-            material_type   TEXT NOT NULL DEFAULT 'file' CHECK (material_type IN ('file','link')),
+            chapter_id      INTEGER REFERENCES chapters(id) ON DELETE SET NULL,
+            topic           TEXT,
+            material_type   TEXT NOT NULL DEFAULT 'file' CHECK (material_type IN ('file','link','note')),
             file_name       TEXT,
             mime_type       TEXT,
             file_size       INTEGER,
@@ -192,74 +303,11 @@ async function initSchema() {
             external_url    TEXT,
             description     TEXT,
             uploaded_by     TEXT REFERENCES faculty(email) ON DELETE SET NULL,
+            term            INTEGER,
+            course_type     TEXT DEFAULT 'NEET',
             created_at      TIMESTAMPTZ DEFAULT NOW()
         );
 
-        -- ===================================================================
-        -- CHAPTER MANAGEMENT SYSTEM (additive — Faculty Module enhancement).
-        -- A chapter is the canonical organisational unit for a subject
-        -- (e.g. "Kinematics" under Physics). Materials, tests and lectures
-        -- can all be linked to a chapter via chapter_id (see migrations
-        -- below). Faculty can create/edit/delete/reorder chapters; deleting
-        -- a chapter never deletes the resources linked to it (ON DELETE
-        -- SET NULL), it just unlinks them.
-        -- ===================================================================
-        CREATE TABLE IF NOT EXISTS chapters (
-            id              SERIAL PRIMARY KEY,
-            subject         TEXT NOT NULL DEFAULT 'Physics',
-            name            TEXT NOT NULL,
-            description     TEXT,
-            position        INTEGER NOT NULL DEFAULT 0,
-            created_by      TEXT REFERENCES faculty(email) ON DELETE SET NULL,
-            created_at      TIMESTAMPTZ DEFAULT NOW(),
-            UNIQUE (subject, name)
-        );
-
-        -- ===================================================================
-        -- PHYSICS STUDENT MODULE (additive — see README "Physics Student
-        -- Module" section). The platform's curriculum-aligned subjects keep
-        -- working exactly as before; these tables add a dedicated,
-        -- Physics-curated experience: entry diagnostics, Term-organised
-        -- materials, granular lecture/material progress, and per-student
-        -- test assignment.
-        -- ===================================================================
-
-        -- The 3 fixed Physics entry-level diagnostics (Test 1 mandatory).
-        CREATE TABLE IF NOT EXISTS physics_entry_tests (
-            test_number     INTEGER PRIMARY KEY CHECK (test_number IN (1,2,3)),
-            title           TEXT NOT NULL,
-            mandatory       BOOLEAN NOT NULL DEFAULT FALSE
-        );
-
-        -- Questions belonging to each entry test (seeded with 10 dummy MCQs
-        -- per test for development purposes, per the spec).
-        CREATE TABLE IF NOT EXISTS physics_entry_questions (
-            id              SERIAL PRIMARY KEY,
-            test_number     INTEGER NOT NULL REFERENCES physics_entry_tests(test_number) ON DELETE CASCADE,
-            topic           TEXT NOT NULL,
-            question_text   TEXT NOT NULL,
-            options         JSONB NOT NULL,
-            correct_answer  INTEGER NOT NULL,
-            position        INTEGER DEFAULT 0
-        );
-
-        -- A student's attempt at an entry test, including the topic-wise
-        -- breakdown and the resulting proficiency classification.
-        CREATE TABLE IF NOT EXISTS physics_entry_attempts (
-            id                  SERIAL PRIMARY KEY,
-            student_email       TEXT REFERENCES students(email) ON DELETE CASCADE,
-            test_number         INTEGER NOT NULL,
-            answers             JSONB,
-            score               INTEGER,
-            total               INTEGER,
-            topic_breakdown     JSONB,
-            proficiency_level   TEXT,
-            time_taken_seconds  INTEGER,
-            submitted_at        TIMESTAMPTZ DEFAULT NOW()
-        );
-
-        -- Granular lecture-watch tracking (percentage watched + resume
-        -- position), one row per student per lecture.
         CREATE TABLE IF NOT EXISTS lecture_progress (
             student_email           TEXT REFERENCES students(email) ON DELETE CASCADE,
             lecture_id              INTEGER REFERENCES lectures(id) ON DELETE CASCADE,
@@ -270,8 +318,6 @@ async function initSchema() {
             PRIMARY KEY (student_email, lecture_id)
         );
 
-        -- Material view / download / completion tracking, one row per
-        -- student per material (feeds the Physics Progress Tracking System).
         CREATE TABLE IF NOT EXISTS material_progress (
             student_email   TEXT REFERENCES students(email) ON DELETE CASCADE,
             material_id     INTEGER REFERENCES materials(id) ON DELETE CASCADE,
@@ -282,22 +328,20 @@ async function initSchema() {
             PRIMARY KEY (student_email, material_id)
         );
 
-        -- Optional per-student/per-group test assignment. A test with NO
-        -- rows here remains visible to every student (preserves existing
-        -- behaviour for tests created before this feature existed); a test
-        -- WITH rows here becomes visible only to the assigned students.
-        CREATE TABLE IF NOT EXISTS test_assignments (
-            test_id         INTEGER REFERENCES tests(id) ON DELETE CASCADE,
-            student_email   TEXT REFERENCES students(email) ON DELETE CASCADE,
-            group_name      TEXT,
-            assigned_at     TIMESTAMPTZ DEFAULT NOW(),
-            PRIMARY KEY (test_id, student_email)
+        -- NEET cutoff cache
+        CREATE TABLE IF NOT EXISTS cutoff_cache (
+            year        INTEGER NOT NULL,
+            category    TEXT NOT NULL,
+            aiims       REAL NOT NULL,
+            govt        REAL NOT NULL,
+            private     REAL NOT NULL,
+            source      TEXT DEFAULT 'web-research-ai',
+            fetched_at  TIMESTAMPTZ DEFAULT NOW(),
+            PRIMARY KEY (year, category)
         );
     `);
 
-    // -----------------------------------------------------------------
-    // MIGRATIONS for pre-existing 'students' table (added columns)
-    // -----------------------------------------------------------------
+    // Migrations for backward compat
     await pool.query(`
         ALTER TABLE students ADD COLUMN IF NOT EXISTS target_institution TEXT;
         ALTER TABLE students ADD COLUMN IF NOT EXISTS state TEXT;
@@ -306,76 +350,51 @@ async function initSchema() {
         ALTER TABLE students ADD COLUMN IF NOT EXISTS prep_level TEXT;
         ALTER TABLE students ADD COLUMN IF NOT EXISTS target_exam TEXT DEFAULT 'NEET';
         ALTER TABLE students ADD COLUMN IF NOT EXISTS physics_proficiency TEXT;
+        ALTER TABLE progress ADD COLUMN IF NOT EXISTS zoo_accuracy REAL DEFAULT 40;
+        ALTER TABLE progress ADD COLUMN IF NOT EXISTS math_accuracy REAL DEFAULT 35;
+        ALTER TABLE test_attempts ADD COLUMN IF NOT EXISTS correct_count INTEGER DEFAULT 0;
+        ALTER TABLE test_attempts ADD COLUMN IF NOT EXISTS wrong_count INTEGER DEFAULT 0;
+        ALTER TABLE test_attempts ADD COLUMN IF NOT EXISTS skipped_count INTEGER DEFAULT 0;
+        ALTER TABLE test_attempts ADD COLUMN IF NOT EXISTS neet_equiv_score REAL;
+        ALTER TABLE test_attempts ADD COLUMN IF NOT EXISTS percentile_est REAL;
+        ALTER TABLE test_attempts ADD COLUMN IF NOT EXISTS time_taken_sec INTEGER;
+        -- test_attempts.test_id is shared by two subsystems: the legacy
+        -- faculty-created "tests" table (server.js) and the newer Bridge
+        -- Course "generated_tests" table (qbank.js). A single FK can only
+        -- point at one of them, so drop it rather than have one subsystem
+        -- permanently break the other's inserts.
+        ALTER TABLE test_attempts DROP CONSTRAINT IF EXISTS test_attempts_test_id_fkey;
+        ALTER TABLE mistakes ADD COLUMN IF NOT EXISTS chapter_name TEXT;
+        ALTER TABLE mistakes ADD COLUMN IF NOT EXISTS subtopic TEXT;
+        ALTER TABLE mistakes ADD COLUMN IF NOT EXISTS concept TEXT;
+        ALTER TABLE mistakes DROP CONSTRAINT IF EXISTS mistakes_test_id_fkey;
+        ALTER TABLE mistakes DROP CONSTRAINT IF EXISTS mistakes_question_id_fkey;
     `);
 
-    // -----------------------------------------------------------------
-    // MIGRATIONS for pre-existing 'materials' table — Term tagging
-    // (Term 1 / Term 2 / Term 3) for the Physics Student Module, and a
-    // 'note' material_type so curated text content (not just files/links)
-    // can be published per topic/term.
-    // -----------------------------------------------------------------
-    await pool.query(`
-        ALTER TABLE materials ADD COLUMN IF NOT EXISTS term INTEGER;
-        ALTER TABLE materials DROP CONSTRAINT IF EXISTS materials_material_type_check;
-        ALTER TABLE materials ADD CONSTRAINT materials_material_type_check CHECK (material_type IN ('file','link','note'));
-    `);
+    // Seed chapters
+    await seedChapters();
 
-    // -----------------------------------------------------------------
-    // MIGRATIONS — Chapter Management System linkage. Faculty resources
-    // (materials, tests, lectures) can now reference a row in `chapters`.
-    // The pre-existing free-text `chapter` column on each table is kept
-    // untouched for backward compatibility (older rows / older frontend
-    // code keep working); chapter_id is the new canonical link used by
-    // the Chapter Management UI. `materials.topic` is a new, separate,
-    // optional sub-classification within a chapter (per the Faculty
-    // Materials spec: "Chapter" + "Topic (optional)").
-    // -----------------------------------------------------------------
-    await pool.query(`
-        ALTER TABLE materials ADD COLUMN IF NOT EXISTS chapter_id INTEGER REFERENCES chapters(id) ON DELETE SET NULL;
-        ALTER TABLE materials ADD COLUMN IF NOT EXISTS topic TEXT;
-        ALTER TABLE tests ADD COLUMN IF NOT EXISTS chapter_id INTEGER REFERENCES chapters(id) ON DELETE SET NULL;
-        ALTER TABLE lectures ADD COLUMN IF NOT EXISTS chapter_id INTEGER REFERENCES chapters(id) ON DELETE SET NULL;
-        ALTER TABLE lectures ADD COLUMN IF NOT EXISTS lecturer_email TEXT;
-        ALTER TABLE test_questions ADD COLUMN IF NOT EXISTS ocr_source BOOLEAN DEFAULT FALSE;
-    `);
+    // Seed question bank with dummy questions
+    await seedQuestionBank();
 
-    // -----------------------------------------------------------------
-    // SEED — one chapter row per canonical Physics topic, so the existing
-    // topic-organised Physics content (entry tests, Term materials) is
-    // immediately usable through the new Chapter Management System
-    // without faculty having to recreate chapters that conceptually
-    // already exist. Idempotent: only runs once (when `chapters` is
-    // empty for Physics).
-    // -----------------------------------------------------------------
-    const { rows: chapterRows } = await pool.query(`SELECT COUNT(*) AS c FROM chapters WHERE subject = 'Physics'`);
-    if (parseInt(chapterRows[0].c, 10) === 0) {
-        for (let i = 0; i < PHYSICS_TOPICS.length; i++) {
-            await pool.query(
-                `INSERT INTO chapters (subject, name, position) VALUES ('Physics', $1, $2)
-                 ON CONFLICT (subject, name) DO NOTHING`,
-                [PHYSICS_TOPICS[i], i]
-            );
-        }
-        console.log(`✅  Seeded ${PHYSICS_TOPICS.length} Physics chapters`);
+    // Pre-generate entry tests
+    await seedEntryTests();
+
+    // Seed default admin
+    const { rows: adminRows } = await pool.query(`SELECT id FROM users WHERE role = 'admin' LIMIT 1`);
+    if (adminRows.length === 0) {
+        const bcrypt = require('bcryptjs');
+        const defaultPass = process.env.DEFAULT_ADMIN_PASSWORD || 'ctk-admin-2026';
+        const hash = await bcrypt.hash(defaultPass, 10);
+        await pool.query(
+            `INSERT INTO users (name, email, password_hash, role, is_verified, onboarding_done)
+             VALUES ('CTK Admin', $1, $2, 'admin', TRUE, TRUE) ON CONFLICT (email) DO NOTHING`,
+            [process.env.DEFAULT_ADMIN_EMAIL || 'admin@ctkbridge.com', hash]
+        );
+        console.log(`ℹ️  Seeded default admin: ${process.env.DEFAULT_ADMIN_EMAIL || 'admin@ctkbridge.com'} / ${defaultPass}`);
     }
 
-    // Backfill chapter_id on existing rows whose free-text `chapter` value
-    // matches a chapter name for the same subject (best-effort, safe to
-    // re-run — only fills rows that are currently NULL).
-    await pool.query(`
-        UPDATE materials m SET chapter_id = c.id
-        FROM chapters c WHERE m.chapter_id IS NULL AND m.chapter = c.name AND m.subject = c.subject;
-
-        UPDATE tests t SET chapter_id = c.id
-        FROM chapters c WHERE t.chapter_id IS NULL AND t.chapter = c.name AND t.subject = c.subject;
-    `);
-
-
-    // Add a foreign-key style soft link from students.email -> users.email
-    // (kept soft / no FK constraint to avoid breaking pre-existing rows
-    //  created before the users table existed).
-
-    // Seed exam date if missing
+    // Exam date setting
     const { rows } = await pool.query(`SELECT value FROM settings WHERE key = 'exam_date'`);
     if (rows.length === 0) {
         const d = new Date();
@@ -386,111 +405,483 @@ async function initSchema() {
         );
     }
 
-    // Seed approved lectures if table is empty
+    // Seed sample lectures
     const { rows: lRows } = await pool.query(`SELECT COUNT(*) AS c FROM lectures`);
     if (parseInt(lRows[0].c, 10) === 0) {
         await pool.query(`
-            INSERT INTO lectures (title, subject, url, lecturer_name, approved) VALUES
-            ('Human Reproduction - High Yield Revision', 'Biology',   'https://www.youtube.com/embed/UMo7dUNGkQo', 'Dr. Meera Sharma',   1),
-            ('Thermodynamics - Connecting Concepts',     'Physics',   'https://www.youtube.com/embed/4i1MUWJoI0U', 'Prof. Anil Kapoor',  1),
-            ('Chemical Bonding - VSEPR & Hybridisation', 'Chemistry', 'https://www.youtube.com/embed/v=uVBSBFxbUlA', 'Dr. Priya Nair',    1)
+            INSERT INTO lectures (title, subject, url, lecturer_name, approved, course_type) VALUES
+            ('Human Reproduction - High Yield Revision', 'Botany',   'https://www.youtube.com/embed/UMo7dUNGkQo', 'Dr. Meera Sharma',  1, 'NEET'),
+            ('Thermodynamics - Connecting Concepts',     'Physics',  'https://www.youtube.com/embed/4i1MUWJoI0U', 'Prof. Anil Kapoor', 1, 'NEET'),
+            ('Chemical Bonding - VSEPR & Hybridisation', 'Chemistry','https://www.youtube.com/embed/v=uVBSBFxbUlA', 'Dr. Priya Nair', 1, 'NEET'),
+            ('Calculus Fundamentals for JEE', 'Mathematics', 'https://www.youtube.com/embed/WUvTyaaNkzM', 'Prof. Ramesh Kumar', 1, 'JEE')
         `);
     }
 
-    // -----------------------------------------------------------------
-    // PHYSICS STUDENT MODULE — seed the 3 entry tests + dummy questions
-    // -----------------------------------------------------------------
-    const { rows: entryTestRows } = await pool.query(`SELECT COUNT(*) AS c FROM physics_entry_tests`);
-    if (parseInt(entryTestRows[0].c, 10) === 0) {
-        await pool.query(`
-            INSERT INTO physics_entry_tests (test_number, title, mandatory) VALUES
-            (1, 'Physics Entry Test 1 — Foundation Diagnostic', TRUE),
-            (2, 'Physics Entry Test 2 — Extended Diagnostic',   FALSE),
-            (3, 'Physics Entry Test 3 — Advanced Diagnostic',   FALSE)
-        `);
-
-        for (const [testNumber, questions] of Object.entries(PHYSICS_ENTRY_QUESTIONS)) {
-            for (let i = 0; i < questions.length; i++) {
-                const q = questions[i];
-                await pool.query(
-                    `INSERT INTO physics_entry_questions (test_number, topic, question_text, options, correct_answer, position)
-                     VALUES ($1,$2,$3,$4,$5,$6)`,
-                    [parseInt(testNumber, 10), q.topic, q.text, JSON.stringify(q.options), q.answer, i]
-                );
-            }
-        }
-        console.log('✅  Seeded 3 Physics entry tests (10 dummy MCQs each)');
-    }
-
-    // -----------------------------------------------------------------
-    // PHYSICS STUDENT MODULE — seed Term 1 / Term 2 / Term 3 materials
-    // for every Physics topic (published as 'note' type materials, owned
-    // by the platform rather than a specific faculty account).
-    // -----------------------------------------------------------------
-    const { rows: physicsNoteRows } = await pool.query(
-        `SELECT COUNT(*) AS c FROM materials WHERE subject = 'Physics' AND material_type = 'note'`
-    );
-    if (parseInt(physicsNoteRows[0].c, 10) === 0) {
-        const TERM_LABEL = { 1: 'Conceptual Understanding', 2: 'Definitions & Formulae', 3: 'Advanced Applications' };
-        for (const topic of PHYSICS_TOPICS) {
-            const content = PHYSICS_TERM_CONTENT[topic];
-            if (!content) continue;
-            for (const term of [1, 2, 3]) {
-                await pool.query(
-                    `INSERT INTO materials (title, subject, chapter, material_type, description, term)
-                     VALUES ($1,'Physics',$2,'note',$3,$4)`,
-                    [`${topic} — Term ${term}: ${TERM_LABEL[term]}`, topic, content[term], term]
-                );
-            }
-        }
-        console.log(`✅  Seeded Term 1–3 Physics materials for ${PHYSICS_TOPICS.length} topics`);
-    }
-
-    // Seed a default admin account if none exists
-    const { rows: adminRows } = await pool.query(`SELECT id FROM users WHERE role = 'admin' LIMIT 1`);
-    if (adminRows.length === 0) {
-        const bcrypt = require('bcryptjs');
-        const defaultPass = process.env.DEFAULT_ADMIN_PASSWORD || 'ctk-admin-2026';
-        const hash = await bcrypt.hash(defaultPass, 10);
-        await pool.query(
-            `INSERT INTO users (name, email, password_hash, role, is_verified, onboarding_done)
-             VALUES ('CTK Admin', $1, $2, 'admin', TRUE, TRUE) ON CONFLICT (email) DO NOTHING`,
-            [process.env.DEFAULT_ADMIN_EMAIL || 'admin@neetctk.com', hash]
-        );
-        console.log(`ℹ️  Seeded default admin: ${process.env.DEFAULT_ADMIN_EMAIL || 'admin@neetctk.com'} / ${defaultPass}`);
-    }
-
-    console.log('✅  Database schema ready');
+    console.log('✅  CTK Bridge Course database schema ready');
 }
 
 // ---------------------------------------------------------------------------
-// FALLBACK BASELINE — NEET cutoff data (2021-2024, NEET out of 720)
-// Used ONLY when the live `cutoff_cache` table (populated via real web
-// search + AI extraction, see research.js) has no usable data yet — e.g.
-// first run before any refresh has succeeded, or if the deployment
-// environment has no outbound internet/AI access. Once real data is
-// cached, this baseline is ignored.
+// CURRICULUM DEFINITIONS
+// ---------------------------------------------------------------------------
+const CURRICULUM = {
+    NEET: {
+        Physics:  ['Units and Dimensions','Kinematics','Laws of Motion','Work Energy Power',
+                   'Rotational Motion','Gravitation','Oscillations and Waves','Thermodynamics',
+                   'Electrostatics','Current Electricity','Magnetism','Optics','Modern Physics'],
+        Chemistry: ['Atomic Structure','Chemical Bonding','States of Matter','Thermodynamics',
+                    'Equilibrium','Electrochemistry','Chemical Kinetics','Surface Chemistry',
+                    'Periodic Table','s-Block Elements','p-Block Elements','Organic Chemistry Basics',
+                    'Hydrocarbons'],
+        Botany:   ['Cell Biology','Plant Physiology','Reproduction in Plants','Genetics',
+                   'Evolution','Ecology','Plant Morphology','Biomolecules','Biotechnology',
+                   'Plant Kingdom','Photosynthesis','Respiration','Plant Growth'],
+        Zoology:  ['Animal Kingdom','Human Physiology','Reproduction','Genetics & Evolution',
+                   'Human Health & Disease','Biotechnology Applications','Ecology',
+                   'Cell Biology & Biomolecules','Animal Morphology','Nervous System',
+                   'Endocrine System','Excretory System','Circulatory System']
+    },
+    JEE: {
+        Physics:  ['Units and Dimensions','Kinematics','Laws of Motion','Work Energy Power',
+                   'Rotational Motion','Gravitation','Oscillations and Waves','Thermodynamics',
+                   'Electrostatics','Current Electricity','Magnetism','Optics','Modern Physics'],
+        Chemistry: ['Atomic Structure','Chemical Bonding','States of Matter','Thermodynamics',
+                    'Equilibrium','Electrochemistry','Chemical Kinetics','Surface Chemistry',
+                    'Periodic Table','s-Block Elements','p-Block Elements','Organic Chemistry Basics',
+                    'Hydrocarbons'],
+        Mathematics: ['Sets Relations Functions','Complex Numbers','Matrices Determinants',
+                      'Permutations Combinations','Binomial Theorem','Sequences Series',
+                      'Straight Lines','Conic Sections','Limits Continuity','Differentiation',
+                      'Integration','Differential Equations','Vectors 3D','Probability','Trigonometry']
+    }
+};
+
+// Subject distributions for 90-question tests
+const TEST_SUBJECT_DIST = {
+    NEET: { Physics: 22, Chemistry: 23, Botany: 22, Zoology: 23 },
+    JEE:  { Physics: 30, Chemistry: 30, Mathematics: 30 }
+};
+
+// Difficulty ratios per mode
+const DIFFICULTY_RATIOS = {
+    Easy:     { Easy: 0.70, Moderate: 0.25, Difficult: 0.05 },
+    Moderate: { Easy: 0.25, Moderate: 0.50, Difficult: 0.25 },
+    Difficult:{ Easy: 0.10, Moderate: 0.40, Difficult: 0.50 },
+    Mixed:    { Easy: 0.33, Moderate: 0.34, Difficult: 0.33 }
+};
+
+async function seedChapters() {
+    const { rows } = await pool.query(`SELECT COUNT(*) AS c FROM chapters`);
+    if (parseInt(rows[0].c, 10) > 0) return;
+
+    for (const [courseType, subjects] of Object.entries(CURRICULUM)) {
+        for (const [subject, chapters] of Object.entries(subjects)) {
+            for (let i = 0; i < chapters.length; i++) {
+                await pool.query(
+                    `INSERT INTO chapters (course_type, subject, name, position) VALUES ($1,$2,$3,$4)
+                     ON CONFLICT (course_type, subject, name) DO NOTHING`,
+                    [courseType, subject, chapters[i], i]
+                );
+            }
+        }
+    }
+    console.log('✅  Seeded chapters for NEET & JEE');
+}
+
+// ---------------------------------------------------------------------------
+// DUMMY QUESTION BANK SEED
+// Tops every chapter up to ~100 dummy questions (approved), spread evenly
+// across Easy/Moderate/Difficult, so the platform works out of the box and
+// every difficulty filter has enough supply. Idempotent: safe to run on
+// every server start — only inserts what's missing per chapter, so it also
+// tops up databases that were previously seeded with fewer questions.
+// Faculty replace/add to these via the Question Bank over time.
+// ---------------------------------------------------------------------------
+const DUMMY_QUESTIONS_PER_CHAPTER = 100;
+
+async function seedQuestionBank() {
+    const difficulties = ['Easy','Moderate','Difficult'];
+    let totalInserted = 0;
+
+    for (const [courseType, subjects] of Object.entries(CURRICULUM)) {
+        for (const [subject, chapters] of Object.entries(subjects)) {
+            for (const chapter of chapters) {
+                const { rows: [{ c }] } = await pool.query(
+                    `SELECT COUNT(*) AS c FROM question_bank
+                     WHERE course_type = $1 AND subject = $2 AND chapter_name = $3`,
+                    [courseType, subject, chapter]
+                );
+                const existing = parseInt(c, 10);
+                if (existing >= DUMMY_QUESTIONS_PER_CHAPTER) continue;
+
+                // Build every missing row for this chapter and insert them
+                // in ONE query (multi-row VALUES) instead of one round-trip
+                // per question — with ~9000+ dummy questions total, one
+                // query per row was extremely slow against remote DBs
+                // (Render/Railway) and made startup look like it had hung.
+                const values = [];
+                const params = [];
+                let p = 0;
+                for (let i = existing; i < DUMMY_QUESTIONS_PER_CHAPTER; i++) {
+                    const diff = difficulties[i % 3];
+                    const row = [
+                        courseType, subject, chapter, chapter,
+                        `[${courseType}·${subject}·${chapter}] Sample Question ${i+1}: Which of the following best describes a key concept in ${chapter}?`,
+                        `Option A — Correct concept related to ${chapter} (item ${i+1})`,
+                        `Option B — Plausible but incorrect distractor`,
+                        `Option C — Common misconception about ${chapter}`,
+                        `Option D — Unrelated concept`,
+                        'A',
+                        `The correct answer is A because it accurately describes the fundamental principle of ${chapter}.`,
+                        diff,
+                        diff === 'Easy' ? 45 : diff === 'Moderate' ? 60 : 90
+                    ];
+                    values.push(`(${row.map(() => `$${++p}`).join(',')},'approved')`);
+                    params.push(...row);
+                    totalInserted++;
+                }
+                if (values.length === 0) continue;
+
+                await pool.query(
+                    `INSERT INTO question_bank
+                     (course_type, subject, chapter_name, topic, question_text,
+                      option_a, option_b, option_c, option_d, correct_answer,
+                      explanation, difficulty, estimated_time, status)
+                     VALUES ${values.join(',')}`,
+                    params
+                );
+            }
+        }
+    }
+    if (totalInserted > 0) {
+        console.log(`✅  Topped up question_bank with ${totalInserted} dummy questions (target ~${DUMMY_QUESTIONS_PER_CHAPTER}/chapter)`);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// GENERATE ENTRY TESTS (3 per course, fixed for all students)
+// ---------------------------------------------------------------------------
+async function seedEntryTests() {
+    const { rows } = await pool.query(`SELECT COUNT(*) AS c FROM entry_tests`);
+    if (parseInt(rows[0].c, 10) > 0) return;
+
+    for (const courseType of ['NEET','JEE']) {
+        for (let testNum = 1; testNum <= 3; testNum++) {
+            // Create the generated_test record
+            const { rows: [gt] } = await pool.query(
+                `INSERT INTO generated_tests (test_type, course_type, title, difficulty_mode, question_count, time_limit_min)
+                 VALUES ('entry', $1, $2, 'Mixed', 90, 180) RETURNING id`,
+                [courseType, `${courseType} Entry Test ${testNum} — Baseline Assessment`]
+            );
+            const testId = gt.id;
+
+            // Pick 90 approved questions, balanced across subjects, low overlap between tests
+            const dist = TEST_SUBJECT_DIST[courseType];
+            let position = 0;
+
+            for (const [subject, count] of Object.entries(dist)) {
+                // offset by testNum so each entry test gets different questions
+                const { rows: questions } = await pool.query(
+                    `SELECT id FROM question_bank
+                     WHERE course_type = $1 AND subject = $2 AND status = 'approved'
+                     ORDER BY id
+                     LIMIT $3 OFFSET $4`,
+                    [courseType, subject, count, (testNum - 1) * count]
+                );
+                for (const q of questions) {
+                    await pool.query(
+                        `INSERT INTO generated_test_questions (test_id, question_id, position) VALUES ($1,$2,$3)`,
+                        [testId, q.id, position++]
+                    );
+                }
+            }
+
+            // Register in entry_tests table
+            await pool.query(
+                `INSERT INTO entry_tests (course_type, test_number, test_id, title)
+                 VALUES ($1, $2, $3, $4)
+                 ON CONFLICT (course_type, test_number) DO NOTHING`,
+                [courseType, testNum, testId, `${courseType} Entry Test ${testNum}`]
+            );
+        }
+    }
+    console.log('✅  Pre-generated 3 entry tests each for NEET & JEE');
+}
+
+// ---------------------------------------------------------------------------
+// TEST GENERATION ENGINE
+// ---------------------------------------------------------------------------
+
+/**
+ * Generate a daily test for a given course type and date.
+ * 90 questions, balanced subject distribution, no repeated questions within 30 days per student.
+ */
+async function generateDailyTest(courseType, date = new Date()) {
+    const dateStr = date.toISOString().split('T')[0];
+
+    // Check if already generated for this date
+    const { rows: existing } = await pool.query(
+        `SELECT id FROM generated_tests WHERE test_type='daily' AND course_type=$1 AND generated_for_date=$2`,
+        [courseType, dateStr]
+    );
+    if (existing.length > 0) return existing[0].id;
+
+    const { rows: [gt] } = await pool.query(
+        `INSERT INTO generated_tests (test_type, course_type, title, difficulty_mode, question_count, time_limit_min, generated_for_date)
+         VALUES ('daily', $1, $2, 'Mixed', 90, 180, $3) RETURNING id`,
+        [courseType, `${courseType} Daily Practice Test — ${dateStr}`, dateStr]
+    );
+    const testId = gt.id;
+    await fillTestQuestions(testId, courseType, 90, 'Mixed', null, null);
+    return testId;
+}
+
+/**
+ * Generate a weekly test (more comprehensive, higher difficulty proportion).
+ */
+async function generateWeeklyTest(courseType, weekStart = new Date()) {
+    const dateStr = weekStart.toISOString().split('T')[0];
+    const { rows: existing } = await pool.query(
+        `SELECT id FROM generated_tests WHERE test_type='weekly' AND course_type=$1 AND generated_for_date=$2`,
+        [courseType, dateStr]
+    );
+    if (existing.length > 0) return existing[0].id;
+
+    const { rows: [gt] } = await pool.query(
+        `INSERT INTO generated_tests (test_type, course_type, title, difficulty_mode, question_count, time_limit_min, generated_for_date)
+         VALUES ('weekly', $1, $2, 'Difficult', 90, 180, $3) RETURNING id`,
+        [courseType, `${courseType} Weekly Assessment — Week of ${dateStr}`, dateStr]
+    );
+    const testId = gt.id;
+    await fillTestQuestions(testId, courseType, 90, 'Difficult', null, null);
+    return testId;
+}
+
+/**
+ * Generate a monthly test.
+ */
+async function generateMonthlyTest(courseType, month, year) {
+    const dateStr = `${year}-${String(month).padStart(2,'0')}-01`;
+    const { rows: existing } = await pool.query(
+        `SELECT id FROM generated_tests WHERE test_type='monthly' AND course_type=$1 AND generated_for_date=$2`,
+        [courseType, dateStr]
+    );
+    if (existing.length > 0) return existing[0].id;
+
+    const monthName = new Date(dateStr).toLocaleString('default', { month: 'long' });
+    const { rows: [gt] } = await pool.query(
+        `INSERT INTO generated_tests (test_type, course_type, title, difficulty_mode, question_count, time_limit_min, generated_for_date)
+         VALUES ('monthly', $1, $2, 'Difficult', 90, 180, $3) RETURNING id`,
+        [courseType, `${courseType} Monthly Test — ${monthName} ${year}`, dateStr]
+    );
+    const testId = gt.id;
+    await fillTestQuestions(testId, courseType, 90, 'Difficult', null, null);
+    return testId;
+}
+
+/**
+ * Generate a Grand Test (every 3 months, comprehensive).
+ */
+async function generateGrandTest(courseType, label, studentEmail = null) {
+    const { rows: [gt] } = await pool.query(
+        `INSERT INTO generated_tests (test_type, course_type, title, difficulty_mode, question_count, time_limit_min)
+         VALUES ('grand', $1, $2, 'Mixed', 90, 180) RETURNING id`,
+        [courseType, `${courseType} Grand Test — ${label}`]
+    );
+    const testId = gt.id;
+    await fillTestQuestions(testId, courseType, 90, 'Mixed', null, null, studentEmail);
+    return testId;
+}
+
+/**
+ * Generate a chapter-combo test (e.g. 3 chapters combined, 6 chapters combined).
+ * When studentEmail is given, prefers questions that student hasn't seen yet.
+ */
+async function generateChapterComboTest(courseType, subject, chapters, studentEmail = null) {
+    const title = `${courseType} ${subject} — Chapters: ${chapters.join(', ')}`;
+    const { rows: [gt] } = await pool.query(
+        `INSERT INTO generated_tests (test_type, course_type, title, subject_filter, chapter_filter, difficulty_mode, question_count, time_limit_min)
+         VALUES ('chapter_combo', $1, $2, $3, $4, 'Mixed', 90, 180) RETURNING id`,
+        [courseType, title, subject, chapters.join(',')]
+    );
+    const testId = gt.id;
+
+    // Fill from specific chapters only, spreading across difficulty so the
+    // combo test isn't accidentally all-Easy or all-Difficult.
+    const ratios = DIFFICULTY_RATIOS.Mixed;
+    const totalCount = 90;
+    const easyCount = Math.round(totalCount * ratios.Easy);
+    const moderateCount = Math.round(totalCount * ratios.Moderate);
+    const difficultCount = totalCount - easyCount - moderateCount;
+
+    let position = 0;
+    for (const [diff, dCount] of [['Easy', easyCount],['Moderate', moderateCount],['Difficult', difficultCount]]) {
+        if (dCount <= 0) continue;
+        const questions = await pickQuestions({ courseType, subject, diff, chapterFilter: chapters, studentEmail, limit: dCount });
+        for (const q of questions) {
+            await pool.query(
+                `INSERT INTO generated_test_questions (test_id, question_id, position) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`,
+                [testId, q.id, position++]
+            );
+            await pool.query(`UPDATE question_bank SET usage_count = usage_count + 1 WHERE id = $1`, [q.id]);
+        }
+    }
+    return testId;
+}
+
+/**
+ * Generate a full NEET/JEE mock test.
+ */
+async function generateMockTest(courseType, difficultyMode = 'Mixed', studentEmail = null) {
+    const testId = await createAndFillTest('mock', courseType,
+        `${courseType} Full Mock Test — ${new Date().toISOString().split('T')[0]}`,
+        difficultyMode, 90, 180, studentEmail);
+    return testId;
+}
+
+async function createAndFillTest(type, courseType, title, difficultyMode, questionCount, timeLimitMin, studentEmail = null) {
+    const { rows: [gt] } = await pool.query(
+        `INSERT INTO generated_tests (test_type, course_type, title, difficulty_mode, question_count, time_limit_min)
+         VALUES ($1,$2,$3,$4,$5,$6) RETURNING id`,
+        [type, courseType, title, difficultyMode, questionCount, timeLimitMin]
+    );
+    await fillTestQuestions(gt.id, courseType, questionCount, difficultyMode, null, null, studentEmail);
+    return gt.id;
+}
+
+/**
+ * Picks up to `limit` approved questions for a course/subject/difficulty
+ * (optionally restricted to a set of chapters). When `studentEmail` is
+ * given, questions that student has already been served (question_exposure)
+ * are avoided first; if the unseen pool can't cover the full quota, it tops
+ * up from the least-recently-used questions overall so the test can still
+ * be filled. This is the single place both fillTestQuestions (daily/weekly/
+ * monthly/grand/mock) and the chapter-combo generator draw from, so
+ * repetition avoidance is consistent across every test type.
+ */
+async function pickQuestions({ courseType, subject, diff, chapterFilter, studentEmail, limit }) {
+    if (limit <= 0) return [];
+
+    const baseParams = [courseType, subject];
+    if (diff) baseParams.push(diff);
+    const diffClause = diff ? `AND difficulty = $3` : '';
+    const chapterClause = chapterFilter ? `AND chapter_name = ANY($${baseParams.length + 1})` : '';
+    if (chapterFilter) baseParams.push(chapterFilter);
+
+    if (studentEmail) {
+        const exclParams = [...baseParams, studentEmail, limit];
+        const { rows: unseen } = await pool.query(
+            `SELECT id FROM question_bank
+             WHERE course_type = $1 AND subject = $2 ${diffClause} AND status = 'approved'
+             ${chapterClause}
+             AND id NOT IN (SELECT question_id FROM question_exposure WHERE student_email = $${baseParams.length + 1})
+             ORDER BY usage_count ASC, RANDOM() LIMIT $${baseParams.length + 2}`,
+            exclParams
+        );
+        if (unseen.length >= limit) return unseen;
+
+        // Not enough unseen questions left — top up with the least-used
+        // remaining ones (still avoiding exact duplicates within this pick).
+        const remaining = limit - unseen.length;
+        const excludeIds = unseen.map(q => q.id);
+        const topUpParams = [...baseParams];
+        let excludeClause = '';
+        if (excludeIds.length) {
+            excludeClause = `AND id != ALL($${topUpParams.length + 1})`;
+            topUpParams.push(excludeIds);
+        }
+        topUpParams.push(remaining);
+        const { rows: topUp } = await pool.query(
+            `SELECT id FROM question_bank
+             WHERE course_type = $1 AND subject = $2 ${diffClause} AND status = 'approved'
+             ${chapterClause} ${excludeClause}
+             ORDER BY usage_count ASC, RANDOM() LIMIT $${topUpParams.length}`,
+            topUpParams
+        );
+        return unseen.concat(topUp);
+    }
+
+    const params = [...baseParams, limit];
+    const { rows } = await pool.query(
+        `SELECT id FROM question_bank
+         WHERE course_type = $1 AND subject = $2 ${diffClause} AND status = 'approved'
+         ${chapterClause}
+         ORDER BY usage_count ASC, RANDOM() LIMIT $${params.length}`,
+        params
+    );
+    return rows;
+}
+
+async function fillTestQuestions(testId, courseType, totalCount, difficultyMode, subjectFilter, chapterFilter, studentEmail = null) {
+    const dist = subjectFilter
+        ? { [subjectFilter]: totalCount }
+        : TEST_SUBJECT_DIST[courseType] || TEST_SUBJECT_DIST.NEET;
+
+    const ratios = DIFFICULTY_RATIOS[difficultyMode] || DIFFICULTY_RATIOS.Mixed;
+    let position = 0;
+
+    for (const [subject, count] of Object.entries(dist)) {
+        const easyCount     = Math.round(count * ratios.Easy);
+        const moderateCount = Math.round(count * ratios.Moderate);
+        const difficultCount = count - easyCount - moderateCount;
+
+        for (const [diff, dCount] of [['Easy', easyCount],['Moderate', moderateCount],['Difficult', difficultCount]]) {
+            if (dCount <= 0) continue;
+
+            const questions = await pickQuestions({ courseType, subject, diff, chapterFilter, studentEmail, limit: dCount });
+            for (const q of questions) {
+                await pool.query(
+                    `INSERT INTO generated_test_questions (test_id, question_id, position)
+                     VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`,
+                    [testId, q.id, position++]
+                );
+                await pool.query(`UPDATE question_bank SET usage_count = usage_count + 1 WHERE id = $1`, [q.id]);
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// SCORE COMPUTATION
+// ---------------------------------------------------------------------------
+function computeScore(answers, questions, negativeMarking = false) {
+    let correct = 0, wrong = 0, skipped = 0;
+    const markPerQ = questions.length > 0 ? 4 : 4;
+
+    for (const q of questions) {
+        const ans = answers[q.id];
+        if (!ans) { skipped++; continue; }
+        if (ans === q.correct_answer) { correct++; }
+        else { wrong++; }
+    }
+
+    const rawScore = correct * 4 - (negativeMarking ? wrong * 1 : 0);
+    const totalMax = questions.length * 4;
+    const percentage = totalMax > 0 ? (rawScore / totalMax) * 100 : 0;
+    const neetEquivScore = Math.round((rawScore / totalMax) * 720);
+    const percentileEst = Math.min(99.9, Math.max(0.1, 50 + (percentage - 50) * 0.8));
+
+    return { correct, wrong, skipped, rawScore, totalMax, percentage, neetEquivScore, percentileEst };
+}
+
+// ---------------------------------------------------------------------------
+// HISTORICAL CUTOFFS & PREDICTION (retained from original)
 // ---------------------------------------------------------------------------
 const HISTORICAL_CUTOFFS = [
-    // year, category, AIIMS_closing, GovtMedical_closing, PrivateMedical_closing
     { year: 2021, category: 'General', aiims: 686, govt: 620, private: 480 },
     { year: 2021, category: 'EWS',     aiims: 678, govt: 605, private: 460 },
     { year: 2021, category: 'OBC',     aiims: 670, govt: 590, private: 440 },
     { year: 2021, category: 'SC',      aiims: 640, govt: 520, private: 380 },
     { year: 2021, category: 'ST',      aiims: 620, govt: 480, private: 350 },
-
     { year: 2022, category: 'General', aiims: 692, govt: 625, private: 485 },
     { year: 2022, category: 'EWS',     aiims: 684, govt: 612, private: 465 },
     { year: 2022, category: 'OBC',     aiims: 676, govt: 596, private: 445 },
     { year: 2022, category: 'SC',      aiims: 648, govt: 528, private: 388 },
     { year: 2022, category: 'ST',      aiims: 628, govt: 488, private: 358 },
-
     { year: 2023, category: 'General', aiims: 697, govt: 633, private: 492 },
     { year: 2023, category: 'EWS',     aiims: 690, govt: 620, private: 472 },
     { year: 2023, category: 'OBC',     aiims: 683, govt: 604, private: 452 },
     { year: 2023, category: 'SC',      aiims: 656, govt: 536, private: 396 },
     { year: 2023, category: 'ST',      aiims: 636, govt: 496, private: 366 },
-
     { year: 2024, category: 'General', aiims: 700, govt: 640, private: 500 },
     { year: 2024, category: 'EWS',     aiims: 693, govt: 628, private: 480 },
     { year: 2024, category: 'OBC',     aiims: 686, govt: 612, private: 460 },
@@ -498,71 +889,39 @@ const HISTORICAL_CUTOFFS = [
     { year: 2024, category: 'ST',      aiims: 640, govt: 504, private: 374 }
 ];
 
-// State-level adjustment factors (state quota seats are typically easier
-// to secure than All-India quota at the same institution tier). Applied as
-// a small percentage shift to the All-India figures above.
 const STATE_ADJUSTMENT = {
     'Andhra Pradesh': -0.015, 'Telangana': -0.015, 'Karnataka': -0.01,
     'Tamil Nadu': -0.01, 'Kerala': -0.01, 'Maharashtra': -0.005,
     'Delhi': 0.0, 'Uttar Pradesh': 0.005, 'Bihar': 0.01,
-    'Rajasthan': 0.0, 'West Bengal': -0.005, 'Gujarat': -0.005,
-    'Madhya Pradesh': 0.005, 'Punjab': 0.0, 'Haryana': 0.0
+    'Rajasthan': 0.0, 'West Bengal': -0.005, 'Gujarat': -0.005
 };
-
-// PwD is treated like the relaxation applied to OBC for fallback purposes
 const CATEGORY_FALLBACK = { 'PwD': 'OBC', 'Others': 'General' };
-
 const INSTITUTION_KEY = {
     'AIIMS': 'aiims',
     'Government Medical College': 'govt',
     'Private Medical College': 'private'
 };
-
 const NEET_MAX_SCORE = 720;
-const NEET_MAX_RANK  = 1500000; // approx All-India candidates
-
-// How long cached real-data stays "fresh" before a background refresh is
-// attempted again (cutoffs only change once a year, around results time,
-// but we re-check periodically in case of corrections/updates).
+const NEET_MAX_RANK  = 1500000;
 const CUTOFF_CACHE_TTL_DAYS = 30;
 
-/**
- * Reads cached real cutoff rows from the DB for a given year.
- * Returns [] if nothing cached yet for that year.
- */
 async function getCachedCutoffRows(year) {
     const { rows } = await pool.query(
-        `SELECT year, category, aiims, govt, private, fetched_at FROM cutoff_cache WHERE year = $1`,
-        [year]
+        `SELECT year, category, aiims, govt, private, fetched_at FROM cutoff_cache WHERE year = $1`, [year]
     );
     return rows;
 }
 
-/**
- * Returns true if the cache for this year is missing or stale enough to
- * warrant a refresh attempt.
- */
 async function isCutoffCacheStale(year) {
     const rows = await getCachedCutoffRows(year);
-    if (rows.length < 3) return true; // not enough categories cached
+    if (rows.length < 3) return true;
     const oldest = rows.reduce((min, r) => Math.min(min, new Date(r.fetched_at).getTime()), Date.now());
-    const ageDays = (Date.now() - oldest) / (1000 * 60 * 60 * 24);
-    return ageDays > CUTOFF_CACHE_TTL_DAYS;
+    return (Date.now() - oldest) / (1000 * 60 * 60 * 24) > CUTOFF_CACHE_TTL_DAYS;
 }
 
-/**
- * Attempts a real-data refresh for the given year using research.js
- * (free web search + free LLM extraction) and writes successful rows
- * into cutoff_cache. Safe to call frequently — it no-ops on failure.
- */
 async function refreshCutoffCache(year) {
     let fetchRealCutoffData;
-    try {
-        ({ fetchRealCutoffData } = require('./research'));
-    } catch (err) {
-        return { success: false, reason: 'research module unavailable' };
-    }
-
+    try { ({ fetchRealCutoffData } = require('./research')); } catch { return { success: false }; }
     try {
         const rows = await fetchRealCutoffData(year);
         for (const r of rows) {
@@ -570,44 +929,26 @@ async function refreshCutoffCache(year) {
                 `INSERT INTO cutoff_cache (year, category, aiims, govt, private, source, fetched_at)
                  VALUES ($1,$2,$3,$4,$5,'web-research-ai', NOW())
                  ON CONFLICT (year, category) DO UPDATE SET
-                    aiims = $3, govt = $4, private = $5, source = 'web-research-ai', fetched_at = NOW()`,
+                    aiims=$3, govt=$4, private=$5, source='web-research-ai', fetched_at=NOW()`,
                 [r.year, r.category, r.aiims, r.govt, r.private]
             );
         }
-        console.log(`✅  Cutoff cache refreshed for ${year} (${rows.length} categories, live web data)`);
-        return { success: true, rowCount: rows.length };
+        return { success: true };
     } catch (err) {
-        console.warn(`⚠️  Cutoff cache refresh failed for ${year}: ${err.message} — using existing cache / static baseline.`);
         return { success: false, reason: err.message };
     }
 }
 
-/**
- * Builds the regression training set for a (category, institution),
- * preferring real cached data and only filling in gaps from the static
- * baseline if a given year has no cached entry at all. Also reports
- * whether any live-fetched rows were actually used.
- */
 async function buildTrainingRows(category, instKey) {
     const cachedAll = await pool.query(`SELECT * FROM cutoff_cache WHERE category = $1 ORDER BY year ASC`, [category]);
     const cachedYears = new Set(cachedAll.rows.map(r => r.year));
-
     const rows = cachedAll.rows.map(r => ({ x: r.year, y: r[instKey] }));
-
-    // Fill in any years missing from the cache using the static baseline,
-    // so the regression always has enough points even on a partial cache.
     for (const baseline of HISTORICAL_CUTOFFS.filter(r => r.category === category)) {
-        if (!cachedYears.has(baseline.year)) {
-            rows.push({ x: baseline.year, y: baseline[instKey] });
-        }
+        if (!cachedYears.has(baseline.year)) rows.push({ x: baseline.year, y: baseline[instKey] });
     }
-
     return { rows: rows.sort((a, b) => a.x - b.x), usingLiveData: cachedAll.rows.length > 0 };
 }
 
-/**
- * Simple linear regression: returns {slope, intercept} for y = slope*x + intercept
- */
 function linearRegression(points) {
     const n = points.length;
     const sumX  = points.reduce((s, p) => s + p.x, 0);
@@ -615,95 +956,37 @@ function linearRegression(points) {
     const sumXY = points.reduce((s, p) => s + p.x * p.y, 0);
     const sumXX = points.reduce((s, p) => s + p.x * p.x, 0);
     const denom = (n * sumXX - sumX * sumX) || 1;
-    const slope = (n * sumXY - sumX * sumY) / denom;
-    const intercept = (sumY - slope * sumX) / n;
-    return { slope, intercept };
+    return { slope: (n * sumXY - sumX * sumY) / denom, intercept: (sumY - (n * sumXY - sumX * sumY) / denom * sumX) / n };
 }
 
-/**
- * AI-based cutoff & rank prediction — now backed by REAL, periodically
- * refreshed web data (see research.js / cutoff_cache) rather than a fixed
- * table. Falls back to a static historical baseline only where live data
- * is not yet available for a given year, so the feature degrades
- * gracefully but always prefers real numbers when present.
- *
- * @param {string} aim       - 'AIIMS' | 'Government Medical College' | 'Private Medical College'
- * @param {string} category  - 'General' | 'EWS' | 'OBC' | 'SC' | 'ST' | 'PwD' | 'Others'
- * @param {string} state
- * @param {string|Date} examDate
- * @param {number} [currentAccuracyPct] - student's current average accuracy (0-100), optional
- */
 async function predictCutoff(aim, category, state, examDate, currentAccuracyPct = null) {
     const instKey = INSTITUTION_KEY[aim] || 'govt';
-    const cat = HISTORICAL_CUTOFFS.some(r => r.category === category)
-        ? category
-        : (CATEGORY_FALLBACK[category] || 'General');
-
+    const cat = HISTORICAL_CUTOFFS.some(r => r.category === category) ? category : (CATEGORY_FALLBACK[category] || 'General');
     const targetYear = examDate ? new Date(examDate).getFullYear() : (new Date().getFullYear() + 1);
-
-    // Kick off a background refresh if the cache looks stale — don't block
-    // this request on it; the next request will benefit from fresh data.
-    isCutoffCacheStale(targetYear).then(stale => {
-        if (stale) refreshCutoffCache(targetYear).catch(() => {});
-    }).catch(() => {});
-
+    isCutoffCacheStale(targetYear).then(stale => { if (stale) refreshCutoffCache(targetYear).catch(() => {}); }).catch(() => {});
     const { rows, usingLiveData } = await buildTrainingRows(cat, instKey);
-
     const { slope, intercept } = linearRegression(rows);
-
     let predicted = slope * targetYear + intercept;
-
-    // Apply state quota adjustment
-    const stateAdj = STATE_ADJUSTMENT[state] ?? 0;
-    predicted = predicted * (1 + stateAdj);
-
-    // Clamp to plausible NEET score range
+    predicted = predicted * (1 + (STATE_ADJUSTMENT[state] ?? 0));
     predicted = Math.min(NEET_MAX_SCORE, Math.max(100, predicted));
-
-    const targetScore  = Math.round(predicted);
-    const safeScore    = Math.round(Math.min(NEET_MAX_SCORE, predicted + 12)); // small buffer for safety margin
-    const stretchScore = Math.round(Math.min(NEET_MAX_SCORE, predicted + 28)); // ambitious goal
-
-    // Estimated rank: approximate inverse relationship between score and
-    // All-India rank, anchored using the historical General/AIIMS top-rank
-    // benchmark (~700/720 ≈ rank 1) and a percentile decay model.
+    const targetScore = Math.round(predicted);
     const percentile = predicted / NEET_MAX_SCORE;
     const estimatedRank = Math.round(NEET_MAX_RANK * Math.pow(1 - percentile, 6));
-    const rankLow  = Math.max(1, Math.round(estimatedRank * 0.7));
-    const rankHigh = Math.round(estimatedRank * 1.3);
-
-    // Admission probability based on how the student's current trajectory
-    // (accuracy-derived projected score) compares to the predicted cutoff.
     let admissionProbability = null;
-    if (currentAccuracyPct !== null && !Number.isNaN(currentAccuracyPct)) {
-        const projectedScore = (currentAccuracyPct / 100) * NEET_MAX_SCORE;
-        const diff = projectedScore - targetScore;
-        // logistic curve centred on the target score
-        const k = 0.08;
-        admissionProbability = Math.round((1 / (1 + Math.exp(-k * diff))) * 1000) / 10;
+    if (currentAccuracyPct !== null) {
+        const diff = (currentAccuracyPct / 100) * NEET_MAX_SCORE - targetScore;
+        admissionProbability = Math.round((1 / (1 + Math.exp(-0.08 * diff))) * 1000) / 10;
     }
-
     return {
-        category: cat,
-        institution: aim,
-        targetYear,
-        safeScore,
+        category: cat, institution: aim, targetYear,
+        safeScore: Math.round(Math.min(NEET_MAX_SCORE, predicted + 12)),
         targetScore,
-        stretchScore,
-        estimatedRank: { low: rankLow, high: rankHigh, mid: estimatedRank },
+        stretchScore: Math.round(Math.min(NEET_MAX_SCORE, predicted + 28)),
+        estimatedRank: { low: Math.max(1, Math.round(estimatedRank * 0.7)), high: Math.round(estimatedRank * 1.3), mid: estimatedRank },
         admissionProbability,
-        modelInfo: {
-            method: usingLiveData
-                ? 'linear-regression-on-live-web-researched-cutoffs'
-                : 'linear-regression-on-static-baseline (live data not yet fetched)',
-            dataSource: usingLiveData ? 'web-research-ai' : 'static-baseline',
-            trainingPoints: rows.length,
-            slope: Math.round(slope * 100) / 100,
-            stateAdjustmentPct: Math.round(stateAdj * 1000) / 10
-        }
+        modelInfo: { method: usingLiveData ? 'linear-regression-live' : 'linear-regression-static', usingLiveData }
     };
 }
-
 
 const AIM_BASE_TARGETS = {
     'AIIMS':                      { bio: 92, phy: 88, chem: 90 },
@@ -711,11 +994,9 @@ const AIM_BASE_TARGETS = {
     'Private Medical College':    { bio: 75, phy: 65, chem: 70 }
 };
 
-const RESERVED_CATEGORIES = ['OBC', 'SC', 'ST', 'EWS', 'PwD'];
-
 function computeTargets(aim, category) {
     const base = AIM_BASE_TARGETS[aim] || AIM_BASE_TARGETS['Government Medical College'];
-    const relax = RESERVED_CATEGORIES.includes(category) ? 5 : 0;
+    const relax = ['OBC','SC','ST','EWS','PwD'].includes(category) ? 5 : 0;
     return {
         bio:  Math.max(50, base.bio  - relax),
         phy:  Math.max(50, base.phy  - relax),
@@ -723,172 +1004,34 @@ function computeTargets(aim, category) {
     };
 }
 
-// ---------------------------------------------------------------------------
-// ERROR ATLAS — topic → remedial mapping per subject
-// ---------------------------------------------------------------------------
 const TOPIC_BANK = {
     bio: [
-        { topic: 'Cell Division (Mitosis & Meiosis)', remedy: 'Revisit Hill III (Let the Student Discover) — draw the cell cycle yourself before checking the textbook diagram.' },
-        { topic: "Genetics — Mendel's Laws",          remedy: "Use Hill IV (One Key, Many Doors) — solve cross-problems for pea plants, then apply the same ratios to human pedigree charts." },
-        { topic: 'Human Physiology — Nervous System', remedy: 'Apply Hill VI (Build Connections) — link neuron structure to the reflex arc and then to hormonal coordination.' },
-        { topic: 'Plant Physiology',                  remedy: 'Apply Hill I (Known to Unknown) — relate transpiration to everyday examples of evaporation first.' }
+        { topic: 'Cell Division (Mitosis & Meiosis)', remedy: 'Revisit Hill III — draw the cell cycle yourself before checking the textbook diagram.' },
+        { topic: "Genetics — Mendel's Laws", remedy: "Use Hill IV — solve cross-problems for pea plants, then apply the same ratios to human pedigree charts." },
+        { topic: 'Human Physiology — Nervous System', remedy: 'Apply Hill VI — link neuron structure to the reflex arc and then to hormonal coordination.' },
+        { topic: 'Plant Physiology', remedy: 'Apply Hill I — relate transpiration to everyday examples of evaporation first.' }
     ],
     phy: [
-        { topic: "Newton's Laws of Motion", remedy: 'Go back to Hill I (Known to Unknown) — start from everyday push/pull examples before tackling numericals.' },
-        { topic: 'Electrostatics',          remedy: "Use Hill II (Central Point) — anchor every formula to Coulomb's Law as the central idea." },
-        { topic: 'Rotational Mechanics',    remedy: 'Apply Hill V (Recognise Patterns) — compare linear and rotational analogues side by side.' },
-        { topic: 'Thermodynamics',          remedy: 'Use Hill III (Discover) — derive the first law from energy conservation intuition before memorising state functions.' }
+        { topic: "Newton's Laws of Motion", remedy: 'Go back to Hill I — start from everyday push/pull examples before tackling numericals.' },
+        { topic: 'Electrostatics', remedy: "Use Hill II — anchor every formula to Coulomb's Law as the central idea." },
+        { topic: 'Rotational Mechanics', remedy: 'Apply Hill V — compare linear and rotational analogues side by side.' },
+        { topic: 'Thermodynamics', remedy: 'Use Hill III — derive the first law from energy conservation intuition before memorising state functions.' }
     ],
     chem: [
-        { topic: 'Chemical Bonding',               remedy: 'Revisit Hill III — predict bond type from electronegativity before checking the answer key.' },
-        { topic: 'Equilibrium',                    remedy: "Use Hill II (Central Point) — treat Le Chatelier's Principle as the anchor for every shift-based question." },
-        { topic: 'Organic Reaction Mechanisms',    remedy: 'Apply Hill VII (Real-World Wisdom) — relate mechanisms to real industrial/biological processes to aid recall.' },
-        { topic: 'Periodic Table & Periodicity',   remedy: 'Use Hill V (Patterns) — map trends (atomic radius, ionisation energy) graphically before doing MCQs.' }
+        { topic: 'Chemical Bonding', remedy: 'Revisit Hill III — predict bond type from electronegativity before checking the answer key.' },
+        { topic: 'Equilibrium', remedy: "Use Hill II — treat Le Chatelier's Principle as the anchor for every shift-based question." },
+        { topic: 'Organic Reaction Mechanisms', remedy: 'Apply Hill VII — relate mechanisms to real industrial/biological processes to aid recall.' },
+        { topic: 'Periodic Table & Periodicity', remedy: 'Use Hill V — map trends graphically before doing MCQs.' }
     ]
 };
 
-// ===========================================================================
-// PHYSICS STUDENT MODULE — additive constants
-// (entry diagnostics, Term-organised materials, proficiency classification)
-// ===========================================================================
-
-// Canonical Physics topic list, as specified in the Physics Student Module
-// requirements. Used for entry-test question tagging, Term-based material
-// organisation, and topic-wise analytics.
-const PHYSICS_TOPICS = [
-    'Units and Dimensions',
-    'Kinematics',
-    'Laws of Motion',
-    'Work, Energy and Power',
-    'Rotational Motion',
-    'Gravitation',
-    'Oscillations and Waves',
-    'Thermodynamics',
-    'Electrostatics',
-    'Current Electricity',
-    'Magnetism',
-    'Optics',
-    'Modern Physics'
-];
-
-// Term 1 (Conceptual Understanding) / Term 2 (Definitions & Formulae) /
-// Term 3 (Advanced Applications) seed content for every Physics topic.
-// This is starter content, intended to demonstrate the three-stage
-// learning model end-to-end — faculty can add further file/link materials
-// per topic/term from the Lecturer Hub at any time.
-const PHYSICS_TERM_CONTENT = {
-    'Units and Dimensions': {
-        1: "Every physical quantity is built from a few base quantities — length, mass, time, and others. Dimensional analysis lets you check whether an equation could possibly be correct just by tracking these building blocks, without doing any arithmetic.",
-        2: "Dimensional formula notation: [M^a L^b T^c …]. SI base units: metre (m), kilogram (kg), second (s), ampere (A), kelvin (K), mole (mol), candela (cd). Principle of homogeneity: only quantities with the same dimensions can be added, subtracted, or equated.",
-        3: "Use dimensional analysis to check whether a formula (e.g. T = 2π√(l/g)) is dimensionally a time, to derive how one quantity depends on others up to a dimensionless constant, and to convert between unit systems in multi-step numericals."
-    },
-    'Kinematics': {
-        1: "Kinematics describes how position changes with time, independent of what causes the motion. Velocity tells you how fast position changes; acceleration tells you how fast velocity changes — think of a car speeding up, not why the engine pushes it.",
-        2: "v = u + at, s = ut + ½at², v² = u² + 2as (uniform acceleration). Relative velocity: v_AB = v_A − v_B. Projectile motion: range R = u²sin2θ/g, max height H = u²sin²θ/2g, time of flight T = 2u sinθ/g.",
-        3: "Apply the kinematic equations to multi-stage motion (e.g. a ball thrown up and later caught), combine projectile motion with relative velocity (river–boat problems), and read acceleration/displacement from the slope/area of v-t and x-t graphs."
-    },
-    'Laws of Motion': {
-        1: "Newton's three laws explain why objects keep moving, speed up, or stop. A body resists changes to its motion (inertia); a net push or pull is needed to change that motion; and every push has an equal push back.",
-        2: "First law: a body remains at rest or in uniform motion unless acted on by a net external force. Second law: F = dp/dt = ma. Third law: F_AB = −F_BA. Friction: f = μN (limiting static friction ≥ kinetic friction).",
-        3: "Solve connected-block and pulley systems using free-body diagrams, analyse motion on inclined planes with friction, and apply circular-motion force balance (tension or friction supplying the centripetal force)."
-    },
-    'Work, Energy and Power': {
-        1: "Work is done when a force causes displacement. Energy is the capacity to do work, and it doesn't disappear — it just changes form, like kinetic energy converting to potential energy as a ball rises.",
-        2: "W = F·s·cosθ. KE = ½mv². Gravitational PE = mgh. Work-energy theorem: W_net = ΔKE. Power: P = W/t = F·v. Conservation of mechanical energy: KE + PE = constant when no non-conservative force acts.",
-        3: "Apply energy conservation to pendulum and spring-block problems, use the work-energy theorem to find speeds without solving for acceleration directly, and compute power output on inclined planes with friction."
-    },
-    'Rotational Motion': {
-        1: "Just as linear motion has mass, velocity, and force, rotational motion has moment of inertia, angular velocity, and torque — each rotational quantity is a direct analogue of a linear one.",
-        2: "Torque: τ = r × F. Moment of inertia: disc = ½MR², ring = MR², rod about centre = ML²/12. Angular momentum: L = Iω. Rotational KE = ½Iω². Parallel axis theorem: I = I_cm + Md².",
-        3: "Solve rolling-without-slipping problems (combining translational and rotational KE), apply conservation of angular momentum (e.g. a figure skater pulling arms in), and find moment of inertia for composite bodies."
-    },
-    'Gravitation': {
-        1: "Every mass attracts every other mass. The same force that pulls an apple down keeps the Moon orbiting the Earth — gravity is universal and follows one simple rule based on mass and distance.",
-        2: "F = Gm₁m₂/r². g = GM/R². Orbital velocity: v = √(GM/r). Escape velocity: v_e = √(2GM/R). Kepler's third law: T² ∝ r³. Gravitational potential energy: U = −GMm/r.",
-        3: "Calculate satellite orbital periods and energies, find how g varies with height and depth, and apply Kepler's laws to compare planetary or satellite orbits."
-    },
-    'Oscillations and Waves': {
-        1: "Oscillations are repetitive back-and-forth motion around a stable point, like a swing settling into a rhythm. Waves are how that disturbance travels outward through a medium without the medium itself travelling along.",
-        2: "SHM: x = A sin(ωt + φ); T = 2π√(m/k) for a spring, T = 2π√(l/g) for a pendulum. Wave speed: v = fλ. Beats: f_beat = |f₁ − f₂|. Doppler effect: f' = f(v ± v_o)/(v ∓ v_s).",
-        3: "Analyse spring-mass and pendulum systems for changes in time period, solve standing-wave and resonance problems in strings and pipes, and apply the Doppler effect to moving-source/observer numericals."
-    },
-    'Thermodynamics': {
-        1: "Thermodynamics tracks energy as heat and work flow into or out of a system. The first law is simply energy conservation applied to heat engines, while entropy describes which processes happen naturally on their own.",
-        2: "First law: ΔQ = ΔU + ΔW. Ideal gas law: PV = nRT. Cp − Cv = R. Carnot efficiency: η = 1 − T_cold/T_hot. Adiabatic process: PV^γ = constant.",
-        3: "Apply the first law to isothermal, adiabatic, isochoric and isobaric processes on a P-V diagram, find work done as the area under the curve, and compute Carnot efficiency given reservoir temperatures."
-    },
-    'Electrostatics': {
-        1: "Electric charge creates a field around itself that pushes or pulls other charges, similar to how mass creates a gravitational field — Coulomb's law is the electrical analogue of Newton's law of gravitation.",
-        2: "Coulomb's law: F = kq₁q₂/r². Electric field: E = F/q = kq/r². Potential: V = kq/r. Parallel-plate capacitance: C = ε₀A/d. Gauss's law: ∮E·dA = Q_enc/ε₀.",
-        3: "Use Gauss's law for symmetric charge distributions (spheres, cylinders, sheets), solve series/parallel capacitor combination and energy-stored problems, and apply potential energy to charged-particle motion."
-    },
-    'Current Electricity': {
-        1: "Current is the organised flow of charge through a conductor, driven by a potential difference — much like water flows downhill because of a height difference, charge flows because of a voltage difference.",
-        2: "Ohm's law: V = IR. Resistivity: R = ρl/A. Kirchhoff's laws: ΣI = 0 at a junction, ΣV = 0 around a loop. Power: P = VI = I²R. Series: R = R₁+R₂; Parallel: 1/R = 1/R₁+1/R₂.",
-        3: "Solve resistor-network problems with Kirchhoff's laws, analyse Wheatstone bridge and potentiometer circuits, and calculate heating effects and electrical energy consumption in multi-component circuits."
-    },
-    'Magnetism': {
-        1: "Moving charges create magnetic fields, and magnetic fields push on moving charges — magnetism is fundamentally about charges in motion, which is why a stationary charge feels no magnetic force at all.",
-        2: "Force on a moving charge: F = qvB sinθ. Force on a current-carrying wire: F = BIL sinθ. Field of a long straight wire: B = μ₀I/2πr. Torque on a current loop: τ = NIAB sinθ.",
-        3: "Apply circular/helical motion of charged particles in magnetic fields (radius r = mv/qB) to velocity-selector and cyclotron problems, and find the field due to combinations of wires, loops, and solenoids."
-    },
-    'Optics': {
-        1: "Light can be treated as rays that travel in straight lines, bend at surfaces, and reflect off mirrors — ray optics explains everyday experiences like why a straw looks bent in water or why mirrors flip your image.",
-        2: "Mirror formula: 1/v + 1/u = 1/f. Lens formula: 1/v − 1/u = 1/f. Magnification: m = v/u = h'/h. Lens maker's formula: 1/f = (n−1)(1/R₁ − 1/R₂). Snell's law: n₁ sinθ₁ = n₂ sinθ₂.",
-        3: "Solve lens/mirror combination problems for image position and nature, apply Snell's law to total internal reflection and prism deviation, and find the magnifying power of simple microscopes and telescopes."
-    },
-    'Modern Physics': {
-        1: "At very small scales, energy and matter behave in chunks rather than continuously — light arrives as photons, and atoms emit or absorb energy only in fixed steps, not gradually.",
-        2: "Photoelectric equation: hf = φ + KE_max. Bohr model: E_n = −13.6/n² eV. Radioactive decay: N = N₀e^(−λt), half-life t½ = 0.693/λ. Mass-energy equivalence: E = mc².",
-        3: "Solve photoelectric threshold-frequency and stopping-potential problems, apply Bohr's model to transition energies/wavelengths in hydrogen-like atoms, and use decay laws to find remaining activity over time."
-    }
-};
-
-// 10 dummy MCQs per entry test (development-stage content, per spec),
-// cycling through the canonical topic list so every test samples broadly
-// across the Physics syllabus. answer = index of correct option.
-function buildPhysicsEntryQuestions() {
-    const bank = [
-        { topic: 'Units and Dimensions', text: 'Which of these is a fundamental (base) SI unit?', options: ['Newton', 'Joule', 'Kilogram', 'Watt'], answer: 2 },
-        { topic: 'Kinematics', text: 'A body moving with uniform acceleration covers a distance given by which equation?', options: ['s = ut + ½at²', 's = ut', 's = at²', 's = u + at'], answer: 0 },
-        { topic: 'Laws of Motion', text: "Newton's First Law is also known as the law of:", options: ['Acceleration', 'Inertia', 'Action-reaction', 'Gravitation'], answer: 1 },
-        { topic: 'Work, Energy and Power', text: 'The SI unit of power is the:', options: ['Joule', 'Newton', 'Watt', 'Pascal'], answer: 2 },
-        { topic: 'Rotational Motion', text: 'The rotational analogue of mass is:', options: ['Torque', 'Angular velocity', 'Moment of inertia', 'Angular momentum'], answer: 2 },
-        { topic: 'Gravitation', text: "The value of escape velocity from Earth's surface is approximately:", options: ['1.1 km/s', '7.9 km/s', '11.2 km/s', '29.8 km/s'], answer: 2 },
-        { topic: 'Oscillations and Waves', text: 'The time period of a simple pendulum depends on:', options: ['Mass of the bob', 'Amplitude only', 'Length of the pendulum and g', 'Material of the string'], answer: 2 },
-        { topic: 'Thermodynamics', text: 'The first law of thermodynamics is a statement of:', options: ['Entropy increase', 'Conservation of energy', 'Absolute zero', 'Ideal gas behaviour'], answer: 1 },
-        { topic: 'Electrostatics', text: 'The SI unit of electric potential is the:', options: ['Ampere', 'Volt', 'Ohm', 'Farad'], answer: 1 },
-        { topic: 'Current Electricity', text: "Ohm's Law relates voltage, current and:", options: ['Power', 'Resistance', 'Charge', 'Energy'], answer: 1 },
-        { topic: 'Magnetism', text: 'The SI unit of magnetic field strength is the:', options: ['Tesla', 'Weber', 'Henry', 'Gauss'], answer: 0 },
-        { topic: 'Optics', text: 'A converging lens is also called a:', options: ['Concave lens', 'Convex lens', 'Plano lens', 'Diverging lens'], answer: 1 },
-        { topic: 'Modern Physics', text: 'The photoelectric effect was explained by:', options: ['Newton', 'Maxwell', 'Einstein', 'Bohr'], answer: 2 }
-    ];
-
-    // Build 3 tests of 10 questions each, cycling through the bank with a
-    // varied starting offset per test so each diagnostic samples a
-    // slightly different slice of the syllabus.
-    const tests = { 1: [], 2: [], 3: [] };
-    for (const t of [1, 2, 3]) {
-        for (let i = 0; i < 10; i++) {
-            const base = bank[(i + (t - 1) * 4) % bank.length];
-            tests[t].push({ ...base, text: `[Entry Test ${t} · Q${i + 1}] ${base.text}` });
-        }
-    }
-    return tests;
-}
-const PHYSICS_ENTRY_QUESTIONS = buildPhysicsEntryQuestions();
-
-// Beginner / Intermediate / Advanced classification thresholds, applied to
-// a percentage score on an entry test (Section 1.5 of the spec).
-function classifyPhysicsProficiency(percentScore) {
-    if (percentScore >= 75) return 'Advanced';
-    if (percentScore >= 45) return 'Intermediate';
-    return 'Beginner';
-}
-
 module.exports = {
-    pool, initSchema, computeTargets, TOPIC_BANK, AIM_BASE_TARGETS, RESERVED_CATEGORIES,
+    pool, initSchema,
+    CURRICULUM, TEST_SUBJECT_DIST, DIFFICULTY_RATIOS,
+    computeTargets, TOPIC_BANK, AIM_BASE_TARGETS,
     predictCutoff, HISTORICAL_CUTOFFS, STATE_ADJUSTMENT,
     refreshCutoffCache, getCachedCutoffRows, isCutoffCacheStale,
-    PHYSICS_TOPICS, PHYSICS_TERM_CONTENT, PHYSICS_ENTRY_QUESTIONS, classifyPhysicsProficiency
+    generateDailyTest, generateWeeklyTest, generateMonthlyTest,
+    generateGrandTest, generateChapterComboTest, generateMockTest,
+    fillTestQuestions, computeScore
 };

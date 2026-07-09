@@ -1,13 +1,19 @@
-// server.js — NEET CTK IGNITION  |  PostgreSQL + Express
+// server.js — CTK BRIDGE COURSE  |  PostgreSQL + Express
 // Serves the REST API and static frontend.
+// Supports both NEET and JEE preparation with a centralized question bank.
 
 const express = require('express');
 const cors    = require('cors');
 const path    = require('path');
 const multer  = require('multer');
 require('dotenv').config();
-const { pool, initSchema, computeTargets, TOPIC_BANK, predictCutoff, refreshCutoffCache,
-    PHYSICS_TOPICS, classifyPhysicsProficiency } = require('./db');
+const {
+    pool, initSchema, computeTargets, TOPIC_BANK, predictCutoff, refreshCutoffCache,
+    CURRICULUM, TEST_SUBJECT_DIST,
+    generateDailyTest, generateWeeklyTest, generateMonthlyTest,
+    generateGrandTest, generateChapterComboTest, generateMockTest,
+    fillTestQuestions, computeScore
+} = require('./db');
 const { generateRecommendations, generatePhysicsRecommendations } = require('./ai');
 const { structureWithAI, parseQuestionsRuleBased } = require('./ocr');
 const {
@@ -18,12 +24,32 @@ const {
     checkRateLimit, recordAttempt
 } = require('./auth');
 
+// Mount question bank + test engine routes
+const qbankRouter = require('./qbank');
+const qbank = qbankRouter.init({
+    pool, authenticate, requireRole, CURRICULUM,
+    generateDailyTest, generateWeeklyTest, generateMonthlyTest,
+    generateGrandTest, generateChapterComboTest, generateMockTest,
+    fillTestQuestions, computeScore
+});
+
 const app  = express();
 const PORT = process.env.PORT || 4000;
 
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '..', 'frontend')));
+
+// Question bank & test engine (additive)
+app.use('/', qbank);
+
+// Backward-compat shims for removed db exports
+const PHYSICS_TOPICS = (CURRICULUM.NEET && CURRICULUM.NEET.Physics) ? CURRICULUM.NEET.Physics : [];
+function classifyPhysicsProficiency(pct) {
+    if (pct >= 75) return 'Advanced';
+    if (pct >= 45) return 'Intermediate';
+    return 'Beginner';
+}
 
 // ===========================================================================
 // AUTHENTICATION SYSTEM (additive — does not affect existing routes)
@@ -91,7 +117,7 @@ app.post('/api/auth/register', async (req, res) => {
             );
         }
 
-        await sendOtpEmail(cleanEmail, otp, 'verify your NEET CTK IGNITION account');
+        await sendOtpEmail(cleanEmail, otp, 'verify your CTK Bridge Course account');
 
         return res.status(201).json({
             success: true,
@@ -156,7 +182,7 @@ app.post('/api/auth/resend-otp', async (req, res) => {
         const expiry = otpExpiry();
         await pool.query(`UPDATE users SET otp_code=$1, otp_expires_at=$2 WHERE email=$3`, [otp, expiry, cleanEmail]);
         await recordAttempt(pool, cleanEmail, 'otp');
-        await sendOtpEmail(cleanEmail, otp, 'verify your NEET CTK IGNITION account');
+        await sendOtpEmail(cleanEmail, otp, 'verify your CTK Bridge Course account');
 
         return res.json({ success: true, message: 'A new OTP has been sent to your email.' });
     } catch (err) {
@@ -220,7 +246,7 @@ app.post('/api/auth/forgot-password', async (req, res) => {
             const expiry = otpExpiry();
             await pool.query(`UPDATE users SET reset_otp_code=$1, reset_otp_expires_at=$2 WHERE email=$3`, [otp, expiry, cleanEmail]);
             await recordAttempt(pool, cleanEmail, 'reset');
-            await sendOtpEmail(cleanEmail, otp, 'reset your NEET CTK IGNITION password');
+            await sendOtpEmail(cleanEmail, otp, 'reset your CTK Bridge Course password');
         }
 
         return res.json({ success: true, message: 'If an account exists for this email, a password reset OTP has been sent.' });
@@ -2266,7 +2292,7 @@ app.get(/^\/(?!api).*/, (req, res) => {
 // ---------------------------------------------------------------------------
 initSchema()
     .then(() => app.listen(PORT, () => {
-        console.log(`🚀  NEET CTK IGNITION running on http://localhost:${PORT}`);
+        console.log(`🚀  CTK Bridge Course running on http://localhost:${PORT}`);
 
         // Kick off a background fetch of real, current NEET cutoff data
         // (free web search + free AI extraction) without blocking startup.

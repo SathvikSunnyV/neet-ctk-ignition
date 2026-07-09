@@ -1,4 +1,4 @@
-// auth.js — NEET CTK IGNITION
+// auth.js — CTK Bridge Course
 // Authentication helpers: JWT issuing/verification, OTP generation,
 // password hashing, email dispatch, and route-protection middleware.
 // Designed to be additive — does not touch any existing route logic.
@@ -78,7 +78,7 @@ async function sendEmail({ to, subject, html, text }) {
   try {
     return await brevo.transactionalEmails.sendTransacEmail({
       sender: {
-        name: process.env.BREVO_SENDER_NAME || 'NEET CTK IGNITION',
+        name: process.env.BREVO_SENDER_NAME || 'CTK Bridge Course',
         email: process.env.BREVO_SENDER_EMAIL,
       },
       to: [{ email: to }],
@@ -94,7 +94,7 @@ async function sendEmail({ to, subject, html, text }) {
 async function sendOtpEmail(to, otp, purpose = 'verify your account') {
     return sendEmail({
         to,
-        subject: 'NEET CTK IGNITION — Your verification code',
+        subject: 'CTK Bridge Course — Your verification code',
         text: `Your OTP to ${purpose} is ${otp}. It is valid for ${OTP_TTL_MINUTES} minutes. Do not share this code with anyone.`,
         html: `<p>Your OTP to <strong>${purpose}</strong> is:</p>
                <h2 style="letter-spacing:4px;">${otp}</h2>
