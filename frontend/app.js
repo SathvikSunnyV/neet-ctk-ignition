@@ -964,6 +964,49 @@ async function renderFacultyTests() {
   }
 }
 
+async function publishGrandTest() {
+  const btn = document.getElementById('publishGrandTestBtn');
+  const msgEl = document.getElementById('publishGrandTestMessage');
+  const courseType = document.getElementById('grandTestCourseSelect').value;
+  const label = document.getElementById('grandTestLabelInput').value.trim();
+  btn.disabled = true; btn.textContent = 'Publishing...';
+  try {
+    const res = await api('/api/bridge/faculty/tests/grand', {
+      method: 'POST',
+      body: JSON.stringify({ courseType, label: label || undefined })
+    });
+    msgEl.innerHTML = res.alreadyPublished
+      ? `<span class="badge warn">This Grand Test was already published — showing the existing one: ${res.test.title}</span>`
+      : `<span class="badge success">✅ Published: ${res.test.title}</span>`;
+    showToast(res.alreadyPublished ? 'Grand Test already existed.' : 'Grand Test published.', 'success');
+    renderGrandTestsList();
+  } catch (err) {
+    msgEl.innerHTML = `<span class="badge danger">${err.message}</span>`;
+    showToast(err.message, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Publish Grand Test';
+  }
+}
+
+async function renderGrandTestsList() {
+  const container = document.getElementById('grandTestsList');
+  if (!container) return;
+  container.innerHTML = `<div class="loading-row"><div class="spinner"></div></div>`;
+  try {
+    const tests = await api('/api/bridge/faculty/tests/grand');
+    container.innerHTML = tests.length ? tests.map(t => `
+      <div class="flex-between" style="padding:0.6rem 0; border-bottom:1px solid var(--border);">
+        <div>
+          <strong>${t.title}</strong>
+          <div class="helper-text">${t.course_type} · ${t.question_count} question(s) · ${t.attempt_count} attempt(s)</div>
+        </div>
+        <span class="helper-text">${new Date(t.created_at).toLocaleDateString()}</span>
+      </div>`).join('') : `<div class="empty-state"><p>No Grand Tests published yet.</p></div>`;
+  } catch (err) {
+    container.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
+  }
+}
+
 async function renderFacultyAnalytics() {
   const weakEl = document.getElementById('facultyWeakTopics');
   const avgEl = document.getElementById('facultyTestAverages');
@@ -2191,7 +2234,7 @@ function showPage(pageId) {
   if (pageId === 'lecturer') {
     renderMySubmissions(); renderFacultyTests(); renderFacultyAnalytics(); renderFacultyMaterials();
     populateChapterSelects(); renderChapterList(); renderFacLectures();
-    populateStudentAnalyticsSelect(); renderErrorAtlas();
+    populateStudentAnalyticsSelect(); renderErrorAtlas(); renderGrandTestsList();
   }
   if (pageId === 'onboarding') prefillOnboarding();
   if (pageId === 'admin') {
@@ -2261,6 +2304,7 @@ window.onload = () => {
   document.getElementById('addTestQuestionBtn').onclick = addTestQuestionRow;
   document.getElementById('createTestBtn').onclick = createTest;
   document.getElementById('refreshFacultyTestsBtn').onclick = renderFacultyTests;
+  document.getElementById('publishGrandTestBtn').onclick = publishGrandTest;
   document.getElementById('refreshStudentTestsBtn').onclick = renderStudentTests;
   document.getElementById('uploadMaterialBtn').onclick = uploadMaterial;
   document.getElementById('refreshFacultyMaterialsBtn').onclick = renderFacultyMaterials;
@@ -2396,16 +2440,25 @@ async function initBridgePage() {
     // Chapter combo setup
     await setupChapterComboUI();
 
-    // Grand test button
-    document.getElementById('startGrandBtn').onclick = async () => {
-        try {
-            const res = await api('/api/bridge/tests/grand', {
-                method: 'POST',
-                body: JSON.stringify({ courseType: bridgeActiveCourseType })
-            });
-            startGeneratedTest(res.test.id, res.test.title, false);
-        } catch (err) { showToast('Error generating grand test: ' + err.message, 'error'); }
-    };
+    // Grand test — published by faculty, students just take it.
+    try {
+        const grand = await api(`/api/bridge/tests/grand?courseType=${bridgeActiveCourseType}`);
+        const grandBtn = document.getElementById('startGrandBtn');
+        if (!grand.available) {
+            grandBtn.disabled = true;
+            grandBtn.textContent = 'Not published yet';
+            if (document.getElementById('bridgeGrandInfo'))
+                document.getElementById('bridgeGrandInfo').innerHTML = '<p style="font-size:.85rem; color:var(--ink-soft);">Your faculty hasn\'t published a Grand Test yet.</p>';
+        } else {
+            grandBtn.disabled = false;
+            grandBtn.textContent = grand.alreadyAttempted ? 'Already completed' : 'Generate Grand Test';
+            if (document.getElementById('bridgeGrandInfo'))
+                document.getElementById('bridgeGrandInfo').innerHTML = grand.alreadyAttempted
+                    ? `<p style="color:green; font-size:.9rem;">✅ Completed — ${grand.test.title}</p>`
+                    : `<p style="font-size:.85rem; color:var(--ink-soft);">${grand.test.title}</p>`;
+            grandBtn.onclick = () => startGeneratedTest(grand.test.id, grand.test.title, grand.alreadyAttempted);
+        }
+    } catch (err) { showToast('Error loading grand test: ' + err.message, 'error'); }
 
     // Test history
     await loadBridgeHistory();

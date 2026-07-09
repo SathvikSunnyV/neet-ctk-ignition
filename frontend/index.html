@@ -619,6 +619,28 @@
       </div>
       <div id="facultyTestsList" class="mt-2"></div>
     </div>
+
+    <div class="card">
+      <h3>🏆 CTK Bridge Grand Test — publish for students</h3>
+      <p style="color:var(--ink-soft); font-size:.9rem;">Grand Tests are only generated when a faculty member publishes one — students can no longer create their own. Publishing the same course + label again just re-shows the same test, it won't duplicate.</p>
+      <div class="grid-2">
+        <div class="field-group">
+          <label class="field-label" for="grandTestCourseSelect">Course</label>
+          <select id="grandTestCourseSelect" class="field">
+            <option value="NEET">NEET</option>
+            <option value="JEE">JEE</option>
+          </select>
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="grandTestLabelInput">Label (optional)</label>
+          <input type="text" id="grandTestLabelInput" class="field" placeholder="e.g. Q1 2026 (defaults to current quarter)">
+        </div>
+      </div>
+      <button id="publishGrandTestBtn" class="btn btn-primary mt-1">Publish Grand Test</button>
+      <div id="publishGrandTestMessage" class="mt-2"></div>
+      <h4 class="mt-2" style="margin-bottom:.4rem;">Published Grand Tests</h4>
+      <div id="grandTestsList" class="mt-1"></div>
+    </div>
     </div><!-- /fsecTests -->
 
     <!-- ===== STUDY MATERIALS ===== -->
@@ -831,7 +853,8 @@
     <!-- Grand Test -->
     <div class="card" style="margin-top:1rem;">
       <h3>🏆 Grand Test (Every 3 Months)</h3>
-      <p style="color:var(--ink-soft); font-size:.9rem;">Comprehensive 3-month coverage test. Mixed difficulty, all chapters.</p>
+      <p style="color:var(--ink-soft); font-size:.9rem;">Comprehensive 3-month coverage test, published by your faculty. Mixed difficulty, all chapters.</p>
+      <div id="bridgeGrandInfo"><p style="font-size:.85rem;">Loading...</p></div>
       <button class="btn btn-outline" id="startGrandBtn" style="margin-top:1rem;">Generate Grand Test</button>
     </div>
 
