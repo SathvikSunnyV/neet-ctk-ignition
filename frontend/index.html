@@ -3,8 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>NEET CTK IGNITION · Connectomic Learning</title>
-<meta name="description" content="A serene, connection-based NEET preparation platform built on the Seven Hills of Knowledge.">
+<title>CTK Bridge Course · Connectomic Learning</title>
+<meta name="description" content="A comprehensive NEET & JEE preparation platform built on the Seven Hills of Knowledge.">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;600;700&family=Sora:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
@@ -16,7 +16,7 @@
   <!-- ===================== NAV ===================== -->
   <div class="navbar">
     <div class="logo">
-      <h1>🏔️ NEET CTK IGNITION</h1>
+      <h1>🏔️ CTK Bridge Course</h1>
     </div>
     <div class="logo tagline" style="width:100%; order:3;">Connectomic Theory of Knowledge · The Seven Hills of Knowledge</div>
     <div class="nav-links" id="navLinks">
@@ -28,6 +28,8 @@
       <button class="nav-btn" data-page="practice" id="navPractice" style="display:none;">Practice</button>
       <button class="nav-btn" data-page="progress" id="navProgress" style="display:none;">Progress</button>
       <button class="nav-btn" data-page="physics" id="navPhysics" style="display:none;">Physics</button>
+      <button class="nav-btn" data-page="bridge" id="navBridge" style="display:none;">Test Centre</button>
+      <button class="nav-btn" data-page="qbank" id="navQBank" style="display:none;">Question Bank</button>
       <button class="nav-btn" data-page="lecturer" id="navLecturer" style="display:none;">Lecturer Hub</button>
       <button class="nav-btn" data-page="admin" id="navAdmin" style="display:none;">Admin</button>
       <button class="nav-btn" id="navLogout" style="display:none;">Logout</button>
@@ -39,7 +41,7 @@
     <div class="hero">
       <div class="eyebrow">Connectomic Theory of Knowledge</div>
       <h1>Climb the Seven Hills.<br>Connect the concepts.<br>Reach your Target.</h1>
-      <p class="lead">A calm, intelligent learning companion that turns isolated NEET facts into a connected map of understanding — built around Prof. Konuri's Seven Hills of Knowledge.</p>
+      <p class="lead">A calm, intelligent learning companion that turns isolated exam facts into a connected map of understanding — built around Prof. Konuri's Seven Hills of Knowledge.</p>
       <button class="btn btn-primary" id="startNowBtn">Start Your Journey →</button>
 
       <div class="ridge" aria-hidden="true">
@@ -216,7 +218,7 @@
           <label class="field-label" for="obTargetExam">Target examination</label>
           <select id="obTargetExam">
             <option value="NEET">NEET</option>
-            <option value="JEE">JEE (coming soon)</option>
+            <option value="JEE">JEE</option>
           </select>
         </div>
         <div class="field-group">
@@ -441,7 +443,7 @@
       </div>
 
       <div class="card">
-        <h3>🎯 Live NEET cutoff data</h3>
+        <h3>🎯 Live Cutoff Data (NEET/JEE)</h3>
         <p class="helper-text">Real cutoff figures fetched from the open web and parsed by AI (see backend). Refreshes automatically every 30 days, or trigger manually below.</p>
         <button id="refreshCutoffCacheBtn" class="btn btn-primary mt-1">Refresh live cutoff data now</button>
         <div id="cutoffCacheMessage" class="mt-2"></div>
@@ -756,8 +758,240 @@
 
 
 
-  <div class="site-footer">
-    NEET CTK IGNITION · Built on the Connectomic Theory of Knowledge · Seven Hills of Knowledge<br>
+  <!-- ===================== BRIDGE COURSE TEST CENTRE ===================== -->
+  <div id="bridgePage" class="page">
+    <div class="card" style="margin-bottom:1rem;">
+      <div class="flex-between" style="flex-wrap:wrap; gap:.75rem;">
+        <h2 style="margin:0;">🧪 Test Centre</h2>
+        <div class="flex-row" style="gap:.5rem;">
+          <select id="bridgeCourseSelect" class="field">
+            <option value="NEET">NEET</option>
+            <option value="JEE">JEE</option>
+          </select>
+        </div>
+      </div>
+      <p style="color:var(--ink-soft); font-size:.92rem; margin-top:.5rem;">All tests are generated from the centralized question bank — single source of truth.</p>
+    </div>
+
+    <!-- Entry Tests -->
+    <div class="card">
+      <h3>🚀 Entry Tests (Baseline Assessment)</h3>
+      <p style="color:var(--ink-soft); font-size:.9rem; margin-bottom:1rem;">Three fixed diagnostic tests. Take Test 1 first. Tests are the same for all students.</p>
+      <div id="bridgeEntryTests" class="grid-3"></div>
+    </div>
+
+    <!-- Daily/Weekly/Monthly -->
+    <div class="grid-3" style="margin-top:1rem;">
+      <div class="card">
+        <h3>📅 Daily Practice</h3>
+        <p style="color:var(--ink-soft); font-size:.9rem;">New 90-question test every day. Balanced subjects & difficulty.</p>
+        <div id="bridgeDailyInfo" style="margin:1rem 0;"></div>
+        <button class="btn btn-primary" id="startDailyBtn">Start Today's Test</button>
+      </div>
+      <div class="card">
+        <h3>📆 Weekly Test</h3>
+        <p style="color:var(--ink-soft); font-size:.9rem;">Comprehensive assessment every week. Higher difficulty proportion.</p>
+        <div id="bridgeWeeklyInfo" style="margin:1rem 0;"></div>
+        <button class="btn btn-primary" id="startWeeklyBtn">Start This Week's Test</button>
+      </div>
+      <div class="card">
+        <h3>🗓️ Monthly Test</h3>
+        <p style="color:var(--ink-soft); font-size:.9rem;">Monthly comprehensive assessment covering all chapters.</p>
+        <div id="bridgeMonthlyInfo" style="margin:1rem 0;"></div>
+        <button class="btn btn-primary" id="startMonthlyBtn">Start Monthly Test</button>
+      </div>
+    </div>
+
+    <!-- Mock & Chapter Combo -->
+    <div class="grid-2" style="margin-top:1rem;">
+      <div class="card">
+        <h3>🎯 Full Mock Test</h3>
+        <p style="color:var(--ink-soft); font-size:.9rem;">Unlimited full-length mock tests with randomized questions.</p>
+        <div class="flex-row" style="gap:.5rem; margin-top:1rem;">
+          <select id="mockDifficultySelect" class="field">
+            <option value="Mixed">Mixed (Balanced)</option>
+            <option value="Easy">Easy Mode</option>
+            <option value="Moderate">Moderate Mode</option>
+            <option value="Difficult">Difficult Mode</option>
+          </select>
+          <button class="btn btn-primary" id="startMockBtn">Generate Mock</button>
+        </div>
+      </div>
+      <div class="card">
+        <h3>📚 Chapter Combo Test</h3>
+        <p style="color:var(--ink-soft); font-size:.9rem;">Select subject and chapters for a focused test.</p>
+        <div style="margin-top:1rem;">
+          <select id="comboSubjectSelect" class="field" style="width:100%; margin-bottom:.5rem;"></select>
+          <div id="comboChapterList" style="max-height:150px; overflow-y:auto; margin-bottom:.5rem;"></div>
+          <button class="btn btn-outline" id="startComboBtn">Generate Combo Test</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Grand Test -->
+    <div class="card" style="margin-top:1rem;">
+      <h3>🏆 Grand Test (Every 3 Months)</h3>
+      <p style="color:var(--ink-soft); font-size:.9rem;">Comprehensive 3-month coverage test. Mixed difficulty, all chapters.</p>
+      <button class="btn btn-outline" id="startGrandBtn" style="margin-top:1rem;">Generate Grand Test</button>
+    </div>
+
+    <!-- Test History -->
+    <div class="card" style="margin-top:1rem;">
+      <h3>📊 My Test History</h3>
+      <div id="bridgeTestHistory"></div>
+    </div>
+
+    <!-- Active Test Modal -->
+    <div id="bridgeTestModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.7); z-index:1000; overflow-y:auto;">
+      <div style="max-width:900px; margin:2rem auto; background:var(--paper); border-radius:1rem; padding:2rem;">
+        <div class="flex-between" style="margin-bottom:1.5rem;">
+          <h2 id="bridgeTestTitle" style="margin:0;"></h2>
+          <div>
+            <span id="bridgeTestTimer" style="font-weight:700; color:var(--accent); font-size:1.1rem;"></span>
+            <button class="btn btn-primary" id="submitTestBtn" style="margin-left:1rem;">Submit Test</button>
+          </div>
+        </div>
+        <div id="bridgeTestQuestionsContainer"></div>
+      </div>
+    </div>
+
+    <!-- Result Modal -->
+    <div id="bridgeResultModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.7); z-index:1001; overflow-y:auto;">
+      <div style="max-width:600px; margin:3rem auto; background:var(--paper); border-radius:1rem; padding:2rem; text-align:center;">
+        <h2>📋 Test Results</h2>
+        <div id="bridgeResultContent" style="margin:1.5rem 0;"></div>
+        <button class="btn btn-primary" id="closeResultBtn">Close</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===================== QUESTION BANK ===================== -->
+  <div id="qbankPage" class="page">
+    <div class="card">
+      <h2>📚 Question Bank</h2>
+      <p style="color:var(--ink-soft); font-size:.9rem;">The centralized source of truth for all questions. Faculty can submit, review, and approve questions here.</p>
+    </div>
+
+    <!-- Faculty: Submit Question -->
+    <div class="card" id="qbankSubmitSection">
+      <h3>➕ Submit New Question</h3>
+      <div class="grid-2" style="gap:.75rem;">
+        <div>
+          <label class="field-label">Course Type</label>
+          <select id="qbSubmitCourse" class="field" style="width:100%;">
+            <option value="NEET">NEET</option>
+            <option value="JEE">JEE</option>
+            <option value="BOTH">Both</option>
+          </select>
+        </div>
+        <div>
+          <label class="field-label">Subject</label>
+          <select id="qbSubmitSubject" class="field" style="width:100%;"></select>
+        </div>
+        <div>
+          <label class="field-label">Chapter</label>
+          <select id="qbSubmitChapter" class="field" style="width:100%;"></select>
+        </div>
+        <div>
+          <label class="field-label">Difficulty</label>
+          <select id="qbSubmitDifficulty" class="field" style="width:100%;">
+            <option>Easy</option>
+            <option selected>Moderate</option>
+            <option>Difficult</option>
+          </select>
+        </div>
+      </div>
+      <div style="margin-top:.75rem;">
+        <label class="field-label">Question Text</label>
+        <textarea id="qbSubmitText" class="field" rows="3" style="width:100%;"></textarea>
+      </div>
+      <div class="grid-2" style="gap:.5rem; margin-top:.5rem;">
+        <div><label class="field-label">Option A</label><input id="qbOptA" class="field" style="width:100%;"></div>
+        <div><label class="field-label">Option B</label><input id="qbOptB" class="field" style="width:100%;"></div>
+        <div><label class="field-label">Option C</label><input id="qbOptC" class="field" style="width:100%;"></div>
+        <div><label class="field-label">Option D</label><input id="qbOptD" class="field" style="width:100%;"></div>
+      </div>
+      <div class="grid-2" style="gap:.5rem; margin-top:.5rem;">
+        <div>
+          <label class="field-label">Correct Answer</label>
+          <select id="qbCorrect" class="field" style="width:100%;">
+            <option>A</option><option>B</option><option>C</option><option>D</option>
+          </select>
+        </div>
+        <div>
+          <label class="field-label">Explanation (optional)</label>
+          <input id="qbExplanation" class="field" style="width:100%;">
+        </div>
+      </div>
+      <button class="btn btn-primary" id="qbSubmitBtn" style="margin-top:1rem;">Submit Question</button>
+    </div>
+
+    <!-- Faculty: Manage Chapters (course-aware, Course → Subject → Chapter) -->
+    <div class="card" id="qbankChapterSection" style="display:none;">
+      <h3>🗂️ Manage Chapters</h3>
+      <p style="color:var(--ink-soft); font-size:.9rem;">Add, rename, or remove chapters within the centralized Course → Subject → Chapter hierarchy. Deleting a chapter never deletes its questions.</p>
+      <div class="grid-2" style="gap:.75rem;">
+        <div>
+          <label class="field-label">Course Type</label>
+          <select id="qbChapterCourse" class="field" style="width:100%;">
+            <option value="NEET">NEET</option>
+            <option value="JEE">JEE</option>
+          </select>
+        </div>
+        <div>
+          <label class="field-label">Subject</label>
+          <select id="qbChapterSubject" class="field" style="width:100%;"></select>
+        </div>
+      </div>
+      <div class="grid-2" style="gap:.5rem; margin-top:.75rem;">
+        <div><label class="field-label">New chapter name</label><input id="newQbChapterName" class="field" style="width:100%;"></div>
+        <div><label class="field-label">Description (optional)</label><input id="newQbChapterDesc" class="field" style="width:100%;"></div>
+      </div>
+      <button class="btn btn-primary" id="addQbChapterBtn" style="margin-top:.75rem;">Add Chapter</button>
+      <div id="qbChapterMessage" class="mt-2"></div>
+      <div id="qbChapterList" style="margin-top:1rem;"></div>
+    </div>
+
+    <!-- Approval Queue (faculty/admin) -->
+    <div class="card" id="qbankApprovalSection" style="display:none;">
+      <div class="flex-between">
+        <h3>✅ Approval Queue</h3>
+        <button class="btn btn-outline" id="qbRefreshQueueBtn">Refresh</button>
+      </div>
+      <p style="color:var(--ink-soft); font-size:.9rem; margin-bottom:1rem;">Questions pending review. Approve or reject to control what goes into tests.</p>
+      <div id="qbApprovalQueue"></div>
+    </div>
+
+    <!-- Question Bank Browser -->
+    <div class="card">
+      <h3>🔍 Browse Questions</h3>
+      <div class="flex-row" style="gap:.5rem; flex-wrap:wrap; margin-bottom:1rem;">
+        <select id="qbFilterCourse" class="field">
+          <option value="">All Courses</option>
+          <option>NEET</option><option>JEE</option>
+        </select>
+        <select id="qbFilterSubject" class="field">
+          <option value="">All Subjects</option>
+        </select>
+        <select id="qbFilterDiff" class="field">
+          <option value="">All Difficulties</option>
+          <option>Easy</option><option>Moderate</option><option>Difficult</option>
+        </select>
+        <select id="qbFilterStatus" class="field">
+          <option value="">All Status</option>
+          <option value="approved">Approved</option>
+          <option value="pending">Pending</option>
+          <option value="rejected">Rejected</option>
+        </select>
+        <button class="btn btn-outline" id="qbSearchBtn">Search</button>
+      </div>
+      <div id="qbankBrowserResult"></div>
+      <div id="qbankStats" style="margin-top:1rem;"></div>
+    </div>
+  </div>
+
+
+    CTK Bridge Course · Built on the Connectomic Theory of Knowledge · Seven Hills of Knowledge<br>
     <a href="#" class="footer-admin-link" id="footerAdminLink">Admin Portal</a>
   </div>
 </div>

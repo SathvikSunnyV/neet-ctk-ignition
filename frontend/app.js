@@ -1,25 +1,25 @@
-// app.js - NEET CTK IGNITION frontend logic
+// app.js - CTK Bridge Course frontend logic
 // Talks to the Express + PostgreSQL backend defined in /backend.
 
 const API_BASE = window.location.origin;
 
 // ---------------------------------------------------------------- auth state
-let authToken = localStorage.getItem('neet_ctk_token') || null;
-let currentUser = JSON.parse(localStorage.getItem('neet_ctk_user') || 'null'); // { id, name, email, role, onboardingDone }
+let authToken = localStorage.getItem('ctk_bridge_token') || null;
+let currentUser = JSON.parse(localStorage.getItem('ctk_bridge_user') || 'null'); // { id, name, email, role, onboardingDone }
 
 // Legacy fields kept for backward compatibility with existing student-data code
-let currentStudentEmail = currentUser?.role === 'student' ? currentUser.email : (localStorage.getItem('neet_ctk_email') || null);
+let currentStudentEmail = currentUser?.role === 'student' ? currentUser.email : (localStorage.getItem('ctk_bridge_email') || null);
 let globalStudentData = null;
 let pendingVerifyEmail = null; // email awaiting OTP verification
 
 function setSession(token, user) {
   authToken = token;
   currentUser = user;
-  localStorage.setItem('neet_ctk_token', token);
-  localStorage.setItem('neet_ctk_user', JSON.stringify(user));
+  localStorage.setItem('ctk_bridge_token', token);
+  localStorage.setItem('ctk_bridge_user', JSON.stringify(user));
   if (user.role === 'student') {
     currentStudentEmail = user.email;
-    localStorage.setItem('neet_ctk_email', user.email);
+    localStorage.setItem('ctk_bridge_email', user.email);
   }
 }
 
@@ -27,10 +27,10 @@ function clearSession() {
   authToken = null;
   currentUser = null;
   currentStudentEmail = null;
-  localStorage.removeItem('neet_ctk_token');
-  localStorage.removeItem('neet_ctk_user');
-  localStorage.removeItem('neet_ctk_email');
-  sessionStorage.removeItem('neet_ctk_admin'); // retire any legacy passcode-unlocked admin session
+  localStorage.removeItem('ctk_bridge_token');
+  localStorage.removeItem('ctk_bridge_user');
+  localStorage.removeItem('ctk_bridge_email');
+  sessionStorage.removeItem('ctk_bridge_admin'); // retire any legacy passcode-unlocked admin session
 }
 
 // ---------------------------------------------------------------- toast
@@ -369,7 +369,7 @@ async function submitOnboarding() {
     const data = await api('/api/onboarding/student', { method: 'POST', body: JSON.stringify(payload) });
     globalStudentData = data;
     currentUser.onboardingDone = true;
-    localStorage.setItem('neet_ctk_user', JSON.stringify(currentUser));
+    localStorage.setItem('ctk_bridge_user', JSON.stringify(currentUser));
     msgEl.innerHTML = `<span class="badge success">✅ Profile saved — your personalised plan is ready.</span>`;
     showToast('Welcome aboard! Your personalised plan is ready.', 'success');
     setTimeout(() => showPage('guidance'), 600);
@@ -1802,7 +1802,7 @@ async function resetAllData() {
   if (!confirm('Are you absolutely sure? This cannot be undone.')) return;
   try {
     await api('/api/admin/reset-all', { method: 'POST' });
-    localStorage.removeItem('neet_ctk_email');
+    localStorage.removeItem('ctk_bridge_email');
     localStorage.removeItem('neet_ctk_lecturer');
     showToast('All platform data has been reset.', 'success');
     setTimeout(() => location.reload(), 800);
@@ -2214,6 +2214,8 @@ function updateNavForAuth() {
   document.getElementById('navPractice').style.display    = (loggedIn && role === 'student') ? '' : 'none';
   document.getElementById('navProgress').style.display    = (loggedIn && role === 'student') ? '' : 'none';
   document.getElementById('navPhysics').style.display     = (loggedIn && role === 'student') ? '' : 'none';
+  document.getElementById('navBridge').style.display      = (loggedIn && role === 'student') ? '' : 'none';
+  document.getElementById('navQBank').style.display       = (loggedIn && (role === 'faculty' || role === 'admin')) ? '' : 'none';
   document.getElementById('navLecturer').style.display    = (loggedIn && role === 'faculty') ? '' : 'none';
   // The Admin tab only ever appears for a verified admin-role session — it
   // is never shown to students or faculty, and admins reach it only via
@@ -2308,3 +2310,622 @@ function showFacultySection(sectionId) {
   document.querySelectorAll('.subnav-btn').forEach(btn => btn.classList.toggle('active', btn.getAttribute('data-fsec') === sectionId));
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
+
+// ====================================================================
+// BRIDGE COURSE TEST CENTRE
+// ====================================================================
+
+let bridgeActiveCourseType = 'NEET';
+let bridgeActiveTestId = null;
+let bridgeTestQuestions = [];
+let bridgeTestAnswers = {};
+let bridgeTimerInterval = null;
+let bridgeTimeRemaining = 0;
+let bridgeCurriculumData = null;
+
+async function loadBridgeCurriculum() {
+    if (bridgeCurriculumData) return bridgeCurriculumData;
+    try {
+        bridgeCurriculumData = await api('/api/bridge/curriculum');
+        return bridgeCurriculumData;
+    } catch (err) {
+        return {};
+    }
+}
+
+async function initBridgePage() {
+    bridgeActiveCourseType = document.getElementById('bridgeCourseSelect').value || 'NEET';
+
+    // Load entry tests
+    try {
+        const entries = await api(`/api/bridge/entry-tests?courseType=${bridgeActiveCourseType}`);
+        const container = document.getElementById('bridgeEntryTests');
+        container.innerHTML = entries.map(et => `
+            <div class="card" style="text-align:center;">
+                <h4>${et.title}</h4>
+                <p style="font-size:.85rem; color:var(--ink-soft);">90 Questions · 3 hours</p>
+                ${et.submitted_at
+                    ? `<p style="color:green; font-size:.85rem;">✅ Completed — Score: ${et.score}/${et.total}</p>`
+                    : `<button class="btn btn-outline" onclick="startEntryTest('${bridgeActiveCourseType}', ${et.test_number})">Take Entry Test ${et.test_number}</button>`
+                }
+            </div>
+        `).join('');
+    } catch (err) {
+        document.getElementById('bridgeEntryTests').innerHTML = '<p style="color:var(--ink-soft);">Entry tests not available yet.</p>';
+    }
+
+    // Load daily test status
+    try {
+        const daily = await api(`/api/bridge/tests/daily?courseType=${bridgeActiveCourseType}`);
+        document.getElementById('bridgeDailyInfo').innerHTML = daily.alreadyAttempted
+            ? `<p style="color:green; font-size:.9rem;">✅ Completed today</p>`
+            : `<p style="font-size:.85rem; color:var(--ink-soft);">${daily.test.title}</p>`;
+        document.getElementById('startDailyBtn').onclick = () => startGeneratedTest(daily.test.id, daily.test.title, daily.alreadyAttempted);
+    } catch (err) { document.getElementById('bridgeDailyInfo').innerHTML = '<p style="font-size:.85rem;">Loading...</p>'; }
+
+    // Weekly
+    try {
+        const weekly = await api(`/api/bridge/tests/weekly?courseType=${bridgeActiveCourseType}`);
+        document.getElementById('bridgeWeeklyInfo').innerHTML = weekly.alreadyAttempted
+            ? `<p style="color:green; font-size:.9rem;">✅ Completed this week</p>`
+            : `<p style="font-size:.85rem; color:var(--ink-soft);">${weekly.test.title}</p>`;
+        document.getElementById('startWeeklyBtn').onclick = () => startGeneratedTest(weekly.test.id, weekly.test.title, weekly.alreadyAttempted);
+    } catch (err) { document.getElementById('bridgeWeeklyInfo').innerHTML = '<p style="font-size:.85rem;">Loading...</p>'; }
+
+    // Monthly
+    try {
+        const monthly = await api(`/api/bridge/tests/monthly?courseType=${bridgeActiveCourseType}`);
+        document.getElementById('bridgeMonthlyInfo').innerHTML = monthly.alreadyAttempted
+            ? `<p style="color:green; font-size:.9rem;">✅ Completed this month</p>`
+            : `<p style="font-size:.85rem; color:var(--ink-soft);">${monthly.test.title}</p>`;
+        document.getElementById('startMonthlyBtn').onclick = () => startGeneratedTest(monthly.test.id, monthly.test.title, monthly.alreadyAttempted);
+    } catch (err) { document.getElementById('bridgeMonthlyInfo').innerHTML = '<p style="font-size:.85rem;">Loading...</p>'; }
+
+    // Mock test button
+    document.getElementById('startMockBtn').onclick = async () => {
+        const diff = document.getElementById('mockDifficultySelect').value;
+        try {
+            const res = await api('/api/bridge/tests/mock', {
+                method: 'POST',
+                body: JSON.stringify({ courseType: bridgeActiveCourseType, difficultyMode: diff })
+            });
+            startGeneratedTest(res.test.id, res.test.title, false);
+        } catch (err) { showToast('Error generating mock test: ' + err.message, 'error'); }
+    };
+
+    // Chapter combo setup
+    await setupChapterComboUI();
+
+    // Grand test button
+    document.getElementById('startGrandBtn').onclick = async () => {
+        try {
+            const res = await api('/api/bridge/tests/grand', {
+                method: 'POST',
+                body: JSON.stringify({ courseType: bridgeActiveCourseType })
+            });
+            startGeneratedTest(res.test.id, res.test.title, false);
+        } catch (err) { showToast('Error generating grand test: ' + err.message, 'error'); }
+    };
+
+    // Test history
+    await loadBridgeHistory();
+}
+
+async function setupChapterComboUI() {
+    const curriculum = await loadBridgeCurriculum();
+    const subjects = Object.keys(curriculum[bridgeActiveCourseType] || {});
+    const subjectSelect = document.getElementById('comboSubjectSelect');
+    subjectSelect.innerHTML = subjects.map(s => `<option value="${s}">${s}</option>`).join('');
+
+    const updateChapters = () => {
+        const subject = subjectSelect.value;
+        const chapters = (curriculum[bridgeActiveCourseType] || {})[subject] || [];
+        document.getElementById('comboChapterList').innerHTML = chapters.map(ch =>
+            `<label style="display:block; font-size:.88rem; margin:.2rem 0;">
+                <input type="checkbox" value="${ch}" class="combo-chapter-cb"> ${ch}
+            </label>`
+        ).join('');
+    };
+
+    subjectSelect.onchange = updateChapters;
+    updateChapters();
+
+    document.getElementById('startComboBtn').onclick = async () => {
+        const selected = [...document.querySelectorAll('.combo-chapter-cb:checked')].map(cb => cb.value);
+        if (selected.length === 0) return showToast('Select at least one chapter.', 'error');
+        try {
+            const res = await api('/api/bridge/tests/chapter-combo', {
+                method: 'POST',
+                body: JSON.stringify({ courseType: bridgeActiveCourseType, subject: subjectSelect.value, chapters: selected })
+            });
+            startGeneratedTest(res.test.id, res.test.title, false);
+        } catch (err) { showToast('Error generating combo test: ' + err.message, 'error'); }
+    };
+}
+
+async function startEntryTest(courseType, testNumber) {
+    try {
+        const data = await api(`/api/bridge/entry-tests/${courseType}/${testNumber}`);
+        if (data.alreadyAttempted) return showToast('You have already taken this entry test.', 'error');
+        openTestModal(data.testId, data.title, data.questions, data.timeLimitMin);
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+async function startGeneratedTest(testId, title, alreadyAttempted) {
+    if (alreadyAttempted) return showToast('You have already attempted this test.', 'error');
+    try {
+        const data = await api(`/api/bridge/tests/${testId}/questions`);
+        openTestModal(testId, data.test.title, data.questions, data.test.time_limit_min);
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+}
+
+function openTestModal(testId, title, questions, timeLimitMin) {
+    bridgeActiveTestId = testId;
+    bridgeTestQuestions = questions;
+    bridgeTestAnswers = {};
+    bridgeTimeRemaining = (timeLimitMin || 180) * 60;
+
+    document.getElementById('bridgeTestTitle').textContent = title;
+
+    const container = document.getElementById('bridgeTestQuestionsContainer');
+    container.innerHTML = questions.map((q, idx) => `
+        <div style="margin-bottom:1.5rem; padding:1rem; border:1px solid var(--border); border-radius:.5rem;">
+            <div style="font-size:.8rem; color:var(--ink-soft); margin-bottom:.5rem;">${q.subject} · ${q.chapter_name} · ${q.difficulty}</div>
+            <p style="margin-bottom:.75rem; font-weight:500;">Q${idx+1}. ${q.question_text}</p>
+            ${['A','B','C','D'].map(opt => `
+                <label style="display:block; margin-bottom:.4rem; cursor:pointer;">
+                    <input type="radio" name="q_${q.id}" value="${opt}" onchange="bridgeSelectAnswer(${q.id}, '${opt}')">
+                    <strong>${opt}.</strong> ${q['option_' + opt.toLowerCase()]}
+                </label>
+            `).join('')}
+        </div>
+    `).join('');
+
+    // Timer
+    clearInterval(bridgeTimerInterval);
+    bridgeTimerInterval = setInterval(() => {
+        bridgeTimeRemaining--;
+        const m = Math.floor(bridgeTimeRemaining / 60);
+        const s = bridgeTimeRemaining % 60;
+        document.getElementById('bridgeTestTimer').textContent =
+            `⏱ ${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
+        if (bridgeTimeRemaining <= 0) { clearInterval(bridgeTimerInterval); submitBridgeTest(); }
+    }, 1000);
+
+    document.getElementById('submitTestBtn').onclick = submitBridgeTest;
+    document.getElementById('bridgeTestModal').style.display = '';
+}
+
+window.bridgeSelectAnswer = (qId, opt) => { bridgeTestAnswers[qId] = opt; };
+
+async function submitBridgeTest() {
+    clearInterval(bridgeTimerInterval);
+    if (!confirm('Submit this test? You cannot change your answers after submission.')) return;
+    document.getElementById('bridgeTestModal').style.display = 'none';
+
+    try {
+        const result = await api(`/api/bridge/tests/${bridgeActiveTestId}/submit`, {
+            method: 'POST',
+            body: JSON.stringify({ answers: bridgeTestAnswers })
+        });
+        showBridgeResult(result);
+    } catch (err) {
+        showToast('Submission error: ' + err.message, 'error');
+    }
+}
+
+function showBridgeResult(r) {
+    document.getElementById('bridgeResultContent').innerHTML = `
+        <div style="display:grid; grid-template-columns:1fr 1fr; gap:1rem; text-align:left;">
+            <div class="card" style="text-align:center;"><div style="font-size:2rem; font-weight:700; color:var(--accent);">${r.score}/${r.total}</div><div>Raw Score</div></div>
+            <div class="card" style="text-align:center;"><div style="font-size:2rem; font-weight:700; color:var(--accent);">${r.percentage}%</div><div>Percentage</div></div>
+            <div class="card" style="text-align:center;"><div style="font-size:1.8rem; font-weight:700; color:green;">${r.correct}</div><div>Correct</div></div>
+            <div class="card" style="text-align:center;"><div style="font-size:1.8rem; font-weight:700; color:red;">${r.wrong}</div><div>Wrong</div></div>
+            <div class="card" style="text-align:center;"><div style="font-size:1.5rem; font-weight:700;">${r.skipped}</div><div>Skipped</div></div>
+            <div class="card" style="text-align:center;"><div style="font-size:1.5rem; font-weight:700; color:var(--accent);">${r.neetEquivScore}/720</div><div>Equiv. Score</div></div>
+        </div>
+        <p style="margin-top:1rem; text-align:center; font-size:.9rem; color:var(--ink-soft);">Estimated Percentile: <strong>${r.percentileEst}%</strong></p>
+    `;
+    document.getElementById('closeResultBtn').onclick = () => {
+        document.getElementById('bridgeResultModal').style.display = 'none';
+        initBridgePage(); // refresh history
+    };
+    document.getElementById('bridgeResultModal').style.display = '';
+}
+
+async function loadBridgeHistory() {
+    try {
+        const history = await api(`/api/bridge/tests/history?courseType=${bridgeActiveCourseType}`);
+        const container = document.getElementById('bridgeTestHistory');
+        if (!history.length) { container.innerHTML = '<p style="color:var(--ink-soft);">No tests attempted yet.</p>'; return; }
+        container.innerHTML = `
+            <table style="width:100%; border-collapse:collapse; font-size:.9rem;">
+                <thead>
+                    <tr style="text-align:left; border-bottom:2px solid var(--border);">
+                        <th style="padding:.5rem;">Test</th>
+                        <th>Type</th>
+                        <th>Score</th>
+                        <th>%</th>
+                        <th>Correct</th>
+                        <th>Wrong</th>
+                        <th>Date</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${history.map(h => `
+                        <tr style="border-bottom:1px solid var(--border);">
+                            <td style="padding:.4rem;">${h.title}</td>
+                            <td><span style="font-size:.8rem; padding:.2rem .5rem; border-radius:.25rem; background:var(--pastel);">${h.test_type}</span></td>
+                            <td>${h.score}/${h.total}</td>
+                            <td>${Math.round(h.score/h.total*100)}%</td>
+                            <td style="color:green;">${h.correct_count}</td>
+                            <td style="color:red;">${h.wrong_count}</td>
+                            <td style="font-size:.8rem; color:var(--ink-soft);">${new Date(h.submitted_at).toLocaleDateString()}</td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        `;
+    } catch (err) {
+        document.getElementById('bridgeTestHistory').innerHTML = '<p style="color:var(--ink-soft);">Could not load history.</p>';
+    }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+    const courseSelect = document.getElementById('bridgeCourseSelect');
+    if (courseSelect) {
+        courseSelect.onchange = () => {
+            bridgeActiveCourseType = courseSelect.value;
+            initBridgePage();
+        };
+    }
+});
+
+// ====================================================================
+// QUESTION BANK (Faculty/Admin)
+// ====================================================================
+
+async function initQBankPage() {
+    const role = currentUser?.role;
+    document.getElementById('qbankSubmitSection').style.display = (role === 'faculty') ? '' : 'none';
+    document.getElementById('qbankChapterSection').style.display = (role === 'faculty') ? '' : 'none';
+    document.getElementById('qbankApprovalSection').style.display = (role === 'faculty' || role === 'admin') ? '' : 'none';
+
+    // Load curriculum for dropdowns
+    const curriculum = await loadBridgeCurriculum();
+
+    if (role === 'faculty') initChapterManagement(curriculum);
+
+    const courseSelect = document.getElementById('qbSubmitCourse');
+    const subjectSelect = document.getElementById('qbSubmitSubject');
+    const chapterSelect = document.getElementById('qbSubmitChapter');
+
+    const updateSubjects = () => {
+        const ct = courseSelect.value;
+        const subjects = Object.keys(curriculum[ct] || {});
+        subjectSelect.innerHTML = subjects.map(s => `<option>${s}</option>`).join('');
+        updateChapters();
+    };
+    const updateChapters = () => {
+        const ct = courseSelect.value;
+        const subject = subjectSelect.value;
+        const chapters = (curriculum[ct] || {})[subject] || [];
+        chapterSelect.innerHTML = chapters.map(ch => `<option>${ch}</option>`).join('');
+    };
+
+    courseSelect.onchange = updateSubjects;
+    subjectSelect.onchange = updateChapters;
+    updateSubjects();
+
+    // Submit handler
+    document.getElementById('qbSubmitBtn').onclick = async () => {
+        const payload = {
+            courseType: courseSelect.value,
+            subject: subjectSelect.value,
+            chapterName: chapterSelect.value,
+            difficulty: document.getElementById('qbSubmitDifficulty').value,
+            questionText: document.getElementById('qbSubmitText').value.trim(),
+            optionA: document.getElementById('qbOptA').value.trim(),
+            optionB: document.getElementById('qbOptB').value.trim(),
+            optionC: document.getElementById('qbOptC').value.trim(),
+            optionD: document.getElementById('qbOptD').value.trim(),
+            correctAnswer: document.getElementById('qbCorrect').value,
+            explanation: document.getElementById('qbExplanation').value.trim()
+        };
+        if (!payload.questionText || !payload.optionA || !payload.optionB || !payload.optionC || !payload.optionD)
+            return showToast('Please fill all question fields.', 'error');
+        try {
+            await api('/api/qbank/questions', { method: 'POST', body: JSON.stringify(payload) });
+            showToast('Question submitted for approval!', 'success');
+            document.getElementById('qbSubmitText').value = '';
+            ['qbOptA','qbOptB','qbOptC','qbOptD','qbExplanation'].forEach(id => document.getElementById(id).value = '');
+        } catch (err) { showToast('Error: ' + err.message, 'error'); }
+    };
+
+    // Load approval queue
+    if (role === 'faculty' || role === 'admin') {
+        await loadApprovalQueue();
+        document.getElementById('qbRefreshQueueBtn').onclick = loadApprovalQueue;
+    }
+
+    // Load stats
+    await loadQBankStats();
+
+    // Search button
+    document.getElementById('qbSearchBtn').onclick = searchQBank;
+    await searchQBank();
+}
+
+// ====================================================================
+// CENTRALIZED CHAPTER MANAGEMENT (Question Bank — course aware)
+// ====================================================================
+
+async function refreshBridgeCurriculum() {
+    bridgeCurriculumData = null;
+    return loadBridgeCurriculum();
+}
+
+function initChapterManagement(curriculum) {
+    const courseSelect = document.getElementById('qbChapterCourse');
+    const subjectSelect = document.getElementById('qbChapterSubject');
+
+    const updateSubjects = () => {
+        const subjects = Object.keys(curriculum[courseSelect.value] || {});
+        subjectSelect.innerHTML = subjects.map(s => `<option>${s}</option>`).join('');
+        renderQbChapterList();
+    };
+
+    courseSelect.onchange = updateSubjects;
+    subjectSelect.onchange = renderQbChapterList;
+    updateSubjects();
+
+    document.getElementById('addQbChapterBtn').onclick = async () => {
+        const name = document.getElementById('newQbChapterName').value.trim();
+        const description = document.getElementById('newQbChapterDesc').value.trim();
+        const msgEl = document.getElementById('qbChapterMessage');
+        if (!name) { msgEl.innerHTML = `<span class="badge danger">Please enter a chapter name.</span>`; return; }
+        try {
+            await api('/api/qbank/chapters', {
+                method: 'POST',
+                body: JSON.stringify({ courseType: courseSelect.value, subject: subjectSelect.value, name, description })
+            });
+            document.getElementById('newQbChapterName').value = '';
+            document.getElementById('newQbChapterDesc').value = '';
+            msgEl.innerHTML = `<span class="badge success">✅ Chapter added.</span>`;
+            showToast('Chapter added.', 'success');
+            const fresh = await refreshBridgeCurriculum();
+            initChapterManagement(fresh);
+        } catch (err) {
+            msgEl.innerHTML = `<span class="badge danger">${err.message}</span>`;
+            showToast(err.message, 'error');
+        }
+    };
+}
+
+async function renderQbChapterList() {
+    const container = document.getElementById('qbChapterList');
+    const courseType = document.getElementById('qbChapterCourse').value;
+    const subject = document.getElementById('qbChapterSubject').value;
+    if (!container || !subject) return;
+    container.innerHTML = `<div class="loading-row"><div class="spinner"></div></div>`;
+    try {
+        const chapters = await api(`/api/qbank/chapters?courseType=${courseType}&subject=${encodeURIComponent(subject)}`);
+        container.innerHTML = chapters.length ? chapters.map(c => `
+            <div class="flex-between" style="padding:0.55rem 0; border-bottom:1px solid var(--border);">
+                <div>
+                    <strong>${c.name}</strong>
+                    ${c.description ? `<div class="helper-text">${c.description}</div>` : ''}
+                </div>
+                <div class="flex-row">
+                    <button class="btn btn-outline" onclick="renameQbChapter(${c.id}, '${c.name.replace(/'/g, "\\'")}')">Rename</button>
+                    <button class="btn btn-outline" onclick="removeQbChapter(${c.id})">Delete</button>
+                </div>
+            </div>`).join('') : `<div class="empty-state"><p>No chapters yet for ${courseType} · ${subject} — add one above.</p></div>`;
+    } catch (err) {
+        container.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
+    }
+}
+
+window.renameQbChapter = async (id, currentName) => {
+    const name = prompt('Rename chapter:', currentName);
+    if (!name || name.trim() === currentName) return;
+    try {
+        await api(`/api/qbank/chapters/${id}`, { method: 'PUT', body: JSON.stringify({ name: name.trim() }) });
+        showToast('Chapter renamed.', 'success');
+        await refreshBridgeCurriculum();
+        renderQbChapterList();
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+};
+
+window.removeQbChapter = async (id) => {
+    if (!confirm(`Delete this chapter? Its questions stay in the bank, just unlinked from this chapter entry.`)) return;
+    try {
+        await api(`/api/qbank/chapters/${id}`, { method: 'DELETE' });
+        showToast('Chapter deleted.', '');
+        await refreshBridgeCurriculum();
+        renderQbChapterList();
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+};
+
+async function loadApprovalQueue() {
+    try {
+        const questions = await api('/api/bridge/faculty/pending-questions');
+        const container = document.getElementById('qbApprovalQueue');
+        if (!questions.length) { container.innerHTML = '<p style="color:var(--ink-soft); font-size:.9rem;">No pending questions. ✅</p>'; return; }
+        container.innerHTML = questions.map(q => `
+            <div style="border:1px solid var(--border); border-radius:.5rem; padding:1rem; margin-bottom:.75rem;">
+                <div style="font-size:.8rem; color:var(--ink-soft); margin-bottom:.5rem;">
+                    ${q.course_type} · ${q.subject} · ${q.chapter_name} · ${q.difficulty}
+                    ${q.submitted_by_name ? ` · by ${q.submitted_by_name}` : ''}
+                </div>
+                <p style="margin-bottom:.5rem;">${q.question_text}</p>
+                <div style="font-size:.88rem;">
+                    <strong>A.</strong> ${q.option_a} &nbsp;
+                    <strong>B.</strong> ${q.option_b} &nbsp;
+                    <strong>C.</strong> ${q.option_c} &nbsp;
+                    <strong>D.</strong> ${q.option_d}
+                    <br><strong style="color:green;">Answer: ${q.correct_answer}</strong>
+                </div>
+                <div style="margin-top:.75rem; display:flex; gap:.5rem;">
+                    <button class="btn btn-outline" style="background:green; color:white;" onclick="approveQuestion(${q.id}, 'approve')">✅ Approve</button>
+                    <button class="btn btn-outline" style="background:red; color:white;" onclick="approveQuestion(${q.id}, 'reject')">❌ Reject</button>
+                </div>
+            </div>
+        `).join('');
+    } catch (err) {
+        document.getElementById('qbApprovalQueue').innerHTML = '<p style="color:red; font-size:.9rem;">Could not load queue.</p>';
+    }
+}
+
+window.approveQuestion = async (id, action) => {
+    try {
+        await api(`/api/qbank/questions/${id}/approve`, {
+            method: 'POST',
+            body: JSON.stringify({ action })
+        });
+        showToast(`Question ${action}d!`, 'success');
+        await loadApprovalQueue();
+        await loadQBankStats();
+    } catch (err) { showToast('Error: ' + err.message, 'error'); }
+};
+
+async function loadQBankStats() {
+    try {
+        const stats = await api('/api/qbank/stats');
+        document.getElementById('qbankStats').innerHTML = `
+            <div class="grid-3" style="margin-top:1rem;">
+                <div class="card" style="text-align:center;">
+                    <div style="font-size:2rem; font-weight:700; color:green;">${stats.counts.approved}</div>
+                    <div>Approved</div>
+                </div>
+                <div class="card" style="text-align:center;">
+                    <div style="font-size:2rem; font-weight:700; color:orange;">${stats.counts.pending}</div>
+                    <div>Pending</div>
+                </div>
+                <div class="card" style="text-align:center;">
+                    <div style="font-size:2rem; font-weight:700; color:red;">${stats.counts.rejected}</div>
+                    <div>Rejected</div>
+                </div>
+            </div>
+            <div style="margin-top:1rem;">
+                <h4>By Course & Subject</h4>
+                <table style="width:100%; border-collapse:collapse; font-size:.88rem; margin-top:.5rem;">
+                    <thead>
+                        <tr style="text-align:left; border-bottom:2px solid var(--border);">
+                            <th style="padding:.4rem;">Course</th><th>Subject</th><th>Count</th><th>Avg Usage</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        ${(stats.byCourse || []).map(r => `
+                            <tr style="border-bottom:1px solid var(--border);">
+                                <td style="padding:.3rem;">${r.course_type}</td>
+                                <td>${r.subject}</td>
+                                <td>${r.count}</td>
+                                <td>${parseFloat(r.avg_usage||0).toFixed(1)}</td>
+                            </tr>
+                        `).join('')}
+                    </tbody>
+                </table>
+            </div>
+        `;
+    } catch (err) { }
+}
+
+async function searchQBank() {
+    const params = new URLSearchParams({
+        courseType: document.getElementById('qbFilterCourse').value,
+        subject:    document.getElementById('qbFilterSubject').value,
+        difficulty: document.getElementById('qbFilterDiff').value,
+        status:     document.getElementById('qbFilterStatus').value,
+        limit: '20'
+    });
+    try {
+        const data = await api(`/api/qbank/questions?${params}`);
+        const container = document.getElementById('qbankBrowserResult');
+        if (!data.questions.length) { container.innerHTML = '<p style="color:var(--ink-soft);">No questions found.</p>'; return; }
+        const role = currentUser?.role;
+        const email = currentUser?.email;
+        container.innerHTML = `
+            <p style="font-size:.85rem; color:var(--ink-soft);">Showing ${data.questions.length} of ${data.total} questions</p>
+            ${data.questions.map(q => {
+                const isOwner = q.submitted_by === email;
+                const canEdit = role === 'faculty' && isOwner && q.status !== 'approved';
+                const canDelete = role === 'admin' || (role === 'faculty' && isOwner && q.status !== 'approved');
+                return `
+                <div style="border:1px solid var(--border); border-radius:.5rem; padding:.75rem; margin-bottom:.5rem;">
+                    <div style="font-size:.78rem; color:var(--ink-soft);">
+                        ${q.course_type} · ${q.subject} · ${q.chapter_name} ·
+                        <span style="color:${q.difficulty==='Easy'?'green':q.difficulty==='Moderate'?'orange':'red'}">${q.difficulty}</span> ·
+                        <span style="color:${q.status==='approved'?'green':q.status==='pending'?'orange':'red'}">${q.status}</span>
+                        · Used ${q.usage_count}×
+                    </div>
+                    <p style="margin:.4rem 0; font-size:.92rem;">${q.question_text}</p>
+                    <div style="font-size:.85rem; color:var(--ink-soft);">
+                        A. ${q.option_a} &nbsp; B. ${q.option_b} &nbsp; C. ${q.option_c} &nbsp; D. ${q.option_d}
+                        &nbsp;→ <strong style="color:green;">${q.correct_answer}</strong>
+                    </div>
+                    ${(canEdit || canDelete) ? `
+                    <div style="margin-top:.6rem; display:flex; gap:.5rem;">
+                        ${canEdit ? `<button class="btn btn-outline" onclick="editQbQuestion(${q.id})">Edit</button>` : ''}
+                        ${canDelete ? `<button class="btn btn-outline" onclick="deleteQbQuestion(${q.id})">Delete</button>` : ''}
+                    </div>` : ''}
+                </div>`;
+            }).join('')}
+        `;
+    } catch (err) {
+        document.getElementById('qbankBrowserResult').innerHTML = '<p style="color:red;">Error loading questions.</p>';
+    }
+}
+
+window.editQbQuestion = async (id) => {
+    try {
+        const q = await api(`/api/qbank/questions/${id}`);
+        const questionText = prompt('Edit question text:', q.question_text);
+        if (questionText === null) return;
+        const optionA = prompt('Option A:', q.option_a); if (optionA === null) return;
+        const optionB = prompt('Option B:', q.option_b); if (optionB === null) return;
+        const optionC = prompt('Option C:', q.option_c); if (optionC === null) return;
+        const optionD = prompt('Option D:', q.option_d); if (optionD === null) return;
+        const correctAnswer = (prompt('Correct answer (A/B/C/D):', q.correct_answer) || q.correct_answer).toUpperCase();
+        await api(`/api/qbank/questions/${id}`, {
+            method: 'PUT',
+            body: JSON.stringify({ questionText, optionA, optionB, optionC, optionD, correctAnswer })
+        });
+        showToast('Question updated — sent back for approval.', 'success');
+        searchQBank();
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+};
+
+window.deleteQbQuestion = async (id) => {
+    if (!confirm('Delete this question permanently?')) return;
+    try {
+        await api(`/api/qbank/questions/${id}`, { method: 'DELETE' });
+        showToast('Question deleted.', '');
+        searchQBank();
+        loadQBankStats();
+    } catch (err) {
+        showToast(err.message, 'error');
+    }
+};
+
+// Hook into showPage
+const _origShowPage = window.showPage;
+window.showPage = function(page) {
+    if (_origShowPage) _origShowPage(page);
+    if (page === 'bridge') {
+        initBridgePage().catch(err => console.error('Bridge page error:', err));
+    }
+    if (page === 'qbank') {
+        initQBankPage().catch(err => console.error('QBank page error:', err));
+    }
+};
