@@ -5,7 +5,7 @@ function init(deps) {
         pool, authenticate, requireRole, CURRICULUM,
         generateDailyTest, generateWeeklyTest, generateMonthlyTest,
         generateGrandTest, generateChapterComboTest, generateMockTest,
-        fillTestQuestions, computeScore
+        fillTestQuestions, computeScore, applyBridgeProgressUpdate
     } = deps;
 
     const router = Router();
@@ -399,17 +399,69 @@ function init(deps) {
         }
     });
 
-    router.post('/api/bridge/tests/grand', authenticate, requireRole('student'), async (req, res) => {
+    // Grand Tests are published by faculty, not generated on demand by
+    // students. Students can only fetch the most recently published one
+    // for their course and take it (once).
+    router.get('/api/bridge/tests/grand', authenticate, requireRole('student'), async (req, res) => {
+        const courseType = req.query.courseType || 'NEET';
+        try {
+            const { rows: [gt] } = await pool.query(
+                `SELECT id, title, time_limit_min, question_count, created_at
+                 FROM generated_tests WHERE test_type='grand' AND course_type=$1
+                 ORDER BY created_at DESC LIMIT 1`,
+                [courseType]
+            );
+            if (!gt) return res.json({ test: null, available: false });
+
+            const { rows: [attempt] } = await pool.query(
+                `SELECT id, score, total, submitted_at FROM test_attempts WHERE test_id=$1 AND student_email=$2`,
+                [gt.id, req.user.email]
+            );
+            res.json({ test: gt, available: true, alreadyAttempted: !!attempt, attempt: attempt || null });
+        } catch (err) {
+            console.error(err);
+            res.status(500).json({ error: 'Server error.' });
+        }
+    });
+
+    // Faculty: publish a Grand Test for a course type. Publishing the same
+    // courseType + label twice returns the already-published test rather
+    // than creating a duplicate.
+    router.post('/api/bridge/faculty/tests/grand', authenticate, requireRole('faculty'), async (req, res) => {
         const courseType = req.body.courseType || 'NEET';
         const now = new Date();
         const label = req.body.label || `Q${Math.ceil((now.getMonth() + 1) / 3)} ${now.getFullYear()}`;
         try {
-            const testId = await generateGrandTest(courseType, label, req.user.email);
-            const { rows: [gt] } = await pool.query(
-                `SELECT id, title, time_limit_min, question_count FROM generated_tests WHERE id=$1`, [testId]
+            const { rows: existingBefore } = await pool.query(
+                `SELECT id FROM generated_tests WHERE test_type='grand' AND course_type=$1 AND title=$2`,
+                [courseType, `${courseType} Grand Test — ${label}`]
             );
-            res.json({ success: true, test: gt });
+            const testId = await generateGrandTest(courseType, label, null, req.user.email);
+            const { rows: [gt] } = await pool.query(
+                `SELECT id, title, time_limit_min, question_count, created_at FROM generated_tests WHERE id=$1`, [testId]
+            );
+            res.json({ success: true, test: gt, alreadyPublished: existingBefore.length > 0 });
         } catch (err) {
+            console.error(err);
+            res.status(500).json({ error: 'Server error.' });
+        }
+    });
+
+    // Faculty: list published Grand Tests with attempt counts.
+    router.get('/api/bridge/faculty/tests/grand', authenticate, requireRole('faculty'), async (req, res) => {
+        try {
+            const { rows } = await pool.query(
+                `SELECT gt.id, gt.title, gt.course_type, gt.question_count, gt.time_limit_min, gt.created_at,
+                        COUNT(ta.id) AS attempt_count
+                 FROM generated_tests gt
+                 LEFT JOIN test_attempts ta ON ta.test_id = gt.id
+                 WHERE gt.test_type = 'grand'
+                 GROUP BY gt.id
+                 ORDER BY gt.created_at DESC`
+            );
+            res.json(rows);
+        } catch (err) {
+            console.error(err);
             res.status(500).json({ error: 'Server error.' });
         }
     });
@@ -507,7 +559,16 @@ function init(deps) {
                 }
             }
 
-            await pool.query(`UPDATE progress SET quiz_count = quiz_count + 1 WHERE email = $1`, [req.user.email]);
+            // Analyze and record progress for THIS test -- every Bridge test
+            // type (entry/daily/weekly/monthly/mock/chapter-combo/grand)
+            // goes through this one route, so this single call is enough to
+            // make sure any test a student takes updates their progress,
+            // not only faculty-scheduled tests.
+            try {
+                await applyBridgeProgressUpdate(req.user.email, questions, answers || {}, correct, questions.length);
+            } catch (progressErr) {
+                console.warn('Progress update skipped:', progressErr.message);
+            }
 
             res.json({
                 success: true,

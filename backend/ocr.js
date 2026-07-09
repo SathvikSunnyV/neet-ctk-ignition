@@ -64,6 +64,34 @@ function looksEmpty(text) {
 }
 
 // ---------------------------------------------------------------------------
+// STEP 2a(i) — DIRECT JSON DETECTION (fastest, free, no API key needed)
+// Faculty sometimes paste an already-structured question set (e.g. exported
+// from another tool, or authored as JSON) instead of raw prose. Regex-based
+// rule matching (STEP 2b below) only recognises "Q1) ... A) ..." style prose
+// and would find zero questions in that case. Since JSON.parse is cheap and
+// deterministic, we try it FIRST, before spending an AI call or falling back
+// to regex. Accepts a bare array, or an object with a `questions`/`data`
+// array property. Field names are flexible (see normaliseAiQuestions).
+// ---------------------------------------------------------------------------
+function tryDirectJsonParse(rawText) {
+    const trimmed = (rawText || '').trim().replace(/^```json/i, '').replace(/^```/, '').replace(/```$/, '').trim();
+    if (!trimmed || (trimmed[0] !== '[' && trimmed[0] !== '{')) return null;
+    let parsed;
+    try {
+        parsed = JSON.parse(trimmed);
+    } catch (_) {
+        return null; // not valid JSON -- let AI/rule-based handle it
+    }
+    const arr = Array.isArray(parsed) ? parsed
+        : Array.isArray(parsed?.questions) ? parsed.questions
+        : Array.isArray(parsed?.data) ? parsed.data
+        : null;
+    if (!arr) return null;
+    const normalised = normaliseAiQuestions(arr);
+    return normalised.length > 0 ? normalised : null;
+}
+
+// ---------------------------------------------------------------------------
 // STEP 2a — AI-ASSISTED STRUCTURING (preferred path)
 // ---------------------------------------------------------------------------
 function safeParseJsonArray(text) {
@@ -112,9 +140,9 @@ async function structureWithAI(rawText) {
     if (!HF_TOKEN) return null;
     try {
         const truncated = rawText.slice(0, 6000);
-        const prompt = `You are extracting multiple-choice exam questions from raw OCR/PDF text for a Physics test bank. The text may contain OCR noise, broken lines, and stray characters — use your judgement to reconstruct the intended question.
+        const prompt = `You are extracting multiple-choice exam questions from arbitrary input text for a Physics test bank. The input could be in ANY format — messy raw OCR/PDF text with noise and broken lines, already-structured JSON (possibly with different field names or nesting than expected), a CSV/tab-separated table, a numbered list, or any other layout. Detect whatever format it's actually in and extract the questions from it regardless — don't assume it's plain prose.
 
-Raw text:
+Raw input:
 """
 ${truncated}
 """
@@ -315,8 +343,12 @@ async function extractQuestionsFromFile(buffer, mimeType, originalName) {
         return { success: false, error: 'Unsupported file type for OCR upload. Please upload a PDF or an image (PNG, JPG, WEBP).' };
     }
 
-    let questions = await structureWithAI(rawText);
-    let method = 'ai-assisted';
+    let questions = tryDirectJsonParse(rawText);
+    let method = 'json-direct';
+    if (!questions) {
+        questions = await structureWithAI(rawText);
+        method = 'ai-assisted';
+    }
     if (!questions) {
         questions = parseQuestionsRuleBased(rawText);
         method = 'rule-based';
@@ -333,4 +365,4 @@ async function extractQuestionsFromFile(buffer, mimeType, originalName) {
     return { success: true, sourceKind, method, fileName: originalName, questions, rawTextPreview: rawText.slice(0, 4000) };
 }
 
-module.exports = { extractQuestionsFromFile, parseQuestionsRuleBased, structureWithAI };
+module.exports = { extractQuestionsFromFile, parseQuestionsRuleBased, structureWithAI, tryDirectJsonParse };

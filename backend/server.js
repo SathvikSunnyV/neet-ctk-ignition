@@ -12,10 +12,10 @@ const {
     CURRICULUM, TEST_SUBJECT_DIST,
     generateDailyTest, generateWeeklyTest, generateMonthlyTest,
     generateGrandTest, generateChapterComboTest, generateMockTest,
-    fillTestQuestions, computeScore
+    fillTestQuestions, computeScore, applyBridgeProgressUpdate
 } = require('./db');
 const { generateRecommendations, generatePhysicsRecommendations } = require('./ai');
-const { structureWithAI, parseQuestionsRuleBased } = require('./ocr');
+const { structureWithAI, parseQuestionsRuleBased, tryDirectJsonParse } = require('./ocr');
 const {
     hashPassword, verifyPassword, signToken,
     generateOTP, otpExpiry, isOtpExpired,
@@ -30,7 +30,7 @@ const qbank = qbankRouter.init({
     pool, authenticate, requireRole, CURRICULUM,
     generateDailyTest, generateWeeklyTest, generateMonthlyTest,
     generateGrandTest, generateChapterComboTest, generateMockTest,
-    fillTestQuestions, computeScore
+    fillTestQuestions, computeScore, applyBridgeProgressUpdate
 });
 
 const app  = express();
@@ -1250,8 +1250,12 @@ app.post('/api/faculty/tests/extract-questions', authenticate, requireRole('facu
     }
 
     try {
-        let questions = await structureWithAI(rawText);
-        let method = 'ai-assisted';
+        let questions = tryDirectJsonParse(rawText);
+        let method = 'json-direct';
+        if (!questions) {
+            questions = await structureWithAI(rawText);
+            method = 'ai-assisted';
+        }
         if (!questions) {
             questions = parseQuestionsRuleBased(rawText);
             method = 'rule-based';

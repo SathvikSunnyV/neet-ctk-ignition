@@ -369,6 +369,43 @@ async function initSchema() {
         ALTER TABLE mistakes ADD COLUMN IF NOT EXISTS concept TEXT;
         ALTER TABLE mistakes DROP CONSTRAINT IF EXISTS mistakes_test_id_fkey;
         ALTER TABLE mistakes DROP CONSTRAINT IF EXISTS mistakes_question_id_fkey;
+        -- The "chapters" table is shared by the original legacy chapter
+        -- system (server.js: subject/name/description/position/created_by)
+        -- and the newer NEET/JEE dual-track Bridge system, which added
+        -- course_type to the same CREATE TABLE statement above. That
+        -- CREATE TABLE IF NOT EXISTS is a no-op on any database whose
+        -- "chapters" table already existed before course_type was added,
+        -- so it never picked up the new column -- this is what was causing
+        -- "column course_type of relation chapters does not exist" on
+        -- startup. Same reasoning applies to question_bank.
+        ALTER TABLE chapters ADD COLUMN IF NOT EXISTS course_type TEXT NOT NULL DEFAULT 'NEET';
+        ALTER TABLE chapters ADD COLUMN IF NOT EXISTS description TEXT;
+        ALTER TABLE chapters ADD COLUMN IF NOT EXISTS position INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE chapters ADD COLUMN IF NOT EXISTS created_by TEXT REFERENCES faculty(email) ON DELETE SET NULL;
+        ALTER TABLE chapters ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ DEFAULT NOW();
+        ALTER TABLE question_bank ADD COLUMN IF NOT EXISTS course_type TEXT NOT NULL DEFAULT 'NEET';
+        ALTER TABLE question_bank ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'pending';
+        ALTER TABLE question_bank ADD COLUMN IF NOT EXISTS submitted_by TEXT REFERENCES faculty(email) ON DELETE SET NULL;
+        ALTER TABLE question_bank ADD COLUMN IF NOT EXISTS approved_by TEXT REFERENCES faculty(email) ON DELETE SET NULL;
+        ALTER TABLE question_bank ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;
+        ALTER TABLE question_bank ADD COLUMN IF NOT EXISTS rejection_note TEXT;
+        ALTER TABLE question_bank ADD COLUMN IF NOT EXISTS usage_count INTEGER DEFAULT 0;
+    `);
+
+    // The seedChapters() ON CONFLICT (course_type, subject, name) upsert
+    // needs a unique index on exactly those 3 columns to target. A legacy
+    // "chapters" table (see above) may only have UNIQUE(subject, name), or
+    // no unique constraint at all, so this has to be (re)created explicitly
+    // rather than assumed from the CREATE TABLE above. The old (subject,
+    // name)-only constraint (if present) also has to be dropped: it's
+    // stricter than we need now that course_type exists, and would block
+    // e.g. a JEE "Physics/Units and Dimensions" chapter from coexisting
+    // with the equivalent NEET one, even though ON CONFLICT only knows
+    // about the newer 3-column index.
+    await pool.query(`
+        ALTER TABLE chapters DROP CONSTRAINT IF EXISTS chapters_subject_name_key;
+        CREATE UNIQUE INDEX IF NOT EXISTS chapters_course_subject_name_uidx
+            ON chapters (course_type, subject, name);
     `);
 
     // Seed chapters
@@ -470,9 +507,15 @@ const DIFFICULTY_RATIOS = {
 };
 
 async function seedChapters() {
-    const { rows } = await pool.query(`SELECT COUNT(*) AS c FROM chapters`);
-    if (parseInt(rows[0].c, 10) > 0) return;
-
+    // Idempotent top-up (not a one-time seed): ON CONFLICT DO NOTHING makes
+    // every insert safe to repeat, so this must NOT bail out early just
+    // because *some* chapters already exist. Bailing out early was the bug
+    // that left newly-added subjects (e.g. Botany, Zoology, Mathematics)
+    // with zero chapters on any database that had already been seeded
+    // before those subjects existed -- which is exactly why "Chapter Combo
+    // Test" showed no chapters to pick from for those subjects. Every
+    // course/subject/chapter combo in CURRICULUM is checked/inserted on
+    // every startup so older databases automatically catch up.
     for (const [courseType, subjects] of Object.entries(CURRICULUM)) {
         for (const [subject, chapters] of Object.entries(subjects)) {
             for (let i = 0; i < chapters.length; i++) {
@@ -484,7 +527,7 @@ async function seedChapters() {
             }
         }
     }
-    console.log('✅  Seeded chapters for NEET & JEE');
+    console.log('✅  Chapters up to date for NEET & JEE');
 }
 
 // ---------------------------------------------------------------------------
@@ -679,13 +722,24 @@ async function generateMonthlyTest(courseType, month, year) {
 }
 
 /**
- * Generate a Grand Test (every 3 months, comprehensive).
+ * Generate a Grand Test (every 3 months, comprehensive). Grand tests are
+ * faculty-published (not student self-serve): calling this twice for the
+ * same courseType + label returns the existing test instead of creating a
+ * duplicate, so it's safe for a faculty member to "publish" the same
+ * label more than once.
  */
-async function generateGrandTest(courseType, label, studentEmail = null) {
+async function generateGrandTest(courseType, label, studentEmail = null, createdBy = null) {
+    const title = `${courseType} Grand Test — ${label}`;
+    const { rows: existing } = await pool.query(
+        `SELECT id FROM generated_tests WHERE test_type='grand' AND course_type=$1 AND title=$2`,
+        [courseType, title]
+    );
+    if (existing.length > 0) return existing[0].id;
+
     const { rows: [gt] } = await pool.query(
-        `INSERT INTO generated_tests (test_type, course_type, title, difficulty_mode, question_count, time_limit_min)
-         VALUES ('grand', $1, $2, 'Mixed', 90, 180) RETURNING id`,
-        [courseType, `${courseType} Grand Test — ${label}`]
+        `INSERT INTO generated_tests (test_type, course_type, title, difficulty_mode, question_count, time_limit_min, created_by)
+         VALUES ('grand', $1, $2, 'Mixed', 90, 180, $3) RETURNING id`,
+        [courseType, title, createdBy]
     );
     const testId = gt.id;
     await fillTestQuestions(testId, courseType, 90, 'Mixed', null, null, studentEmail);
@@ -863,6 +917,70 @@ function computeScore(answers, questions, negativeMarking = false) {
     return { correct, wrong, skipped, rawScore, totalMax, percentage, neetEquivScore, percentileEst };
 }
 
+// Maps a Bridge-course subject name to its `progress` table column suffix.
+const BRIDGE_SUBJECT_PROGRESS_KEY = {
+    Botany: 'bio', Biology: 'bio', Zoology: 'zoo',
+    Physics: 'phy', Chemistry: 'chem', Mathematics: 'math'
+};
+
+/**
+ * Updates the student's `progress` row (per-subject accuracy, quiz_count,
+ * weekly_history) after ANY Bridge-course test submission -- daily, weekly,
+ * monthly, mock, chapter-combo, grand, or entry. Every test type funnels
+ * through the same /api/bridge/tests/:id/submit route, so calling this once
+ * there is enough to make sure every test a student takes is reflected in
+ * their progress everywhere it's shown (profile, leaderboard, error atlas),
+ * not just in the quiz_count counter.
+ *
+ * A single generated test can span several subjects (e.g. a full mock or
+ * grand test), so this blends each subject's own accuracy column using the
+ * same 70/30 (existing/new) formula the legacy single-subject flow uses,
+ * and pushes this attempt's overall percentage onto weekly_history.
+ */
+async function applyBridgeProgressUpdate(email, questions, answers, correctCount, totalCount) {
+    const { rows: [progress] } = await pool.query(`SELECT * FROM progress WHERE email = $1`, [email]);
+    if (!progress) return;
+
+    const bySubject = {};
+    for (const q of questions) {
+        const key = BRIDGE_SUBJECT_PROGRESS_KEY[q.subject];
+        if (!key) continue;
+        if (!bySubject[key]) bySubject[key] = { correct: 0, total: 0 };
+        bySubject[key].total++;
+        const ans = (answers || {})[q.id];
+        if (ans && ans === q.correct_answer) bySubject[key].correct++;
+    }
+
+    const colMap = { bio: 'bio_accuracy', phy: 'phy_accuracy', chem: 'chem_accuracy', zoo: 'zoo_accuracy', math: 'math_accuracy' };
+    const setClauses = [];
+    const params = [];
+    for (const [key, { correct, total }] of Object.entries(bySubject)) {
+        if (total === 0) continue;
+        const attemptAcc = (correct / total) * 100;
+        const oldVal = progress[colMap[key]];
+        const blended = Math.round((oldVal * 0.7 + attemptAcc * 0.3) * 10) / 10;
+        params.push(blended);
+        setClauses.push(`${colMap[key]} = $${params.length}`);
+    }
+
+    let history = [];
+    try { history = JSON.parse(progress.weekly_history); } catch (_) { history = []; }
+    const overallAcc = totalCount > 0 ? (correctCount / totalCount) * 100 : 0;
+    history.push(Math.round(overallAcc * 10) / 10);
+    if (history.length > 7) history = history.slice(-7);
+
+    params.push(JSON.stringify(history));
+    const historyIdx = params.length;
+    params.push(email);
+    const emailIdx = params.length;
+
+    await pool.query(
+        `UPDATE progress SET ${setClauses.length ? setClauses.join(', ') + ',' : ''}
+         quiz_count = quiz_count + 1, weekly_history = $${historyIdx} WHERE email = $${emailIdx}`,
+        params
+    );
+}
+
 // ---------------------------------------------------------------------------
 // HISTORICAL CUTOFFS & PREDICTION (retained from original)
 // ---------------------------------------------------------------------------
@@ -1033,5 +1151,5 @@ module.exports = {
     refreshCutoffCache, getCachedCutoffRows, isCutoffCacheStale,
     generateDailyTest, generateWeeklyTest, generateMonthlyTest,
     generateGrandTest, generateChapterComboTest, generateMockTest,
-    fillTestQuestions, computeScore
+    fillTestQuestions, computeScore, applyBridgeProgressUpdate
 };
