@@ -359,7 +359,6 @@ async function submitOnboarding() {
     category: document.getElementById('obCategory').value,
     state: document.getElementById('obState').value.trim(),
     currentClass: document.getElementById('obCurrentClass').value,
-    examDate: document.getElementById('obExamDate').value,
     dailyStudyHours: document.getElementById('obDailyHours').value ? parseFloat(document.getElementById('obDailyHours').value) : null,
     prepLevel: document.getElementById('obPrepLevel').value
   };
@@ -385,6 +384,7 @@ async function submitOnboarding() {
 
 async function prefillOnboarding() {
   if (!currentUser || currentUser.role !== 'student') return;
+  renderObExamDateDisplay();
   const data = await loadStudentData(currentUser.email);
   if (!data || !data.student) return;
   const s = data.student;
@@ -393,9 +393,23 @@ async function prefillOnboarding() {
   if (s.category) document.getElementById('obCategory').value = s.category;
   if (s.state) document.getElementById('obState').value = s.state;
   if (s.current_class) document.getElementById('obCurrentClass').value = s.current_class;
-  if (s.exam_date) document.getElementById('obExamDate').value = s.exam_date.split('T')[0];
   if (s.daily_study_hours) document.getElementById('obDailyHours').value = s.daily_study_hours;
   if (s.prep_level) document.getElementById('obPrepLevel').value = s.prep_level;
+}
+
+// The exam date is set only by faculty/admin (see Lecturer Hub / Admin
+// page) -- students see it here read-only, they can't change it.
+async function renderObExamDateDisplay() {
+  const el = document.getElementById('obExamDateDisplay');
+  if (!el) return;
+  try {
+    const { examDate } = await api('/api/admin/exam-date');
+    el.textContent = examDate
+      ? `${new Date(examDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'long', year: 'numeric' })} (set by your institute)`
+      : 'Not set yet by your institute.';
+  } catch (err) {
+    el.textContent = 'Could not load exam date.';
+  }
 }
 
 // ====================================================================
@@ -436,35 +450,7 @@ async function renderGuidance() {
         <div class="progress-bar"><div class="progress-fill" style="width:${progressPercent}%"></div></div>
         <p class="helper-text">Overall readiness: ${progressPercent}% of target accuracy reached.</p>
 
-        ${cutoff ? `
-        <hr class="divider">
-        <div class="flex-between">
-          <h3 style="margin-bottom:0;">🎯 AI cutoff &amp; rank prediction (${cutoff.targetYear})</h3>
-          <span class="badge ${cutoff.modelInfo.dataSource === 'web-research-ai' ? 'success' : 'warn'}">
-            ${cutoff.modelInfo.dataSource === 'web-research-ai' ? '🌐 Live web data' : '📊 Baseline estimate'}
-          </span>
-        </div>
-        <div class="grid-3 mt-1">
-          <div class="card" style="background:var(--hill-1); border:none;">
-            <div class="helper-text">Safe Score</div>
-            <p style="font-weight:700; font-size:1.4rem; margin:0;">${cutoff.safeScore}/720</p>
-          </div>
-          <div class="card" style="background:var(--hill-3); border:none;">
-            <div class="helper-text">Target Score</div>
-            <p style="font-weight:700; font-size:1.4rem; margin:0;">${cutoff.targetScore}/720</p>
-          </div>
-          <div class="card" style="background:var(--hill-5); border:none;">
-            <div class="helper-text">Stretch Goal</div>
-            <p style="font-weight:700; font-size:1.4rem; margin:0;">${cutoff.stretchScore}/720</p>
-          </div>
-        </div>
-        <p class="helper-text mt-1">Estimated rank range: <strong>#${cutoff.estimatedRank.low.toLocaleString('en-IN')} – #${cutoff.estimatedRank.high.toLocaleString('en-IN')}</strong>
-          ${cutoff.admissionProbability !== null ? ` · Admission probability at current pace: <strong>${cutoff.admissionProbability}%</strong>` : ''}
-        </p>
-        <p class="helper-text">${cutoff.modelInfo.dataSource === 'web-research-ai'
-            ? `Based on real, recently fetched NEET cutoff trends for ${cutoff.category} category${student.state ? ` in ${student.state}` : ''}, regressed forward to ${cutoff.targetYear}.`
-            : `Live data hasn't been fetched yet for this category — showing a baseline estimate from historical trends. This updates automatically once the live data refresh completes.`}</p>
-        ` : ''}
+        ${cutoff ? renderCutoffSection(cutoff, student) : ''}
 
         <div class="grid-3 mt-2">
           <div class="card" style="background:var(--hill-2); border:none;">
@@ -503,6 +489,91 @@ async function renderGuidance() {
   } catch (err) {
     container.innerHTML = `<div class="empty-state"><span class="icon">⚠️</span><p>${err.message}</p></div>`;
   }
+}
+
+function renderCutoffSection(cutoff, student) {
+  if (cutoff.exam === 'BOTH') {
+    return `
+      <hr class="divider">
+      ${renderSingleExamCutoff(cutoff.neet, student)}
+      <hr class="divider">
+      ${renderSingleExamCutoff(cutoff.jee, student)}`;
+  }
+  return `<hr class="divider">${renderSingleExamCutoff(cutoff, student)}`;
+}
+
+function renderSingleExamCutoff(cutoff, student) {
+  const isLive = cutoff.modelInfo.dataSource === 'web-research-ai';
+  const badge = `<span class="badge ${isLive ? 'success' : 'warn'}">${isLive ? '🌐 Live web data' : '📊 Historical trend estimate'}</span>`;
+
+  if (cutoff.exam === 'JEE') {
+    const subj = cutoff.subjectCutoffs;
+    return `
+      <div class="flex-between">
+        <h3 style="margin-bottom:0;">🎯 JEE cutoff &amp; rank prediction (${cutoff.targetYear})</h3>
+        ${badge}
+      </div>
+      <div class="grid-3 mt-1">
+        <div class="card" style="background:var(--hill-1); border:none;">
+          <div class="helper-text">Safe percentile</div>
+          <p style="font-weight:700; font-size:1.4rem; margin:0;">${cutoff.safePercentile.toFixed(2)}</p>
+        </div>
+        <div class="card" style="background:var(--hill-3); border:none;">
+          <div class="helper-text">Target percentile</div>
+          <p style="font-weight:700; font-size:1.4rem; margin:0;">${cutoff.targetPercentile.toFixed(2)}</p>
+        </div>
+        <div class="card" style="background:var(--hill-5); border:none;">
+          <div class="helper-text">Stretch percentile</div>
+          <p style="font-weight:700; font-size:1.4rem; margin:0;">${cutoff.stretchPercentile.toFixed(2)}</p>
+        </div>
+      </div>
+      <p class="helper-text mt-1">Estimated rank range: <strong>#${cutoff.estimatedRank.low.toLocaleString('en-IN')} – #${cutoff.estimatedRank.high.toLocaleString('en-IN')}</strong>
+        ${cutoff.admissionProbability !== null ? ` · Admission probability at current pace: <strong>${cutoff.admissionProbability}%</strong>` : ''}
+      </p>
+      <p class="helper-text">Regressed from published JEE Main ${cutoff.category} category qualifying percentiles, forward to ${cutoff.targetYear}.</p>
+      <p class="helper-text mt-1" style="font-weight:600;">Subject-wise accuracy targets to stay on pace:</p>
+      <div class="grid-3 mt-1">
+        <div class="card" style="border:1px solid var(--border);"><strong>Physics</strong><p class="helper-text">${subj.Physics.accuracyTargetPct}% accuracy</p></div>
+        <div class="card" style="border:1px solid var(--border);"><strong>Chemistry</strong><p class="helper-text">${subj.Chemistry.accuracyTargetPct}% accuracy</p></div>
+        <div class="card" style="border:1px solid var(--border);"><strong>Mathematics</strong><p class="helper-text">${subj.Mathematics.accuracyTargetPct}% accuracy</p></div>
+      </div>`;
+  }
+
+  // NEET
+  const subj = cutoff.subjectCutoffs;
+  return `
+    <div class="flex-between">
+      <h3 style="margin-bottom:0;">🎯 NEET cutoff &amp; rank prediction (${cutoff.targetYear})</h3>
+      ${badge}
+    </div>
+    <div class="grid-3 mt-1">
+      <div class="card" style="background:var(--hill-1); border:none;">
+        <div class="helper-text">Safe Score</div>
+        <p style="font-weight:700; font-size:1.4rem; margin:0;">${cutoff.safeScore}/${cutoff.maxMarks}</p>
+      </div>
+      <div class="card" style="background:var(--hill-3); border:none;">
+        <div class="helper-text">Target Score</div>
+        <p style="font-weight:700; font-size:1.4rem; margin:0;">${cutoff.targetScore}/${cutoff.maxMarks}</p>
+      </div>
+      <div class="card" style="background:var(--hill-5); border:none;">
+        <div class="helper-text">Stretch Goal</div>
+        <p style="font-weight:700; font-size:1.4rem; margin:0;">${cutoff.stretchScore}/${cutoff.maxMarks}</p>
+      </div>
+    </div>
+    <p class="helper-text mt-1">Estimated rank range: <strong>#${cutoff.estimatedRank.low.toLocaleString('en-IN')} – #${cutoff.estimatedRank.high.toLocaleString('en-IN')}</strong>
+      ${cutoff.admissionProbability !== null ? ` · Admission probability at current pace: <strong>${cutoff.admissionProbability}%</strong>` : ''}
+    </p>
+    <p class="helper-text">${isLive
+        ? `Based on real, recently fetched NEET cutoff trends for ${cutoff.category} category${student.state ? ` in ${student.state}` : ''}, regressed forward to ${cutoff.targetYear}.`
+        : `Live data hasn't been fetched yet for this category — showing an estimate computed from historical trends. This updates automatically once the live data refresh completes.`}</p>
+    <p class="helper-text mt-1" style="font-weight:600;">Subject-wise target scores:</p>
+    <div class="grid-3 mt-1">
+      ${Object.entries(subj).map(([name, s]) => `
+        <div class="card" style="border:1px solid var(--border);">
+          <strong>${name}</strong>
+          <p class="helper-text">Safe ${s.safeScore} · Target ${s.targetScore} · Stretch ${s.stretchScore} <span style="opacity:.7;">(/${s.maxMarks})</span></p>
+        </div>`).join('')}
+    </div>`;
 }
 
 function subjectTargetRow(label, current, target) {
@@ -582,16 +653,12 @@ async function renderProgress() {
       return;
     }
     const { progress, targets } = data;
-    const avgAcc = (progress.bio_accuracy + progress.phy_accuracy + progress.chem_accuracy) / 3;
-    const targetAvg = (targets.bio + targets.phy + targets.chem) / 3;
+    const avgAcc = (progress.bio_accuracy + progress.phy_accuracy + progress.chem_accuracy + progress.zoo_accuracy + progress.math_accuracy) / 5;
+    const targetAvg = (targets.bio + targets.phy + targets.chem + targets.zoo + targets.math) / 5;
     const overallPercent = Math.min(100, Math.round((avgAcc / targetAvg) * 100));
-
-    let rank = Math.floor(15000 - (avgAcc - 40) * 150);
-    rank = Math.max(1000, Math.min(150000, rank));
 
     const advancedUnlocked = progress.bio_accuracy >= 80 && progress.phy_accuracy >= 60 && progress.chem_accuracy >= 70;
 
-    const atlasData = await api(`/api/error-atlas/${encodeURIComponent(currentStudentEmail)}`);
     const mistakeData = await api('/api/student/mistake-analysis').catch(() => null);
 
     container.innerHTML = `
@@ -601,28 +668,22 @@ async function renderProgress() {
           <div><canvas id="accuracyChart" height="220"></canvas></div>
           <div><canvas id="weeklyTrendChart" height="220"></canvas></div>
         </div>
-        <hr class="divider">
-        <div class="flex-between">
-          <span>📊 Current — Bio ${progress.bio_accuracy}% · Phy ${progress.phy_accuracy}% · Chem ${progress.chem_accuracy}%</span>
-          <span>🎯 Target — Bio ${targets.bio}% · Phy ${targets.phy}% · Chem ${targets.chem}%</span>
-        </div>
-        <div class="progress-bar"><div class="progress-fill" style="width:${overallPercent}%"></div></div>
-        <div class="flex-between mt-1">
-          <span>📅 Probable rank estimate: <strong>#${rank.toLocaleString('en-IN')}</strong></span>
-          <span>⭐ Advanced mode: <span class="badge ${advancedUnlocked ? 'success' : 'warn'}">${advancedUnlocked ? 'Unlocked' : 'Locked'}</span></span>
+        <div class="grid-2 mt-2">
+          <div><canvas id="subjectDoughnutChart" height="220"></canvas></div>
+          <div class="card" style="border:1px solid var(--border); display:flex; flex-direction:column; justify-content:center;">
+            <span>📊 Current — Bio ${progress.bio_accuracy}% · Phy ${progress.phy_accuracy}% · Chem ${progress.chem_accuracy}% · Zoo ${progress.zoo_accuracy}% · Math ${progress.math_accuracy}%</span>
+            <span class="mt-1">🎯 Target — Bio ${targets.bio}% · Phy ${targets.phy}% · Chem ${targets.chem}% · Zoo ${targets.zoo}% · Math ${targets.math}%</span>
+            <div class="progress-bar mt-1"><div class="progress-fill" style="width:${overallPercent}%"></div></div>
+            <span class="mt-1">⭐ Advanced mode: <span class="badge ${advancedUnlocked ? 'success' : 'warn'}">${advancedUnlocked ? 'Unlocked' : 'Locked'}</span></span>
+          </div>
         </div>
         <p class="helper-text mt-1">${advancedUnlocked ? 'Great work — you have met the subject thresholds (Bio ≥ 80%, Phy ≥ 60%, Chem ≥ 70%) for Advanced Mode.' : 'Advanced Mode unlocks once Biology ≥ 80%, Physics ≥ 60% and Chemistry ≥ 70%.'}</p>
         <button id="refreshProgressBtn" class="btn btn-outline mt-2">Refresh data</button>
       </div>
 
-      <div class="card">
-        <h3>⚠️ Error Atlas &amp; Remedial Ladder</h3>
-        ${renderAtlas(atlasData.atlas)}
-      </div>
-
       ${mistakeData ? `
       <div class="card">
-        <h3>🔍 Mistake Analysis — from your test attempts</h3>
+        <h3>🔍 Mistake Analysis — from every test you've taken</h3>
         ${renderMistakeAnalysis(mistakeData)}
       </div>` : ''}`;
 
@@ -635,10 +696,10 @@ async function renderProgress() {
     new Chart(document.getElementById('accuracyChart').getContext('2d'), {
       type: 'bar',
       data: {
-        labels: ['Biology', 'Physics', 'Chemistry'],
+        labels: ['Biology', 'Physics', 'Chemistry', 'Zoology', 'Mathematics'],
         datasets: [
-          { label: 'Your %', data: [progress.bio_accuracy, progress.phy_accuracy, progress.chem_accuracy], backgroundColor: '#CFE3E6', borderRadius: 8 },
-          { label: 'Target %', data: [targets.bio, targets.phy, targets.chem], backgroundColor: '#D98E5B', borderRadius: 8 }
+          { label: 'Your %', data: [progress.bio_accuracy, progress.phy_accuracy, progress.chem_accuracy, progress.zoo_accuracy, progress.math_accuracy], backgroundColor: '#CFE3E6', borderRadius: 8 },
+          { label: 'Target %', data: [targets.bio, targets.phy, targets.chem, targets.zoo, targets.math], backgroundColor: '#D98E5B', borderRadius: 8 }
         ]
       },
       options: { responsive: true, plugins: { legend: { position: 'bottom' } }, scales: { y: { beginAtZero: true, max: 100 } } }
@@ -653,24 +714,21 @@ async function renderProgress() {
       options: { responsive: true, plugins: { legend: { position: 'bottom' } }, scales: { y: { beginAtZero: true, max: 100 } } }
     });
 
+    new Chart(document.getElementById('subjectDoughnutChart').getContext('2d'), {
+      type: 'doughnut',
+      data: {
+        labels: ['Biology', 'Physics', 'Chemistry', 'Zoology', 'Mathematics'],
+        datasets: [{
+          data: [progress.bio_accuracy, progress.phy_accuracy, progress.chem_accuracy, progress.zoo_accuracy, progress.math_accuracy],
+          backgroundColor: ['#CFE3E6', '#D98E5B', '#B6C77A', '#E3B23C', '#9C7FB0']
+        }]
+      },
+      options: { responsive: true, plugins: { legend: { position: 'bottom' }, title: { display: true, text: 'Where your accuracy is concentrated' } } }
+    });
+
   } catch (err) {
     container.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
   }
-}
-
-function renderAtlas(atlas) {
-  if (!atlas || atlas.length === 0) {
-    return `<div class="empty-state"><span class="icon">🎉</span><p>You're meeting or exceeding all your subject targets. Keep up the rhythm!</p></div>`;
-  }
-  return atlas.map(subj => `
-    <div class="atlas-item">
-      <div class="topic-row">${subj.subject} — ${subj.gap}% below target</div>
-      ${subj.topics.map(t => `
-        <div style="margin: 0.4rem 0 0.4rem 0.5rem;">
-          <div style="font-weight:600; font-size:0.92rem;">• ${t.topic}</div>
-          <div class="remedy">${t.remedy}</div>
-        </div>`).join('')}
-    </div>`).join('');
 }
 
 function renderMistakeAnalysis(data) {
@@ -753,192 +811,9 @@ async function renderMySubmissions() {
 }
 
 // ====================================================================
-// TEST MANAGEMENT — FACULTY (create/schedule tests)
+// TEST MANAGEMENT — FACULTY (read-only history; creation now only via
+// Grand Tests below -- Normal Test generation has been removed)
 // ====================================================================
-let testQuestionCount = 0;
-
-function addTestQuestionRow() {
-  const idx = testQuestionCount++;
-  const container = document.getElementById('testQuestionsContainer');
-  const row = document.createElement('div');
-  row.className = 'card';
-  row.style = 'background:var(--cream-deep); border:none; margin-bottom:0.75rem;';
-  row.id = `tq-${idx}`;
-  row.innerHTML = `
-    <div class="flex-between">
-      <strong>Question ${idx + 1}</strong>
-      <button class="btn btn-outline" onclick="document.getElementById('tq-${idx}').remove()">Remove</button>
-    </div>
-    <div class="grid-2 mt-1">
-      <div class="field-group">
-        <label class="field-label">Type</label>
-        <select class="tq-type" onchange="toggleTqOptions(${idx})">
-          <option value="mcq">MCQ</option>
-          <option value="fill_blank">Fill in the blank</option>
-        </select>
-      </div>
-      <div class="field-group">
-        <label class="field-label">Topic</label>
-        <input type="text" class="tq-topic" placeholder="e.g. Rotational Mechanics">
-      </div>
-      <div class="field-group" style="grid-column:1/-1;">
-        <label class="field-label">Question text</label>
-        <textarea class="tq-text" rows="2" placeholder="Enter the question..."></textarea>
-      </div>
-    </div>
-    <div class="tq-mcq-options">
-      <div class="field-group"><label class="field-label">Option 1</label><input type="text" class="tq-opt"></div>
-      <div class="field-group"><label class="field-label">Option 2</label><input type="text" class="tq-opt"></div>
-      <div class="field-group"><label class="field-label">Option 3</label><input type="text" class="tq-opt"></div>
-      <div class="field-group"><label class="field-label">Option 4</label><input type="text" class="tq-opt"></div>
-      <div class="field-group">
-        <label class="field-label">Correct option (1-4)</label>
-        <input type="number" class="tq-correct-mcq" min="1" max="4" value="1">
-      </div>
-    </div>
-    <div class="tq-fill-answer" style="display:none;">
-      <div class="field-group"><label class="field-label">Correct answer (exact text)</label><input type="text" class="tq-correct-fill"></div>
-    </div>`;
-  container.appendChild(row);
-}
-window.addTestQuestionRow = addTestQuestionRow;
-
-window.toggleTqOptions = (idx) => {
-  const row = document.getElementById(`tq-${idx}`);
-  const type = row.querySelector('.tq-type').value;
-  row.querySelector('.tq-mcq-options').style.display = type === 'mcq' ? '' : 'none';
-  row.querySelector('.tq-fill-answer').style.display = type === 'fill_blank' ? '' : 'none';
-};
-
-let testEditingId = null;
-
-function resetTestForm() {
-  testEditingId = null;
-  document.getElementById('testEditingBanner').style.display = 'none';
-  document.getElementById('createTestBtn').textContent = 'Schedule test';
-  document.getElementById('testTitle').value = '';
-  document.getElementById('testChapter').value = '';
-  document.getElementById('testAssignEmails').value = '';
-  document.getElementById('testQuestionsContainer').innerHTML = '';
-  document.getElementById('testRawTextInput').value = '';
-  document.getElementById('extractTestStatus').innerHTML = '';
-  document.getElementById('ocrPreviewContainer').innerHTML = '';
-  ocrExtractedQuestions = [];
-  testQuestionCount = 0;
-}
-
-function loadQuestionIntoForm(q) {
-  const idx = testQuestionCount; // addTestQuestionRow() increments this itself and uses this exact value for the row id — do not increment here too.
-  addTestQuestionRow();
-  const row = document.getElementById(`tq-${idx}`);
-  row.querySelector('.tq-type').value = q.qType || q.q_type || 'mcq';
-  toggleTqOptions(idx);
-  row.querySelector('.tq-topic').value = q.topic || '';
-  row.querySelector('.tq-text').value = q.questionText || q.question_text || '';
-  const qType = q.qType || q.q_type;
-  if (qType === 'mcq') {
-    const opts = q.options || [];
-    const optInputs = row.querySelectorAll('.tq-opt');
-    opts.forEach((o, i) => { if (optInputs[i]) optInputs[i].value = o; });
-    const correctIdx = (q.correctAnswer ?? q.correct_answer);
-    row.querySelector('.tq-correct-mcq').value = correctIdx !== null && correctIdx !== undefined && correctIdx !== '' ? (parseInt(correctIdx, 10) + 1) : 1;
-  } else {
-    row.querySelector('.tq-correct-fill').value = q.correctAnswer || q.correct_answer || '';
-  }
-}
-
-window.editTest = async (id) => {
-  try {
-    const data = await api(`/api/faculty/tests/${id}`);
-    testEditingId = id;
-    document.getElementById('testEditingBanner').style.display = '';
-    document.getElementById('createTestBtn').textContent = 'Save changes';
-    document.getElementById('testTitle').value = data.test.title;
-    document.getElementById('testSubject').value = data.test.subject;
-    document.getElementById('testChapter').value = data.test.chapter_id || '';
-    document.getElementById('testDifficulty').value = data.test.difficulty;
-    document.getElementById('testTimeLimit').value = data.test.time_limit_min;
-    document.getElementById('testScheduledAt').value = data.test.scheduled_at ? new Date(data.test.scheduled_at).toISOString().slice(0, 16) : '';
-    document.getElementById('testNegativeMarking').checked = !!data.test.negative_marking;
-    document.getElementById('testRandomize').checked = !!data.test.randomize;
-    document.getElementById('testAssignEmails').value = (data.assignments || []).map(a => a.student_email).join(', ');
-    document.getElementById('testQuestionsContainer').innerHTML = '';
-    testQuestionCount = 0;
-    data.questions.forEach(loadQuestionIntoForm);
-    document.getElementById('testTitle').scrollIntoView({ behavior: 'smooth', block: 'center' });
-  } catch (err) {
-    showToast(err.message, 'error');
-  }
-};
-
-async function createTest() {
-  const btn = document.getElementById('createTestBtn');
-  const msgEl = document.getElementById('createTestMessage');
-  const title = document.getElementById('testTitle').value.trim();
-  const subject = document.getElementById('testSubject').value;
-  const chapterId = document.getElementById('testChapter').value || null;
-  const difficulty = document.getElementById('testDifficulty').value;
-  const timeLimitMin = parseInt(document.getElementById('testTimeLimit').value, 10) || 30;
-  const scheduledAtRaw = document.getElementById('testScheduledAt').value;
-  const negativeMarking = document.getElementById('testNegativeMarking').checked;
-  const randomize = document.getElementById('testRandomize').checked;
-  const assignedEmails = document.getElementById('testAssignEmails').value
-    .split(',').map(e => e.trim()).filter(Boolean);
-
-  const rows = document.querySelectorAll('#testQuestionsContainer > div');
-  if (!title || rows.length === 0) {
-    msgEl.innerHTML = `<span class="badge danger">Please add a title and at least one question.</span>`;
-    return;
-  }
-
-  const questions = [];
-  for (const row of rows) {
-    const qType = row.querySelector('.tq-type').value;
-    const questionText = row.querySelector('.tq-text').value.trim();
-    const topic = row.querySelector('.tq-topic').value.trim();
-    if (!questionText) { msgEl.innerHTML = `<span class="badge danger">Every question needs text.</span>`; return; }
-
-    if (qType === 'mcq') {
-      const opts = Array.from(row.querySelectorAll('.tq-opt')).map(i => i.value.trim()).filter(Boolean);
-      const correctIdx = parseInt(row.querySelector('.tq-correct-mcq').value, 10) - 1;
-      if (opts.length < 2) { msgEl.innerHTML = `<span class="badge danger">MCQ questions need at least 2 options.</span>`; return; }
-      questions.push({ qType, questionText, topic, options: opts, correctAnswer: String(correctIdx), difficulty });
-    } else {
-      const correct = row.querySelector('.tq-correct-fill').value.trim();
-      if (!correct) { msgEl.innerHTML = `<span class="badge danger">Fill-in-the-blank questions need a correct answer.</span>`; return; }
-      questions.push({ qType, questionText, topic, correctAnswer: correct, difficulty });
-    }
-  }
-
-  let scheduledAt = null;
-  if (scheduledAtRaw) scheduledAt = new Date(scheduledAtRaw).toISOString();
-
-  btn.disabled = true; btn.textContent = testEditingId ? 'Saving...' : 'Scheduling...';
-  try {
-    if (testEditingId) {
-      await api(`/api/faculty/tests/${testEditingId}`, {
-        method: 'PUT',
-        body: JSON.stringify({ title, subject, chapterId, difficulty, timeLimitMin, negativeMarking, randomize, scheduledAt, questions })
-      });
-      msgEl.innerHTML = `<span class="badge success">✅ Test updated.</span>`;
-      showToast('Test updated.', 'success');
-    } else {
-      await api('/api/faculty/tests', {
-        method: 'POST',
-        body: JSON.stringify({ title, subject, chapterId, difficulty, timeLimitMin, negativeMarking, randomize, scheduledAt, questions, assignedEmails })
-      });
-      msgEl.innerHTML = `<span class="badge success">✅ Test scheduled successfully${assignedEmails.length ? ` and assigned to ${assignedEmails.length} student(s)` : ''}.</span>`;
-      showToast('Test scheduled.', 'success');
-    }
-    resetTestForm();
-    renderFacultyTests();
-  } catch (err) {
-    msgEl.innerHTML = `<span class="badge danger">${err.message}</span>`;
-    showToast(err.message, 'error');
-  } finally {
-    btn.disabled = false; btn.textContent = testEditingId ? 'Save changes' : 'Schedule test';
-  }
-}
 
 async function renderFacultyTests() {
   const container = document.getElementById('facultyTestsList');
@@ -952,12 +827,9 @@ async function renderFacultyTests() {
           <strong>${t.title}</strong>
           <div class="helper-text">${t.subject}${t.chapter ? ' · ' + t.chapter : ''} · ${t.question_count} question(s) · ${t.attempt_count} attempt(s)</div>
         </div>
-        <div class="flex-row">
-          <span class="badge ${t.scheduled_at && new Date(t.scheduled_at) > new Date() ? 'warn' : 'success'}">
-            ${t.scheduled_at ? new Date(t.scheduled_at).toLocaleString() : 'Live now'}
-          </span>
-          <button class="btn btn-outline" onclick="editTest(${t.id})">Edit</button>
-        </div>
+        <span class="badge ${t.scheduled_at && new Date(t.scheduled_at) > new Date() ? 'warn' : 'success'}">
+          ${t.scheduled_at ? new Date(t.scheduled_at).toLocaleString() : 'Live now'}
+        </span>
       </div>`).join('') : `<div class="empty-state"><p>No tests scheduled yet.</p></div>`;
   } catch (err) {
     container.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
@@ -969,22 +841,23 @@ async function publishGrandTest() {
   const msgEl = document.getElementById('publishGrandTestMessage');
   const courseType = document.getElementById('grandTestCourseSelect').value;
   const label = document.getElementById('grandTestLabelInput').value.trim();
-  btn.disabled = true; btn.textContent = 'Publishing...';
+  btn.disabled = true; btn.textContent = 'Starting...';
   try {
     const res = await api('/api/bridge/faculty/tests/grand', {
       method: 'POST',
       body: JSON.stringify({ courseType, label: label || undefined })
     });
     msgEl.innerHTML = res.alreadyPublished
-      ? `<span class="badge warn">This Grand Test was already published — showing the existing one: ${res.test.title}</span>`
-      : `<span class="badge success">✅ Published: ${res.test.title}</span>`;
-    showToast(res.alreadyPublished ? 'Grand Test already existed.' : 'Grand Test published.', 'success');
+      ? `<span class="badge warn">A Grand Test with this course + label already exists: ${res.test.title}</span>`
+      : `<span class="badge success">✅ Draft created: ${res.test.title} — review it below before publishing.</span>`;
+    showToast(res.alreadyPublished ? 'Grand Test already exists.' : 'Draft created.', 'success');
     renderGrandTestsList();
+    if (res.test.status === 'draft') openGrandTestEditor(res.test.id, res.test.title);
   } catch (err) {
     msgEl.innerHTML = `<span class="badge danger">${err.message}</span>`;
     showToast(err.message, 'error');
   } finally {
-    btn.disabled = false; btn.textContent = 'Publish Grand Test';
+    btn.disabled = false; btn.textContent = 'Start Grand Test draft';
   }
 }
 
@@ -1000,8 +873,12 @@ async function renderGrandTestsList() {
           <strong>${t.title}</strong>
           <div class="helper-text">${t.course_type} · ${t.question_count} question(s) · ${t.attempt_count} attempt(s)</div>
         </div>
-        <span class="helper-text">${new Date(t.created_at).toLocaleDateString()}</span>
-      </div>`).join('') : `<div class="empty-state"><p>No Grand Tests published yet.</p></div>`;
+        <div class="flex-row" style="align-items:center; gap:0.5rem;">
+          <span class="badge ${t.status === 'published' ? 'success' : 'warn'}">${t.status === 'published' ? 'Published' : 'Draft'}</span>
+          <span class="helper-text">${new Date(t.created_at).toLocaleDateString()}</span>
+          <button class="btn btn-outline" onclick="openGrandTestEditor(${t.id}, '${t.title.replace(/'/g, "\\'")}')">${t.status === 'draft' ? 'Review & Edit' : 'View'}</button>
+        </div>
+      </div>`).join('') : `<div class="empty-state"><p>No Grand Tests yet.</p></div>`;
   } catch (err) {
     container.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
   }
@@ -1164,79 +1041,157 @@ window.moveChapter = async (index, direction) => {
 };
 
 // ====================================================================
-// OCR TEST UPLOAD — FACULTY
+// GRAND TEST DRAFT EDITOR — FACULTY
+// Faculty can preview every generated question, edit any of them, and
+// paste extra questions (AI-arranged) to replace generated ones -- the
+// total question count never changes. Only draft Grand Tests can be
+// edited; publishing locks it in for students.
 // ====================================================================
-let ocrExtractedQuestions = [];
+let grandDraftTestId = null;
+let grandDraftQuestions = [];
+let grandSelectedForRemoval = new Set();
 
-async function extractTestQuestionsFromText() {
-  const textInput = document.getElementById('testRawTextInput');
-  const statusEl = document.getElementById('extractTestStatus');
-  const btn = document.getElementById('extractTestQuestionsBtn');
-  const rawText = textInput.value.trim();
-  if (!rawText || rawText.length < 20) { statusEl.innerHTML = `<span class="badge danger">Please paste more of the test text first.</span>`; return; }
+async function openGrandTestEditor(testId, title) {
+  grandDraftTestId = testId;
+  grandSelectedForRemoval = new Set();
+  document.getElementById('grandTestEditorCard').style.display = '';
+  document.getElementById('grandTestEditorTitle').textContent = `Reviewing: ${title}`;
+  document.getElementById('grandTestEditorCard').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  await loadGrandDraftQuestions();
+}
+window.openGrandTestEditor = openGrandTestEditor;
 
-  btn.disabled = true; btn.textContent = 'Arranging into questions...';
+async function loadGrandDraftQuestions() {
+  const container = document.getElementById('grandTestQuestionsList');
+  container.innerHTML = `<div class="loading-row"><div class="spinner"></div></div>`;
+  try {
+    const data = await api(`/api/bridge/faculty/tests/grand/${grandDraftTestId}/questions`);
+    grandDraftQuestions = data.questions;
+    renderGrandDraftQuestions();
+  } catch (err) {
+    container.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
+  }
+}
+
+function renderGrandDraftQuestions() {
+  const container = document.getElementById('grandTestQuestionsList');
+  container.innerHTML = grandDraftQuestions.map(q => `
+    <div class="card" style="background:var(--cream-deep); border:none; margin-bottom:0.6rem;" id="gq-${q.id}">
+      <div class="flex-between">
+        <label style="display:flex; align-items:center; gap:0.5rem;">
+          <input type="checkbox" class="grand-remove-cb" data-id="${q.id}" ${grandSelectedForRemoval.has(q.id) ? 'checked' : ''}>
+          <span class="helper-text">${q.subject} · ${q.chapter_name}${q.topic ? ' · ' + q.topic : ''} · ${q.difficulty}</span>
+        </label>
+        <button class="btn btn-outline" onclick="toggleGrandQuestionEdit(${q.id})">Edit</button>
+      </div>
+      <p class="mt-1" style="margin:0.4rem 0;">${q.question_text}</p>
+      <div class="helper-text">A) ${q.option_a} &nbsp; B) ${q.option_b} &nbsp; C) ${q.option_c} &nbsp; D) ${q.option_d} &nbsp; — <strong>Correct: ${q.correct_answer}</strong></div>
+      <div id="gq-edit-${q.id}" style="display:none;" class="mt-1">
+        <textarea class="gq-edit-text" rows="2">${q.question_text}</textarea>
+        <div class="grid-2 mt-1">
+          <input type="text" class="gq-edit-opt" data-letter="A" value="${(q.option_a||'').replace(/"/g, '&quot;')}">
+          <input type="text" class="gq-edit-opt" data-letter="B" value="${(q.option_b||'').replace(/"/g, '&quot;')}">
+          <input type="text" class="gq-edit-opt" data-letter="C" value="${(q.option_c||'').replace(/"/g, '&quot;')}">
+          <input type="text" class="gq-edit-opt" data-letter="D" value="${(q.option_d||'').replace(/"/g, '&quot;')}">
+        </div>
+        <div class="grid-2 mt-1">
+          <select class="gq-edit-correct">
+            ${['A','B','C','D'].map(l => `<option value="${l}" ${l === q.correct_answer ? 'selected' : ''}>${l}</option>`).join('')}
+          </select>
+          <button class="btn btn-primary" onclick="saveGrandQuestionEdit(${q.id})">Save</button>
+        </div>
+      </div>
+    </div>`).join('');
+
+  container.querySelectorAll('.grand-remove-cb').forEach(cb => {
+    cb.onchange = () => {
+      const id = parseInt(cb.dataset.id, 10);
+      if (cb.checked) grandSelectedForRemoval.add(id); else grandSelectedForRemoval.delete(id);
+      document.getElementById('grandSelectedCount').textContent = `${grandSelectedForRemoval.size} selected`;
+    };
+  });
+  document.getElementById('grandSelectedCount').textContent = `${grandSelectedForRemoval.size} selected`;
+}
+
+window.toggleGrandQuestionEdit = (id) => {
+  const el = document.getElementById(`gq-edit-${id}`);
+  el.style.display = el.style.display === 'none' ? '' : 'none';
+};
+
+window.saveGrandQuestionEdit = async (id) => {
+  const row = document.getElementById(`gq-edit-${id}`);
+  const questionText = row.querySelector('.gq-edit-text').value.trim();
+  const opts = {};
+  row.querySelectorAll('.gq-edit-opt').forEach(el => { opts[el.dataset.letter] = el.value.trim(); });
+  const correctAnswer = row.querySelector('.gq-edit-correct').value;
+  try {
+    await api(`/api/bridge/faculty/tests/grand/${grandDraftTestId}/questions/${id}`, {
+      method: 'PUT',
+      body: JSON.stringify({
+        questionText, optionA: opts.A, optionB: opts.B, optionC: opts.C, optionD: opts.D, correctAnswer
+      })
+    });
+    showToast('Question updated.', 'success');
+    await loadGrandDraftQuestions();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+};
+
+async function addGrandQuestions() {
+  const btn = document.getElementById('grandAddQuestionsBtn');
+  const statusEl = document.getElementById('grandAddStatus');
+  const rawText = document.getElementById('grandAddRawText').value.trim();
+  const subject = document.getElementById('grandAddSubject').value;
+  const chapterName = document.getElementById('grandAddChapter').value.trim();
+  const removeQuestionIds = [...grandSelectedForRemoval];
+
+  if (!rawText || rawText.length < 20) { statusEl.innerHTML = `<span class="badge danger">Please paste more of the question text first.</span>`; return; }
+  if (!chapterName) { statusEl.innerHTML = `<span class="badge danger">Please enter a chapter name for the pasted batch.</span>`; return; }
+  if (removeQuestionIds.length === 0) { statusEl.innerHTML = `<span class="badge danger">Tick at least one existing question above to replace.</span>`; return; }
+
+  btn.disabled = true; btn.textContent = 'Arranging with AI...';
   statusEl.innerHTML = `<div class="loading-row"><div class="spinner"></div></div>`;
   try {
-    const data = await api('/api/faculty/tests/extract-questions', { method: 'POST', body: JSON.stringify({ rawText }) });
-    ocrExtractedQuestions = data.questions;
-    statusEl.innerHTML = `<span class="badge success">✅ Arranged ${data.questions.length} question(s) using ${data.method === 'ai-assisted' ? 'AI-assisted parsing' : 'pattern matching'}. The AI never guesses answers — set the correct option for each question below; that becomes your answer key.</span>`;
-    renderOcrPreview();
+    const data = await api(`/api/bridge/faculty/tests/grand/${grandDraftTestId}/add-questions`, {
+      method: 'POST',
+      body: JSON.stringify({ rawText, subject, chapterName, removeQuestionIds })
+    });
+    statusEl.innerHTML = `<span class="badge success">✅ Added ${data.addedCount} question(s), replacing the ${removeQuestionIds.length} you selected. Total question count is unchanged.</span>`;
+    showToast('Questions replaced.', 'success');
+    document.getElementById('grandAddRawText').value = '';
+    grandSelectedForRemoval = new Set();
+    grandDraftQuestions = data.questions;
+    renderGrandDraftQuestions();
   } catch (err) {
     statusEl.innerHTML = `<span class="badge danger">${err.message}</span>`;
     showToast(err.message, 'error');
   } finally {
-    btn.disabled = false; btn.textContent = '✨ Arrange into questions with AI';
+    btn.disabled = false; btn.textContent = '✨ Arrange with AI & stage for replacement';
   }
 }
 
-function renderOcrPreview() {
-  const container = document.getElementById('ocrPreviewContainer');
-  if (!ocrExtractedQuestions.length) { container.innerHTML = ''; return; }
-  container.innerHTML = `
-    <div class="card" style="background:var(--cream-deep); border:none;">
-      <h4 style="margin-bottom:0.6rem;">Extracted questions (${ocrExtractedQuestions.length}) — edit before adding</h4>
-      ${ocrExtractedQuestions.map((q, i) => `
-        <div class="quiz-item" style="background:var(--paper);">
-          <div class="flex-between"><span class="q-meta">Question ${i + 1}${q.needsReview ? ' · <span class="badge warn">needs review</span>' : ''}</span>
-            <button class="btn btn-outline" onclick="removeOcrQuestion(${i})">Remove</button></div>
-          <textarea class="ocr-q-text" rows="2" data-idx="${i}" style="margin-bottom:0.5rem;">${q.questionText}</textarea>
-          ${q.options.map((o, oi) => `<input type="text" class="ocr-q-opt" data-idx="${i}" data-oi="${oi}" value="${o.replace(/"/g, '&quot;')}" style="margin-bottom:0.4rem;">`).join('')}
-          <label class="field-label">Correct option (1-${q.options.length})</label>
-          <input type="number" class="ocr-q-correct" data-idx="${i}" min="1" max="${q.options.length}" value="${q.correctAnswerIndex !== null ? q.correctAnswerIndex + 1 : ''}" placeholder="?">
-        </div>`).join('')}
-      <button class="btn btn-primary" onclick="addOcrQuestionsToTestForm()">Add ${ocrExtractedQuestions.length} question(s) to test form</button>
-    </div>`;
+async function publishGrandDraft() {
+  const btn = document.getElementById('publishGrandDraftBtn');
+  const msgEl = document.getElementById('grandPublishMessage');
+  btn.disabled = true; btn.textContent = 'Publishing...';
+  try {
+    await api(`/api/bridge/faculty/tests/grand/${grandDraftTestId}/publish`, { method: 'POST' });
+    msgEl.innerHTML = `<span class="badge success">✅ Published — students can now attempt this Grand Test.</span>`;
+    showToast('Grand Test published.', 'success');
+    renderGrandTestsList();
+  } catch (err) {
+    msgEl.innerHTML = `<span class="badge danger">${err.message}</span>`;
+    showToast(err.message, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = '✅ Publish this Grand Test';
+  }
 }
 
-window.removeOcrQuestion = (idx) => {
-  ocrExtractedQuestions.splice(idx, 1);
-  renderOcrPreview();
-};
-
-window.addOcrQuestionsToTestForm = () => {
-  // Sync any edits made in the preview textareas/inputs back into the array first.
-  document.querySelectorAll('.ocr-q-text').forEach(el => { ocrExtractedQuestions[el.dataset.idx].questionText = el.value; });
-  document.querySelectorAll('.ocr-q-opt').forEach(el => { ocrExtractedQuestions[el.dataset.idx].options[el.dataset.oi] = el.value; });
-  document.querySelectorAll('.ocr-q-correct').forEach(el => {
-    const v = parseInt(el.value, 10);
-    ocrExtractedQuestions[el.dataset.idx].correctAnswerIndex = Number.isNaN(v) ? null : v - 1;
-  });
-
-  for (const q of ocrExtractedQuestions) {
-    if (q.correctAnswerIndex === null || q.correctAnswerIndex === undefined) {
-      showToast('Please fill in the correct option for every question before adding (marked "?").', 'error');
-      return;
-    }
-    loadQuestionIntoForm({ qType: 'mcq', questionText: q.questionText, topic: q.topic, options: q.options, correctAnswer: String(q.correctAnswerIndex) });
-  }
-  showToast(`${ocrExtractedQuestions.length} question(s) added to the test form below.`, 'success');
-  ocrExtractedQuestions = [];
-  document.getElementById('ocrPreviewContainer').innerHTML = '';
-  document.getElementById('testRawTextInput').value = '';
-  document.getElementById('extractTestStatus').innerHTML = '';
-  document.getElementById('testTitle').scrollIntoView({ behavior: 'smooth', block: 'center' });
-};
+function closeGrandTestEditor() {
+  grandDraftTestId = null;
+  document.getElementById('grandTestEditorCard').style.display = 'none';
+}
 
 // ====================================================================
 // FACULTY LECTURE LINKS (chapter-wise CRUD, instant publish)
@@ -1351,7 +1306,10 @@ async function loadStudentAnalytics() {
   if (!email) { showToast('Please select a student first.', 'error'); return; }
   container.innerHTML = `<div class="loading-row"><div class="spinner"></div></div>`;
   try {
-    const d = await api(`/api/faculty/students/${encodeURIComponent(email)}/analytics`);
+    const [d, bundle] = await Promise.all([
+      api(`/api/faculty/students/${encodeURIComponent(email)}/analytics`),
+      api(`/api/student/${encodeURIComponent(email)}`).catch(() => null)
+    ]);
     container.innerHTML = `
       <div class="stat-tile-grid">
         <div class="stat-tile"><div class="stat-value">${d.testsAttempted}</div><div class="stat-label">Tests attempted</div></div>
@@ -1360,6 +1318,12 @@ async function loadStudentAnalytics() {
         <div class="stat-tile"><div class="stat-value">${d.materialsCompleted}</div><div class="stat-label">Materials completed</div></div>
         <div class="stat-tile"><div class="stat-value">${d.lecturesWatched}</div><div class="stat-label">Lectures watched</div></div>
       </div>
+      ${bundle ? `
+      <h4 class="mt-2" style="margin-bottom:0.5rem;">Subject accuracy vs target (same view as the student's own Progress page)</h4>
+      <div class="grid-2 mt-1">
+        <div><canvas id="facStudentAccuracyChart" height="220"></canvas></div>
+        <div><canvas id="facStudentWeeklyChart" height="220"></canvas></div>
+      </div>` : ''}
       <h4 class="mt-2" style="margin-bottom:0.5rem;">Chapter-wise performance</h4>
       <div class="chart-box"><canvas id="studentAnalyticsChapterChart"></canvas></div>
       ${d.chapterWisePerformance.length ? d.chapterWisePerformance.map(c => `
@@ -1384,9 +1348,48 @@ async function loadStudentAnalytics() {
         </div>`).join('') : `<div class="empty-state"><p>No recent activity.</p></div>`}
     `;
     renderStudentAnalyticsChart(d.chapterWisePerformance);
+    if (bundle) renderFacultyStudentSubjectCharts(bundle);
   } catch (err) {
     container.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
   }
+}
+
+let facStudentAccuracyChartInstance = null;
+let facStudentWeeklyChartInstance = null;
+function renderFacultyStudentSubjectCharts(bundle) {
+  const { progress, targets } = bundle;
+  if (!progress || !targets) return;
+  const accCanvas = document.getElementById('facStudentAccuracyChart');
+  const weekCanvas = document.getElementById('facStudentWeeklyChart');
+  if (!accCanvas || !weekCanvas || typeof Chart === 'undefined') return;
+
+  if (facStudentAccuracyChartInstance) { facStudentAccuracyChartInstance.destroy(); facStudentAccuracyChartInstance = null; }
+  if (facStudentWeeklyChartInstance) { facStudentWeeklyChartInstance.destroy(); facStudentWeeklyChartInstance = null; }
+
+  facStudentAccuracyChartInstance = new Chart(accCanvas.getContext('2d'), {
+    type: 'bar',
+    data: {
+      labels: ['Biology', 'Physics', 'Chemistry', 'Zoology', 'Mathematics'],
+      datasets: [
+        { label: 'Current %', data: [progress.bio_accuracy, progress.phy_accuracy, progress.chem_accuracy, progress.zoo_accuracy, progress.math_accuracy], backgroundColor: '#CFE3E6', borderRadius: 8 },
+        { label: 'Target %', data: [targets.bio, targets.phy, targets.chem, targets.zoo, targets.math], backgroundColor: '#D98E5B', borderRadius: 8 }
+      ]
+    },
+    options: { responsive: true, plugins: { legend: { position: 'bottom' } }, scales: { y: { beginAtZero: true, max: 100 } } }
+  });
+
+  let history = [];
+  try { history = JSON.parse(progress.weekly_history); } catch (e) { history = []; }
+  const weeks = history.length ? history.map((_, i) => i === history.length - 1 ? 'This week' : `W-${history.length - 1 - i}`) : [];
+
+  facStudentWeeklyChartInstance = new Chart(weekCanvas.getContext('2d'), {
+    type: 'line',
+    data: {
+      labels: weeks,
+      datasets: [{ label: 'Overall accuracy', data: history, borderColor: '#D98E5B', backgroundColor: 'rgba(217,142,91,0.15)', fill: true, tension: 0.35 }]
+    },
+    options: { responsive: true, plugins: { legend: { position: 'bottom' } }, scales: { y: { beginAtZero: true, max: 100 } } }
+  });
 }
 
 let studentAnalyticsChartInstance = null;
@@ -1587,9 +1590,12 @@ window.deleteMaterial = async (id) => {
 async function renderMaterials() {
   const container = document.getElementById('materialsList');
   if (!container) return;
+  const filterEl = document.getElementById('materialsSubjectFilter');
+  const subject = filterEl ? filterEl.value : '';
   container.innerHTML = `<div class="loading-row"><div class="spinner"></div></div>`;
   try {
-    const materials = await api('/api/materials');
+    const query = subject ? `?subject=${encodeURIComponent(subject)}` : '';
+    const materials = await api(`/api/materials${query}`);
     container.innerHTML = materials.length ? materials.map(m => `
       <div class="flex-between" style="padding:0.6rem 0; border-bottom:1px solid var(--border);">
         <div>
@@ -1599,7 +1605,7 @@ async function renderMaterials() {
         ${m.material_type === 'file'
           ? `<a class="btn btn-outline" href="${API_BASE}/api/materials/${m.id}/download" target="_blank" rel="noopener">⬇ ${formatFileSize(m.file_size)}</a>`
           : `<a class="btn btn-outline" href="${m.external_url}" target="_blank" rel="noopener">🔗 Open</a>`}
-      </div>`).join('') : `<div class="empty-state"><p>No study materials published yet — check back soon.</p></div>`;
+      </div>`).join('') : `<div class="empty-state"><p>${subject ? `No ${subject} study materials published yet — check back soon.` : 'No study materials published yet — check back soon.'}</p></div>`;
   } catch (err) {
     container.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
   }
@@ -1840,6 +1846,29 @@ async function setExamDate() {
   } catch (err) { showToast(err.message, 'error'); }
 }
 
+async function loadFacultyExamDate() {
+  const el = document.getElementById('facExamDate');
+  if (!el) return;
+  try {
+    const { examDate } = await api('/api/admin/exam-date');
+    el.value = examDate ? examDate.split('T')[0] : '';
+  } catch (err) { /* non-fatal */ }
+}
+
+async function setFacultyExamDate() {
+  const newDate = document.getElementById('facExamDate').value;
+  const msgEl = document.getElementById('facExamDateMessage');
+  if (!newDate) { showToast('Please choose a date.', 'error'); return; }
+  try {
+    await api('/api/admin/exam-date', { method: 'POST', body: JSON.stringify({ examDate: newDate }) });
+    msgEl.innerHTML = `<span class="badge success">✅ Exam date updated — every student's countdown will reflect this.</span>`;
+    showToast('Exam date updated.', 'success');
+  } catch (err) {
+    msgEl.innerHTML = `<span class="badge danger">${err.message}</span>`;
+    showToast(err.message, 'error');
+  }
+}
+
 async function resetAllData() {
   if (!confirm('This will permanently delete ALL students, progress, lectures and feedback. Continue?')) return;
   if (!confirm('Are you absolutely sure? This cannot be undone.')) return;
@@ -1867,14 +1896,88 @@ let activePhysicsEntryTest = null;
 let activePhysicsEntryQuestions = null;
 let physicsMaterialsCache = null;
 
+const NEET_PAGE_SUBJECTS = ['Physics', 'Chemistry', 'Botany', 'Zoology'];
+const JEE_PAGE_SUBJECTS = ['Physics', 'Chemistry', 'Mathematics'];
+
 async function loadPhysicsModule() {
-  // Each section loads independently so one failure doesn't block the rest.
-  renderPhysicsDashboard();
-  renderPhysicsEntryTests();
-  renderPhysicsMaterials();
-  renderPhysicsLectures();
-  renderPhysicsAnalytics();
-  renderPhysicsRecommendations();
+  const select = document.getElementById('subjectPageSelect');
+  const data = await loadStudentData(currentStudentEmail).catch(() => null);
+  const targetExam = data?.student?.target_exam || 'NEET';
+  const subjects = targetExam === 'JEE' ? JEE_PAGE_SUBJECTS
+    : targetExam === 'BOTH' ? [...new Set([...NEET_PAGE_SUBJECTS, ...JEE_PAGE_SUBJECTS])]
+    : NEET_PAGE_SUBJECTS;
+
+  const prevValue = select.value;
+  select.innerHTML = subjects.map(s => `<option value="${s}">${s}</option>`).join('');
+  select.value = subjects.includes(prevValue) ? prevValue : subjects[0];
+  select.onchange = () => renderSubjectPage(select.value);
+
+  renderSubjectPage(select.value);
+}
+
+function renderSubjectPage(subject) {
+  document.getElementById('subjectPageHeading').textContent = `📖 Your ${subject} Journey`;
+  const physicsContent = document.getElementById('subjectPagePhysicsContent');
+  const genericContent = document.getElementById('subjectPageGenericContent');
+
+  if (subject === 'Physics') {
+    // Physics has its own dedicated diagnostics/analytics/recommendations
+    // system with real backing data -- shown as-is when Physics is picked.
+    physicsContent.style.display = '';
+    genericContent.style.display = 'none';
+    renderPhysicsDashboard();
+    renderPhysicsEntryTests();
+    renderPhysicsMaterials();
+    renderPhysicsLectures();
+    renderPhysicsAnalytics();
+    renderPhysicsRecommendations();
+  } else {
+    // Other subjects don't have a dedicated diagnostics backend (that only
+    // exists for Physics), so they get materials + lectures for that
+    // subject, plus a link into the Test Centre for subject-focused
+    // practice via Chapter Combo Test.
+    physicsContent.style.display = 'none';
+    genericContent.style.display = '';
+    document.getElementById('genericSubjectMaterialsHeading').textContent = `📘 ${subject} Learning Materials`;
+    document.getElementById('genericSubjectLecturesHeading').textContent = `🎥 ${subject} Lectures`;
+    renderGenericSubjectMaterials(subject);
+    renderGenericSubjectLectures(subject);
+  }
+}
+
+async function renderGenericSubjectMaterials(subject) {
+  const container = document.getElementById('genericSubjectMaterialsContent');
+  container.innerHTML = `<div class="loading-row"><div class="spinner"></div></div>`;
+  try {
+    const materials = await api(`/api/materials?subject=${encodeURIComponent(subject)}`);
+    container.innerHTML = materials.length ? materials.map(m => `
+      <div class="flex-between" style="padding:0.6rem 0; border-bottom:1px solid var(--border);">
+        <div>
+          <strong>${m.title}</strong>
+          <div class="helper-text">${m.chapter ? m.chapter + ' · ' : ''}${m.uploaded_by_name || 'Faculty'}${m.description ? ' — ' + m.description : ''}</div>
+        </div>
+        ${m.material_type === 'file'
+          ? `<a class="btn btn-outline" href="${API_BASE}/api/materials/${m.id}/download" target="_blank" rel="noopener">⬇ ${formatFileSize(m.file_size)}</a>`
+          : `<a class="btn btn-outline" href="${m.external_url}" target="_blank" rel="noopener">🔗 Open</a>`}
+      </div>`).join('') : `<div class="empty-state"><p>No ${subject} study materials published yet — check back soon.</p></div>`;
+  } catch (err) {
+    container.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
+  }
+}
+
+async function renderGenericSubjectLectures(subject) {
+  const container = document.getElementById('genericSubjectLecturesList');
+  container.innerHTML = `<div class="loading-row"><div class="spinner"></div></div>`;
+  try {
+    const lectures = (await api('/api/approved-lectures')).filter(l => l.subject === subject);
+    container.innerHTML = lectures.length ? lectures.map(l => `
+      <div class="video-card">
+        <iframe src="${l.url}" allowfullscreen loading="lazy"></iframe>
+        <div class="video-card-title">${l.title}</div>
+      </div>`).join('') : `<div class="empty-state"><p>No ${subject} lectures published yet.</p></div>`;
+  } catch (err) {
+    container.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
+  }
 }
 
 function proficiencyBadge(level) {
@@ -2235,6 +2338,7 @@ function showPage(pageId) {
     renderMySubmissions(); renderFacultyTests(); renderFacultyAnalytics(); renderFacultyMaterials();
     populateChapterSelects(); renderChapterList(); renderFacLectures();
     populateStudentAnalyticsSelect(); renderErrorAtlas(); renderGrandTestsList();
+    loadFacultyExamDate();
   }
   if (pageId === 'onboarding') prefillOnboarding();
   if (pageId === 'admin') {
@@ -2301,24 +2405,25 @@ window.onload = () => {
   // Existing app features
   document.getElementById('submitLectureBtn').onclick = submitLecture;
   document.getElementById('refreshSubmissionsBtn').onclick = renderMySubmissions;
-  document.getElementById('addTestQuestionBtn').onclick = addTestQuestionRow;
-  document.getElementById('createTestBtn').onclick = createTest;
   document.getElementById('refreshFacultyTestsBtn').onclick = renderFacultyTests;
   document.getElementById('publishGrandTestBtn').onclick = publishGrandTest;
+  document.getElementById('facSetExamDateBtn').onclick = setFacultyExamDate;
+  document.getElementById('closeGrandTestEditorBtn').onclick = closeGrandTestEditor;
+  document.getElementById('grandAddQuestionsBtn').onclick = addGrandQuestions;
+  document.getElementById('publishGrandDraftBtn').onclick = publishGrandDraft;
   document.getElementById('refreshStudentTestsBtn').onclick = renderStudentTests;
   document.getElementById('uploadMaterialBtn').onclick = uploadMaterial;
   document.getElementById('refreshFacultyMaterialsBtn').onclick = renderFacultyMaterials;
   document.getElementById('refreshMaterialsBtn').onclick = renderMaterials;
+  document.getElementById('materialsSubjectFilter').onchange = renderMaterials;
   document.getElementById('materialSubject').onchange = toggleMaterialTermField;
   document.getElementById('refreshPhysicsMaterialsBtn').onclick = renderPhysicsMaterials;
   document.getElementById('physicsTopicFilter').onchange = (e) => jumpToPhysicsTopic(e.target.value);
 
-  // Faculty Module: chapters, bulk-paste AI test creation, faculty lecture
-  // links, individual student analytics, Error Atlas.
+  // Faculty Module: chapters, faculty lecture links, individual student
+  // analytics, Error Atlas.
   document.getElementById('chapterSubjectSelect').onchange = () => { populateChapterSelects(); renderChapterList(); };
   document.getElementById('createChapterBtn').onclick = createChapter;
-  document.getElementById('extractTestQuestionsBtn').onclick = extractTestQuestionsFromText;
-  document.getElementById('cancelTestEditBtn').onclick = resetTestForm;
   document.getElementById('cancelMaterialEditBtn').onclick = resetMaterialForm;
   document.getElementById('facLectureSaveBtn').onclick = saveFacLecture;
   document.getElementById('cancelFacLectureEditBtn').onclick = resetFacLectureForm;
@@ -2446,12 +2551,13 @@ async function initBridgePage() {
         const grandBtn = document.getElementById('startGrandBtn');
         if (!grand.available) {
             grandBtn.disabled = true;
-            grandBtn.textContent = 'Not published yet';
+            grandBtn.style.display = 'none';
             if (document.getElementById('bridgeGrandInfo'))
-                document.getElementById('bridgeGrandInfo').innerHTML = '<p style="font-size:.85rem; color:var(--ink-soft);">Your faculty hasn\'t published a Grand Test yet.</p>';
+                document.getElementById('bridgeGrandInfo').innerHTML = '<p style="font-size:.9rem; color:var(--ink-soft);">No test available at the moment.</p>';
         } else {
             grandBtn.disabled = false;
-            grandBtn.textContent = grand.alreadyAttempted ? 'Already completed' : 'Generate Grand Test';
+            grandBtn.style.display = '';
+            grandBtn.textContent = grand.alreadyAttempted ? 'Already completed' : 'Attempt Test';
             if (document.getElementById('bridgeGrandInfo'))
                 document.getElementById('bridgeGrandInfo').innerHTML = grand.alreadyAttempted
                     ? `<p style="color:green; font-size:.9rem;">✅ Completed — ${grand.test.title}</p>`
@@ -2523,18 +2629,24 @@ function openTestModal(testId, title, questions, timeLimitMin) {
     bridgeTimeRemaining = (timeLimitMin || 180) * 60;
 
     document.getElementById('bridgeTestTitle').textContent = title;
+    updateBridgeTestProgress();
 
     const container = document.getElementById('bridgeTestQuestionsContainer');
     container.innerHTML = questions.map((q, idx) => `
-        <div style="margin-bottom:1.5rem; padding:1rem; border:1px solid var(--border); border-radius:.5rem;">
-            <div style="font-size:.8rem; color:var(--ink-soft); margin-bottom:.5rem;">${q.subject} · ${q.chapter_name} · ${q.difficulty}</div>
-            <p style="margin-bottom:.75rem; font-weight:500;">Q${idx+1}. ${q.question_text}</p>
-            ${['A','B','C','D'].map(opt => `
-                <label style="display:block; margin-bottom:.4rem; cursor:pointer;">
-                    <input type="radio" name="q_${q.id}" value="${opt}" onchange="bridgeSelectAnswer(${q.id}, '${opt}')">
-                    <strong>${opt}.</strong> ${q['option_' + opt.toLowerCase()]}
-                </label>
-            `).join('')}
+        <div class="test-question-card" id="tqcard_${q.id}">
+            <div class="test-question-meta">
+                <span>${q.subject}</span><span>${q.chapter_name}</span><span>${q.difficulty}</span>
+            </div>
+            <p class="test-question-text">Q${idx+1}. ${q.question_text}</p>
+            <div class="test-options">
+                ${['A','B','C','D'].map(opt => `
+                    <label class="test-option-row" id="topt_${q.id}_${opt}">
+                        <input type="radio" name="q_${q.id}" value="${opt}" onchange="bridgeSelectAnswer(${q.id}, '${opt}')">
+                        <span class="opt-letter">${opt}.</span>
+                        <span class="opt-text">${q['option_' + opt.toLowerCase()]}</span>
+                    </label>
+                `).join('')}
+            </div>
         </div>
     `).join('');
 
@@ -2553,7 +2665,24 @@ function openTestModal(testId, title, questions, timeLimitMin) {
     document.getElementById('bridgeTestModal').style.display = '';
 }
 
-window.bridgeSelectAnswer = (qId, opt) => { bridgeTestAnswers[qId] = opt; };
+function updateBridgeTestProgress() {
+    const total = bridgeTestQuestions.length;
+    const answered = Object.keys(bridgeTestAnswers).length;
+    const el = document.getElementById('bridgeTestProgress');
+    if (el) el.textContent = `${answered} of ${total} answered`;
+}
+
+window.bridgeSelectAnswer = (qId, opt) => {
+    bridgeTestAnswers[qId] = opt;
+    const card = document.getElementById(`tqcard_${qId}`);
+    if (card) {
+        card.classList.add('answered');
+        card.querySelectorAll('.test-option-row').forEach(row => row.classList.remove('selected'));
+        const selectedRow = document.getElementById(`topt_${qId}_${opt}`);
+        if (selectedRow) selectedRow.classList.add('selected');
+    }
+    updateBridgeTestProgress();
+};
 
 async function submitBridgeTest() {
     clearInterval(bridgeTimerInterval);

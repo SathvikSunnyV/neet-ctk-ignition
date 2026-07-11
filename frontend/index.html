@@ -27,7 +27,7 @@
       <button class="nav-btn" data-page="guidance" id="navGuidance" style="display:none;">Guidance</button>
       <button class="nav-btn" data-page="practice" id="navPractice" style="display:none;">Practice</button>
       <button class="nav-btn" data-page="progress" id="navProgress" style="display:none;">Progress</button>
-      <button class="nav-btn" data-page="physics" id="navPhysics" style="display:none;">Physics</button>
+      <button class="nav-btn" data-page="physics" id="navPhysics" style="display:none;">📖 Subjects</button>
       <button class="nav-btn" data-page="bridge" id="navBridge" style="display:none;">Test Centre</button>
       <button class="nav-btn" data-page="qbank" id="navQBank" style="display:none;">Question Bank</button>
       <button class="nav-btn" data-page="lecturer" id="navLecturer" style="display:none;">Lecturer Hub</button>
@@ -249,8 +249,8 @@
           </select>
         </div>
         <div class="field-group">
-          <label class="field-label" for="obExamDate">Expected exam date</label>
-          <input type="date" id="obExamDate">
+          <label class="field-label">Exam date</label>
+          <p id="obExamDateDisplay" class="helper-text" style="margin-top:.4rem;">Loading...</p>
         </div>
         <div class="field-group">
           <label class="field-label" for="obDailyHours">Daily study hours</label>
@@ -296,6 +296,18 @@
         <h3 style="margin-bottom:0;">📚 Study materials from faculty</h3>
         <button id="refreshMaterialsBtn" class="btn btn-outline">Refresh</button>
       </div>
+      <div class="field-group mt-1" style="max-width:260px;">
+        <label class="field-label" for="materialsSubjectFilter">Filter by subject</label>
+        <select id="materialsSubjectFilter" class="field">
+          <option value="">All subjects</option>
+          <option value="Physics">Physics</option>
+          <option value="Chemistry">Chemistry</option>
+          <option value="Botany">Botany</option>
+          <option value="Zoology">Zoology</option>
+          <option value="Biology">Biology</option>
+          <option value="Mathematics">Mathematics</option>
+        </select>
+      </div>
       <div id="materialsList" class="mt-2"></div>
     </div>
     <div class="card">
@@ -319,11 +331,19 @@
   <!-- ===================== PHYSICS STUDENT MODULE ===================== -->
   <div id="physicsPage" class="page">
     <div class="hero" style="padding: 1rem 1rem 1.75rem;">
-      <div class="eyebrow">Physics-only curated track</div>
-      <h1 style="font-size: clamp(1.7rem, 4vw, 2.4rem);">⚛️ Your Physics Journey</h1>
-      <p class="lead" style="margin-bottom:0;">Diagnostics, Term-organised materials, lecture tracking, and topic-wise analytics — all focused on Physics.</p>
+      <div class="eyebrow">Subject-wise deep dive</div>
+      <h1 style="font-size: clamp(1.7rem, 4vw, 2.4rem);" id="subjectPageHeading">📖 Your Subjects</h1>
+      <p class="lead" style="margin-bottom:0;">Diagnostics, Term-organised materials, lecture tracking, and topic-wise analytics for every subject in your course.</p>
     </div>
 
+    <div class="card">
+      <div class="field-group" style="max-width:320px;">
+        <label class="field-label" for="subjectPageSelect">Subject</label>
+        <select id="subjectPageSelect" class="field"></select>
+      </div>
+    </div>
+
+    <div id="subjectPagePhysicsContent">
     <div class="card" id="physicsDashboardCard">
       <h3>📊 Physics Dashboard</h3>
       <div id="physicsDashboardContent">
@@ -374,6 +394,26 @@
         <div id="physicsRecommendationsContent">
           <div class="loading-row"><div class="spinner"></div></div>
         </div>
+      </div>
+    </div>
+    </div><!-- /subjectPagePhysicsContent -->
+
+    <div id="subjectPageGenericContent" style="display:none;">
+      <div class="card">
+        <div class="flex-between">
+          <h3 style="margin-bottom:0;" id="genericSubjectMaterialsHeading">📘 Learning Materials</h3>
+          <button id="refreshGenericSubjectMaterialsBtn" class="btn btn-outline">Refresh</button>
+        </div>
+        <div id="genericSubjectMaterialsContent" class="mt-2"></div>
+      </div>
+      <div class="card">
+        <h3 id="genericSubjectLecturesHeading">🎥 Lectures</h3>
+        <div id="genericSubjectLecturesList" class="video-grid mt-2"></div>
+      </div>
+      <div class="card">
+        <h3>🧪 Practice</h3>
+        <p class="helper-text">Build a focused test for this subject from the Test Centre — pick any chapters you want to drill.</p>
+        <button class="btn btn-primary" onclick="showPage('bridge')">Go to Test Centre → Chapter Combo Test</button>
       </div>
     </div>
   </div>
@@ -486,6 +526,19 @@
 
     <div class="faculty-section active" id="fsecOverview">
     <div class="card">
+      <h3>📅 Platform exam date</h3>
+      <p style="color:var(--ink-soft); font-size:.9rem;">This is the single exam date shown to every student's countdown and used for cutoff-year predictions. Only faculty/admin can set it.</p>
+      <div class="grid-2">
+        <div class="field-group">
+          <label class="field-label" for="facExamDate">Exam date</label>
+          <input type="date" id="facExamDate" class="field">
+        </div>
+      </div>
+      <button id="facSetExamDateBtn" class="btn btn-primary mt-1">Update exam date</button>
+      <p id="facExamDateMessage" class="mt-2"></p>
+    </div>
+
+    <div class="card">
       <h2>👨‍🏫 Senior Lecturer Portal</h2>
       <p style="color:var(--ink-soft); font-size:0.92rem; margin-bottom:1rem;">Submit a lecture for admin review. Once approved, it appears immediately on the Practice page for every student.</p>
       <div class="grid-2">
@@ -547,82 +600,17 @@
     <!-- ===== TEST SCHEDULING ===== -->
     <div class="faculty-section" id="fsecTests">
     <div class="card">
-      <h3>📝 Create a test — paste the whole text, let AI arrange the questions</h3>
-      <p style="color:var(--ink-soft); font-size:0.92rem; margin-bottom:1rem;">Paste the entire test/question paper text below in one go — no need to type each question separately. An AI model (with a rule-based fallback if no AI key is configured) will arrange it into individual questions and options. <strong>It will never guess the correct answers</strong> — review each extracted question below and set the correct option yourself; that's your answer key.</p>
-
-      <div class="field-group">
-        <label class="field-label" for="testRawTextInput">Paste full test text</label>
-        <textarea id="testRawTextInput" rows="8" placeholder="Paste the whole set of questions here, e.g.:&#10;1. What is the SI unit of force?&#10;A) Joule  B) Newton  C) Watt  D) Pascal&#10;2. ..."></textarea>
-      </div>
-      <button id="extractTestQuestionsBtn" class="btn btn-outline">✨ Arrange into questions with AI</button>
-      <div id="extractTestStatus" class="mt-1"></div>
-      <div id="ocrPreviewContainer" class="mt-1"></div>
-
-      <hr class="divider">
-
-      <div id="testEditingBanner" class="mt-1" style="display:none;">
-        <span class="badge warn">Editing an existing test — saving will update it in place.</span>
-        <button id="cancelTestEditBtn" class="btn btn-outline" style="margin-left:0.5rem;">Cancel edit</button>
-      </div>
-
-      <div class="grid-2">
-        <div class="field-group">
-          <label class="field-label" for="testTitle">Test title</label>
-          <input type="text" id="testTitle" placeholder="e.g. Rotational Motion — Weekly Test 3">
-        </div>
-        <div class="field-group">
-          <label class="field-label" for="testSubject">Subject</label>
-          <select id="testSubject"><option>Physics</option><option>Chemistry</option><option>Biology</option></select>
-        </div>
-        <div class="field-group">
-          <label class="field-label" for="testChapter">Chapter</label>
-          <select id="testChapter"><option value="">— No chapter —</option></select>
-        </div>
-        <div class="field-group">
-          <label class="field-label" for="testDifficulty">Difficulty</label>
-          <select id="testDifficulty"><option>Easy</option><option selected>Medium</option><option>Hard</option></select>
-        </div>
-        <div class="field-group">
-          <label class="field-label" for="testTimeLimit">Time limit (minutes)</label>
-          <input type="number" id="testTimeLimit" min="1" value="30">
-        </div>
-        <div class="field-group">
-          <label class="field-label" for="testScheduledAt">Scheduled release (optional)</label>
-          <input type="datetime-local" id="testScheduledAt">
-        </div>
-        <div class="field-group">
-          <label class="field-label"><input type="checkbox" id="testNegativeMarking"> Negative marking (−0.25 per wrong answer)</label>
-        </div>
-        <div class="field-group">
-          <label class="field-label"><input type="checkbox" id="testRandomize"> Randomize question order for students</label>
-        </div>
-        <div class="field-group" style="grid-column:1/-1;">
-          <label class="field-label" for="testAssignEmails">Assign to specific students (optional)</label>
-          <input type="text" id="testAssignEmails" placeholder="email1@example.com, email2@example.com — leave blank to publish to everyone">
-          <p class="helper-text">Leave blank to publish this test to every student (the previous default behaviour). Provide a comma-separated list to assign it only to those students.</p>
-        </div>
-      </div>
-
-      <h4 class="mt-2" style="margin-bottom:0.4rem;">Questions &amp; your answer key</h4>
-      <p class="helper-text" style="margin-bottom:0.6rem;">Questions extracted above appear here for review. Set "Correct option" for each one yourself — that's the official answer key.</p>
-      <div id="testQuestionsContainer" class="mt-1"></div>
-      <button id="addTestQuestionBtn" class="btn btn-outline mt-1">+ Add question manually</button>
-
-      <button id="createTestBtn" class="btn btn-primary btn-block mt-2">Schedule test</button>
-      <div id="createTestMessage" class="mt-2"></div>
-    </div>
-
-    <div class="card">
       <div class="flex-between">
         <h3 style="margin-bottom:0;">📋 My scheduled tests</h3>
         <button id="refreshFacultyTestsBtn" class="btn btn-outline">Refresh</button>
       </div>
+      <p class="helper-text mt-1">Test scheduling now only happens through Grand Tests below — this is a read-only history of tests created earlier.</p>
       <div id="facultyTestsList" class="mt-2"></div>
     </div>
 
     <div class="card">
-      <h3>🏆 CTK Bridge Grand Test — publish for students</h3>
-      <p style="color:var(--ink-soft); font-size:.9rem;">Grand Tests are only generated when a faculty member publishes one — students can no longer create their own. Publishing the same course + label again just re-shows the same test, it won't duplicate.</p>
+      <h3>🏆 CTK Bridge Grand Test</h3>
+      <p style="color:var(--ink-soft); font-size:.9rem;">Grand Tests are the only tests faculty generate directly. A new Grand Test starts as a <strong>draft</strong> — review every question, edit any of them, or paste in extra questions to replace generated ones, then publish when it's ready. Students only ever see published tests.</p>
       <div class="grid-2">
         <div class="field-group">
           <label class="field-label" for="grandTestCourseSelect">Course</label>
@@ -636,10 +624,49 @@
           <input type="text" id="grandTestLabelInput" class="field" placeholder="e.g. Q1 2026 (defaults to current quarter)">
         </div>
       </div>
-      <button id="publishGrandTestBtn" class="btn btn-primary mt-1">Publish Grand Test</button>
+      <button id="publishGrandTestBtn" class="btn btn-primary mt-1">Start Grand Test draft</button>
       <div id="publishGrandTestMessage" class="mt-2"></div>
-      <h4 class="mt-2" style="margin-bottom:.4rem;">Published Grand Tests</h4>
+      <h4 class="mt-2" style="margin-bottom:.4rem;">Grand Tests</h4>
       <div id="grandTestsList" class="mt-1"></div>
+    </div>
+
+    <div class="card" id="grandTestEditorCard" style="display:none;">
+      <div class="flex-between">
+        <h3 style="margin-bottom:0;" id="grandTestEditorTitle">Reviewing draft…</h3>
+        <button id="closeGrandTestEditorBtn" class="btn btn-outline">Close</button>
+      </div>
+
+      <h4 class="mt-2" style="margin-bottom:.4rem;">✨ Paste extra questions — AI arranges them, you pick what they replace</h4>
+      <p class="helper-text" style="margin-bottom:.6rem;">Paste question text below (same free-form format as before — numbered questions with options and, optionally, marked answers). AI arranges it into individual questions; it never guesses correct answers you haven't given it. The number of questions you paste must equal the number you select below to replace, so the total question count never changes.</p>
+      <div class="grid-2">
+        <div class="field-group">
+          <label class="field-label" for="grandAddSubject">Subject (for the pasted batch)</label>
+          <select id="grandAddSubject" class="field">
+            <option>Physics</option><option>Chemistry</option><option>Botany</option><option>Zoology</option><option>Mathematics</option>
+          </select>
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="grandAddChapter">Chapter (for the pasted batch)</label>
+          <input type="text" id="grandAddChapter" class="field" placeholder="e.g. Rotational Motion">
+        </div>
+      </div>
+      <div class="field-group">
+        <label class="field-label" for="grandAddRawText">Paste question text</label>
+        <textarea id="grandAddRawText" rows="8" placeholder="1. What is the SI unit of force?&#10;A) Joule  B) Newton  C) Watt  D) Pascal&#10;2. ..."></textarea>
+      </div>
+      <button id="grandAddQuestionsBtn" class="btn btn-outline">✨ Arrange with AI &amp; stage for replacement</button>
+      <div id="grandAddStatus" class="mt-1"></div>
+
+      <hr class="divider">
+
+      <div class="flex-between">
+        <h4 style="margin-bottom:.4rem;">Questions in this draft — tick any to select them for replacement</h4>
+        <span class="helper-text" id="grandSelectedCount">0 selected</span>
+      </div>
+      <div id="grandTestQuestionsList" class="mt-1"></div>
+
+      <button id="publishGrandDraftBtn" class="btn btn-primary btn-block mt-2">✅ Publish this Grand Test</button>
+      <div id="grandPublishMessage" class="mt-2"></div>
     </div>
     </div><!-- /fsecTests -->
 
@@ -656,7 +683,7 @@
         </div>
         <div class="field-group">
           <label class="field-label" for="materialSubject">Subject</label>
-          <select id="materialSubject"><option>Physics</option><option>Chemistry</option><option>Biology</option></select>
+          <select id="materialSubject"><option>Physics</option><option>Chemistry</option><option>Botany</option><option>Zoology</option><option>Biology</option><option>Mathematics</option></select>
         </div>
         <div class="field-group">
           <label class="field-label" for="materialChapter">Chapter</label>
@@ -855,7 +882,7 @@
       <h3>🏆 Grand Test (Every 3 Months)</h3>
       <p style="color:var(--ink-soft); font-size:.9rem;">Comprehensive 3-month coverage test, published by your faculty. Mixed difficulty, all chapters.</p>
       <div id="bridgeGrandInfo"><p style="font-size:.85rem;">Loading...</p></div>
-      <button class="btn btn-outline" id="startGrandBtn" style="margin-top:1rem;">Generate Grand Test</button>
+      <button class="btn btn-outline" id="startGrandBtn" style="margin-top:1rem;">Attempt Test</button>
     </div>
 
     <!-- Test History -->
@@ -865,16 +892,21 @@
     </div>
 
     <!-- Active Test Modal -->
-    <div id="bridgeTestModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.7); z-index:1000; overflow-y:auto;">
-      <div style="max-width:900px; margin:2rem auto; background:var(--paper); border-radius:1rem; padding:2rem;">
-        <div class="flex-between" style="margin-bottom:1.5rem;">
-          <h2 id="bridgeTestTitle" style="margin:0;"></h2>
+    <div id="bridgeTestModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.7); z-index:1000; overflow-y:auto;" class="test-modal-overlay">
+      <div class="test-modal-panel">
+        <div class="test-modal-header">
           <div>
-            <span id="bridgeTestTimer" style="font-weight:700; color:var(--accent); font-size:1.1rem;"></span>
-            <button class="btn btn-primary" id="submitTestBtn" style="margin-left:1rem;">Submit Test</button>
+            <h2 id="bridgeTestTitle"></h2>
+            <div class="test-modal-progress" id="bridgeTestProgress"></div>
+          </div>
+          <div style="display:flex; align-items:center; gap:1rem;">
+            <span id="bridgeTestTimer" style="font-weight:700; color:var(--accent-deep); font-size:1.2rem;"></span>
+            <button class="btn btn-primary" id="submitTestBtn">Submit Test</button>
           </div>
         </div>
-        <div id="bridgeTestQuestionsContainer"></div>
+        <div class="test-modal-body">
+          <div id="bridgeTestQuestionsContainer"></div>
+        </div>
       </div>
     </div>
 
