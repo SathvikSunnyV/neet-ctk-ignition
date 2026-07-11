@@ -12,7 +12,8 @@ const {
     CURRICULUM, TEST_SUBJECT_DIST,
     generateDailyTest, generateWeeklyTest, generateMonthlyTest,
     generateGrandTest, generateChapterComboTest, generateMockTest,
-    fillTestQuestions, computeScore, applyBridgeProgressUpdate
+    fillTestQuestions, computeScore, applyBridgeProgressUpdate,
+    predictJeeCutoff, computeJeeTargets
 } = require('./db');
 const { generateRecommendations, generatePhysicsRecommendations } = require('./ai');
 const { structureWithAI, parseQuestionsRuleBased, tryDirectJsonParse } = require('./ocr');
@@ -30,7 +31,8 @@ const qbank = qbankRouter.init({
     pool, authenticate, requireRole, CURRICULUM,
     generateDailyTest, generateWeeklyTest, generateMonthlyTest,
     generateGrandTest, generateChapterComboTest, generateMockTest,
-    fillTestQuestions, computeScore, applyBridgeProgressUpdate
+    fillTestQuestions, computeScore, applyBridgeProgressUpdate,
+    tryDirectJsonParse, structureWithAI, parseQuestionsRuleBased
 });
 
 const app  = express();
@@ -316,8 +318,11 @@ app.get('/api/auth/me', authenticate, async (req, res) => {
 app.post('/api/onboarding/student', authenticate, requireRole('student'), async (req, res) => {
     const {
         targetExam, targetInstitution, category, state,
-        currentClass, examDate, dailyStudyHours, prepLevel
+        currentClass, dailyStudyHours, prepLevel
     } = req.body;
+    // NOTE: the exam date is intentionally NOT accepted here. It's a single
+    // platform-wide value set by faculty/admin (see /api/admin/exam-date)
+    // -- students can't set or override it, including through onboarding.
 
     const email = req.user.email;
     const name = req.user.name;
@@ -330,19 +335,19 @@ app.post('/api/onboarding/student', authenticate, requireRole('student'), async 
 
         if (existing) {
             await pool.query(
-                `UPDATE students SET name=$1, category=$2, aim=$3, exam_date=$4,
-                        target_institution=$5, state=$6, current_class=$7,
-                        daily_study_hours=$8, prep_level=$9, target_exam=$10
-                 WHERE email=$11`,
-                [name, cat, aim, examDate || null, aim, state || null, currentClass || null,
+                `UPDATE students SET name=$1, category=$2, aim=$3,
+                        target_institution=$4, state=$5, current_class=$6,
+                        daily_study_hours=$7, prep_level=$8, target_exam=$9
+                 WHERE email=$10`,
+                [name, cat, aim, aim, state || null, currentClass || null,
                  dailyStudyHours || null, prepLevel || 'Beginner', targetExam || 'NEET', email]
             );
         } else {
             await pool.query(
-                `INSERT INTO students (email, name, phone, category, aim, exam_date,
+                `INSERT INTO students (email, name, phone, category, aim,
                         target_institution, state, current_class, daily_study_hours, prep_level, target_exam)
-                 VALUES ($1,$2,'',$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-                [email, name, cat, aim, examDate || null, aim, state || null, currentClass || null,
+                 VALUES ($1,$2,'',$3,$4,$5,$6,$7,$8,$9,$10)`,
+                [email, name, cat, aim, aim, state || null, currentClass || null,
                  dailyStudyHours || null, prepLevel || 'Beginner', targetExam || 'NEET']
             );
             await pool.query(
@@ -354,15 +359,18 @@ app.post('/api/onboarding/student', authenticate, requireRole('student'), async 
 
         const t = computeTargets(aim, cat);
         await pool.query(
-            `INSERT INTO targets (email, bio, phy, chem) VALUES ($1,$2,$3,$4)
-             ON CONFLICT (email) DO UPDATE SET bio=$2, phy=$3, chem=$4`,
-            [email, t.bio, t.phy, t.chem]
+            `INSERT INTO targets (email, bio, phy, chem, zoo, math) VALUES ($1,$2,$3,$4,$5,$6)
+             ON CONFLICT (email) DO UPDATE SET bio=$2, phy=$3, chem=$4, zoo=$5, math=$6`,
+            [email, t.bio, t.phy, t.chem, t.zoo, t.math]
         );
 
         await pool.query(`UPDATE users SET onboarding_done = TRUE WHERE email = $1`, [email]);
 
         const bundle = await getStudentBundle(email);
-        const cutoff = await predictCutoff(aim, cat, state, examDate, null);
+        const { rows: [examRow] } = await pool.query(`SELECT value FROM settings WHERE key = 'exam_date'`);
+        const cutoff = (targetExam || 'NEET') === 'JEE'
+            ? await predictJeeCutoff(cat, examRow ? examRow.value : null, null)
+            : await predictCutoff(aim, cat, state, examRow ? examRow.value : null, null);
 
         return res.status(201).json({ ...bundle, cutoffPrediction: cutoff });
     } catch (err) {
@@ -382,17 +390,39 @@ app.get('/api/cutoff-prediction/:email', authenticate, async (req, res) => {
         if (!bundle) return res.status(404).json({ error: 'Student not found.' });
 
         const { student, progress } = bundle;
-        const avgAccuracy = progress
-            ? (progress.bio_accuracy + progress.phy_accuracy + progress.chem_accuracy) / 3
+        // Cutoff predictions target the exam year, which must be derived
+        // from the single faculty/admin-set exam date (settings table) --
+        // not any per-student value -- so every student's prediction is
+        // anchored to the same target year their institute has declared.
+        const { rows: [examRow] } = await pool.query(`SELECT value FROM settings WHERE key = 'exam_date'`);
+        const globalExamDate = examRow ? examRow.value : null;
+
+        const targetExam = student.target_exam || 'NEET';
+        const neetAccuracy = progress
+            ? (progress.bio_accuracy + progress.phy_accuracy + progress.chem_accuracy + progress.zoo_accuracy) / 4
+            : null;
+        const jeeAccuracy = progress
+            ? (progress.phy_accuracy + progress.chem_accuracy + progress.math_accuracy) / 3
             : null;
 
-        const prediction = await predictCutoff(
-            student.aim || 'Government Medical College',
-            student.category || 'General',
-            student.state,
-            student.exam_date,
-            avgAccuracy
-        );
+        let prediction;
+        if (targetExam === 'JEE') {
+            prediction = await predictJeeCutoff(student.category || 'General', globalExamDate, jeeAccuracy);
+        } else if (targetExam === 'BOTH') {
+            const [neet, jee] = await Promise.all([
+                predictCutoff(student.aim || 'Government Medical College', student.category || 'General', student.state, globalExamDate, neetAccuracy),
+                predictJeeCutoff(student.category || 'General', globalExamDate, jeeAccuracy)
+            ]);
+            prediction = { exam: 'BOTH', neet, jee };
+        } else {
+            prediction = await predictCutoff(
+                student.aim || 'Government Medical College',
+                student.category || 'General',
+                student.state,
+                globalExamDate,
+                neetAccuracy
+            );
+        }
 
         res.json(prediction);
     } catch (err) {
@@ -488,9 +518,9 @@ app.post('/api/register', async (req, res) => {
 
         const t = computeTargets(aim || 'Government Medical College', category || 'General');
         await pool.query(
-            `INSERT INTO targets (email, bio, phy, chem) VALUES ($1,$2,$3,$4)
-             ON CONFLICT (email) DO UPDATE SET bio=$2, phy=$3, chem=$4`,
-            [email, t.bio, t.phy, t.chem]
+            `INSERT INTO targets (email, bio, phy, chem, zoo, math) VALUES ($1,$2,$3,$4,$5,$6)
+             ON CONFLICT (email) DO UPDATE SET bio=$2, phy=$3, chem=$4, zoo=$5, math=$6`,
+            [email, t.bio, t.phy, t.chem, t.zoo, t.math]
         );
 
         return res.status(201).json(await getStudentBundle(email));
@@ -517,7 +547,7 @@ app.get('/api/admin/exam-date', async (req, res) => {
     res.json({ examDate: row ? row.value : null });
 });
 
-app.post('/api/admin/exam-date', authenticate, requireRole('admin'), async (req, res) => {
+app.post('/api/admin/exam-date', authenticate, requireRole('admin', 'faculty'), async (req, res) => {
     const { examDate } = req.body;
     if (!examDate) return res.status(400).json({ error: 'examDate is required.' });
     await pool.query(
@@ -1562,37 +1592,55 @@ app.get('/api/student/mistake-analysis', authenticate, requireRole('student'), a
 // ===========================================================================
 app.get('/api/faculty/analytics', authenticate, requireRole('faculty'), async (req, res) => {
     try {
-        // Subject/topic-wide weak-area detection across all students who
-        // attempted this faculty member's tests.
+        // Weak-topic detection now spans BOTH the legacy faculty-scheduled
+        // tests (owned by this faculty member) AND every Bridge-course test
+        // type (daily/weekly/monthly/mock/combo/grand/entry), which aren't
+        // tied to one faculty the same way -- otherwise this view only ever
+        // reflected legacy tests, understating how the whole cohort is
+        // actually doing.
         const { rows: weakTopics } = await pool.query(
-            `SELECT m.subject, m.topic, COUNT(DISTINCT m.student_email) AS weak_student_count
-             FROM mistakes m
-             JOIN tests t ON m.test_id = t.id
-             WHERE t.created_by = $1
-             GROUP BY m.subject, m.topic
-             ORDER BY weak_student_count DESC
-             LIMIT 10`,
+            `SELECT subject, topic, COUNT(DISTINCT student_email) AS weak_student_count FROM (
+                SELECT m.subject, m.topic, m.student_email
+                FROM mistakes m JOIN tests t ON m.test_id = t.id
+                WHERE t.created_by = $1
+                UNION ALL
+                SELECT m.subject, m.topic, m.student_email
+                FROM mistakes m JOIN generated_tests gt ON m.test_id = gt.id
+            ) combined
+            GROUP BY subject, topic
+            ORDER BY weak_student_count DESC
+            LIMIT 10`,
             [req.user.email]
         );
 
         const { rows: scores } = await pool.query(
-            `SELECT s.email, s.name, s.category, s.aim,
-                    a.test_id, t.title, a.score, a.total, a.submitted_at
-             FROM test_attempts a
-             JOIN tests t ON a.test_id = t.id
-             JOIN students s ON a.student_email = s.email
-             WHERE t.created_by = $1
-             ORDER BY a.submitted_at DESC
+            `SELECT s.email, s.name, s.category, s.aim, combined.test_id, combined.title, combined.score, combined.total, combined.submitted_at
+             FROM (
+                 SELECT a.student_email, a.test_id, t.title, a.score, a.total, a.submitted_at
+                 FROM test_attempts a JOIN tests t ON a.test_id = t.id
+                 WHERE t.created_by = $1
+                 UNION ALL
+                 SELECT a.student_email, a.test_id, gt.title, a.score, a.total, a.submitted_at
+                 FROM test_attempts a JOIN generated_tests gt ON a.test_id = gt.id
+             ) combined
+             JOIN students s ON combined.student_email = s.email
+             ORDER BY combined.submitted_at DESC
              LIMIT 100`,
             [req.user.email]
         );
 
         const { rows: avgScores } = await pool.query(
-            `SELECT t.id AS test_id, t.title, t.subject, AVG(a.score) AS avg_score, AVG(a.total) AS total, COUNT(*) AS attempts
-             FROM test_attempts a JOIN tests t ON a.test_id = t.id
-             WHERE t.created_by = $1
-             GROUP BY t.id, t.title, t.subject
-             ORDER BY t.created_at DESC`,
+            `SELECT test_id, title, subject, AVG(score) AS avg_score, AVG(total) AS total, COUNT(*) AS attempts, MAX(created_at) AS created_at
+             FROM (
+                 SELECT a.test_id, t.title, t.subject, a.score, a.total, t.created_at
+                 FROM test_attempts a JOIN tests t ON a.test_id = t.id
+                 WHERE t.created_by = $1
+                 UNION ALL
+                 SELECT a.test_id, gt.title, gt.course_type AS subject, a.score, a.total, gt.created_at
+                 FROM test_attempts a JOIN generated_tests gt ON a.test_id = gt.id
+             ) combined
+             GROUP BY test_id, title, subject
+             ORDER BY MAX(created_at) DESC`,
             [req.user.email]
         );
 
@@ -1697,6 +1745,56 @@ app.get('/api/faculty/error-atlas', authenticate, requireRole('faculty'), async 
             entry.frequentConcepts.push({ topic: row.topic, count: parseInt(row.count, 10) });
         }
 
+        // Bridge-course tests (daily/weekly/monthly/mock/combo/grand/entry)
+        // use question_bank/generated_tests rather than the legacy
+        // tests/test_questions tables, and aren't owned by one faculty
+        // member -- folded into the SAME chapterMap above so the atlas
+        // isn't limited to only this faculty's manually-scheduled tests.
+        const { rows: bridgeAttemptCounts } = await pool.query(
+            `SELECT gt.id AS test_id, COUNT(a.id) AS attempts
+             FROM generated_tests gt LEFT JOIN test_attempts a ON a.test_id = gt.id
+             GROUP BY gt.id`
+        );
+        const bridgeAttemptsByTest = new Map(bridgeAttemptCounts.map(r => [r.test_id, parseInt(r.attempts, 10)]));
+
+        const { rows: bridgeQuestionMistakes } = await pool.query(
+            `SELECT gt.id AS test_id, gt.title AS test_title, qb.subject,
+                    qb.chapter_name AS chapter, qb.id AS question_id, qb.question_text, qb.topic, qb.difficulty,
+                    COUNT(m.id) AS mistake_count
+             FROM generated_tests gt
+             JOIN generated_test_questions gtq ON gtq.test_id = gt.id
+             JOIN question_bank qb ON qb.id = gtq.question_id
+             LEFT JOIN mistakes m ON m.question_id = qb.id
+             GROUP BY gt.id, gt.title, qb.subject, qb.chapter_name, qb.id, qb.question_text, qb.topic, qb.difficulty
+             HAVING COUNT(m.id) > 0
+             ORDER BY chapter, mistake_count DESC`
+        );
+        for (const row of bridgeQuestionMistakes) {
+            const entry = getChapter(row.chapter);
+            const attempts = bridgeAttemptsByTest.get(row.test_id) || 0;
+            entry.totalAttempts = Math.max(entry.totalAttempts, attempts);
+            const mistakeCount = parseInt(row.mistake_count, 10);
+            entry.hotspotQuestions.push({
+                testId: row.test_id, testTitle: row.test_title, questionId: row.question_id,
+                questionText: row.question_text, topic: row.topic, difficulty: row.difficulty,
+                mistakeCount, errorPercentage: attempts > 0 ? Math.round((mistakeCount / attempts) * 1000) / 10 : null
+            });
+        }
+
+        const { rows: bridgeConceptFrequency } = await pool.query(
+            `SELECT qb.chapter_name AS chapter, m.topic, COUNT(*) AS count
+             FROM mistakes m
+             JOIN generated_tests gt ON m.test_id = gt.id
+             JOIN question_bank qb ON qb.id = m.question_id
+             WHERE m.topic IS NOT NULL
+             GROUP BY qb.chapter_name, m.topic
+             ORDER BY chapter, count DESC`
+        );
+        for (const row of bridgeConceptFrequency) {
+            const entry = getChapter(row.chapter);
+            entry.frequentConcepts.push({ topic: row.topic, count: parseInt(row.count, 10) });
+        }
+
         const chapters = Array.from(chapterMap.values()).map(c => ({
             ...c,
             hotspotQuestions: c.hotspotQuestions
@@ -1731,6 +1829,11 @@ app.get('/api/faculty/error-atlas', authenticate, requireRole('faculty'), async 
 // dumping the entire student roster on every faculty account.
 app.get('/api/faculty/students', authenticate, requireRole('faculty'), async (req, res) => {
     try {
+        // Bridge-course tests (daily/weekly/monthly/mock/combo/grand/entry)
+        // aren't owned by one faculty member the way legacy scheduled
+        // tests are, so any student who has attempted ANY of them is
+        // included here too -- otherwise a student who only ever took
+        // Bridge tests would never show up in a faculty's student picker.
         const { rows } = await pool.query(
             `SELECT DISTINCT s.email, s.name, s.category, s.aim
              FROM students s
@@ -1740,6 +1843,8 @@ app.get('/api/faculty/students', authenticate, requireRole('faculty'), async (re
                  SELECT mp.student_email FROM material_progress mp JOIN materials m ON mp.material_id = m.id WHERE m.uploaded_by = $1
                  UNION
                  SELECT lp.student_email FROM lecture_progress lp JOIN lectures l ON lp.lecture_id = l.id WHERE l.lecturer_email = $1
+                 UNION
+                 SELECT a.student_email FROM test_attempts a JOIN generated_tests gt ON a.test_id = gt.id
              )
              ORDER BY s.name ASC`,
             [req.user.email]
@@ -1823,6 +1928,70 @@ app.get('/api/faculty/students/:email/analytics', authenticate, requireRole('fac
             });
         }
 
+        // Every Bridge-course test type (entry/daily/weekly/monthly/mock/
+        // chapter-combo/grand) funnels through generated_tests +
+        // question_bank rather than the legacy tests/test_questions
+        // tables, so it's queried and folded into the SAME chapterStats/
+        // progressOverTime/totals the legacy loop above just built --
+        // this is what makes analytics reflect every test a student takes,
+        // not only faculty-assigned ones.
+        const { rows: bridgeRows } = await pool.query(
+            `SELECT a.id AS attempt_id, a.test_id, a.score, a.total, a.submitted_at, a.answers,
+                    gt.title, qb.id AS question_id, qb.subject, qb.chapter_name AS chapter, qb.correct_answer
+             FROM test_attempts a
+             JOIN generated_tests gt ON a.test_id = gt.id
+             JOIN generated_test_questions gtq ON gtq.test_id = gt.id
+             JOIN question_bank qb ON qb.id = gtq.question_id
+             WHERE a.student_email = $1
+             ORDER BY a.submitted_at ASC`,
+            [studentEmail]
+        );
+
+        const bridgeByAttempt = new Map();
+        for (const r of bridgeRows) {
+            if (!bridgeByAttempt.has(r.attempt_id)) {
+                bridgeByAttempt.set(r.attempt_id, {
+                    testId: r.test_id, title: r.title, score: r.score, total: r.total,
+                    submittedAt: r.submitted_at, answers: r.answers, rows: []
+                });
+            }
+            bridgeByAttempt.get(r.attempt_id).rows.push(r);
+        }
+
+        for (const attempt of bridgeByAttempt.values()) {
+            let answersMap = {};
+            if (attempt.answers && typeof attempt.answers === 'object' && !Array.isArray(attempt.answers)) answersMap = attempt.answers;
+            else if (typeof attempt.answers === 'string') {
+                try { answersMap = JSON.parse(attempt.answers); } catch (_) {}
+            }
+
+            let correctCount = 0;
+            const subjectsSeen = new Set();
+            for (const r of attempt.rows) {
+                const given = (answersMap[r.question_id] ?? '').toString().trim();
+                const isCorrect = given !== '' && given === (r.correct_answer || '').toString().trim();
+                if (isCorrect) correctCount += 1;
+                subjectsSeen.add(r.subject);
+
+                const stat = chapterStats.get(r.chapter) || { correct: 0, total: 0 };
+                stat.total += 1;
+                if (isCorrect) stat.correct += 1;
+                chapterStats.set(r.chapter, stat);
+            }
+
+            totalScoreSum += parseFloat(attempt.score) || 0;
+            totalQuestionsSum += attempt.total || 0;
+            progressOverTime.push({
+                testId: attempt.testId, title: attempt.title,
+                subject: [...subjectsSeen].join(', '), chapter: null,
+                score: attempt.score, total: attempt.total,
+                accuracyPercent: attempt.rows.length > 0 ? Math.round((correctCount / attempt.rows.length) * 1000) / 10 : null,
+                submittedAt: attempt.submittedAt
+            });
+        }
+        progressOverTime.sort((a, b) => new Date(a.submittedAt) - new Date(b.submittedAt));
+        const totalAttemptsCount = attempts.length + bridgeByAttempt.size;
+
         const chapterWisePerformance = Array.from(chapterStats.entries()).map(([chapter, s]) => ({
             chapter, correct: s.correct, total: s.total,
             accuracyPercent: s.total > 0 ? Math.round((s.correct / s.total) * 1000) / 10 : null
@@ -1857,8 +2026,8 @@ app.get('/api/faculty/students/:email/analytics', authenticate, requireRole('fac
              WHERE lp.student_email = $1 ORDER BY lp.updated_at DESC LIMIT 10`,
             [studentEmail]
         );
-        const recentTests = attempts.slice(-10).reverse().map(a => ({
-            title: a.title, updated_at: a.submitted_at, kind: 'test', detail: `scored ${a.score}/${a.total}`
+        const recentTests = progressOverTime.slice(-10).reverse().map(a => ({
+            title: a.title, updated_at: a.submittedAt, kind: 'test', detail: `scored ${a.score}/${a.total}`
         }));
 
         const recentActivity = [...recentMaterials, ...recentLectures, ...recentTests]
@@ -1867,9 +2036,9 @@ app.get('/api/faculty/students/:email/analytics', authenticate, requireRole('fac
 
         res.json({
             student,
-            testsAttempted: attempts.length,
-            averageScore: attempts.length > 0 ? Math.round((totalScoreSum / attempts.length) * 10) / 10 : null,
-            averageAccuracyPercent: totalQuestionsSum > 0 ? Math.round((progressOverTime.reduce((s, p) => s + (p.accuracyPercent || 0), 0) / progressOverTime.length) * 10) / 10 : null,
+            testsAttempted: totalAttemptsCount,
+            averageScore: totalAttemptsCount > 0 ? Math.round((totalScoreSum / totalAttemptsCount) * 10) / 10 : null,
+            averageAccuracyPercent: progressOverTime.length > 0 ? Math.round((progressOverTime.reduce((s, p) => s + (p.accuracyPercent || 0), 0) / progressOverTime.length) * 10) / 10 : null,
             chapterWisePerformance,
             strongChapters,
             weakChapters,

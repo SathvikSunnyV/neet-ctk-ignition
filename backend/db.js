@@ -171,6 +171,10 @@ async function initSchema() {
             generated_for_date DATE,
             -- schedule metadata
             scheduled_at    TIMESTAMPTZ,
+            -- 'draft' Grand Tests are staged for faculty review/editing and
+            -- are NOT visible to students until published; every other
+            -- test_type is created already-published (immediately usable).
+            status          TEXT NOT NULL DEFAULT 'published' CHECK (status IN ('draft','published')),
             created_at      TIMESTAMPTZ DEFAULT NOW()
         );
 
@@ -390,6 +394,7 @@ async function initSchema() {
         ALTER TABLE question_bank ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ;
         ALTER TABLE question_bank ADD COLUMN IF NOT EXISTS rejection_note TEXT;
         ALTER TABLE question_bank ADD COLUMN IF NOT EXISTS usage_count INTEGER DEFAULT 0;
+        ALTER TABLE generated_tests ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'published';
     `);
 
     // The seedChapters() ON CONFLICT (course_type, subject, name) upsert
@@ -728,7 +733,7 @@ async function generateMonthlyTest(courseType, month, year) {
  * duplicate, so it's safe for a faculty member to "publish" the same
  * label more than once.
  */
-async function generateGrandTest(courseType, label, studentEmail = null, createdBy = null) {
+async function generateGrandTest(courseType, label, studentEmail = null, createdBy = null, status = 'draft') {
     const title = `${courseType} Grand Test — ${label}`;
     const { rows: existing } = await pool.query(
         `SELECT id FROM generated_tests WHERE test_type='grand' AND course_type=$1 AND title=$2`,
@@ -737,9 +742,9 @@ async function generateGrandTest(courseType, label, studentEmail = null, created
     if (existing.length > 0) return existing[0].id;
 
     const { rows: [gt] } = await pool.query(
-        `INSERT INTO generated_tests (test_type, course_type, title, difficulty_mode, question_count, time_limit_min, created_by)
-         VALUES ('grand', $1, $2, 'Mixed', 90, 180, $3) RETURNING id`,
-        [courseType, title, createdBy]
+        `INSERT INTO generated_tests (test_type, course_type, title, difficulty_mode, question_count, time_limit_min, created_by, status)
+         VALUES ('grand', $1, $2, 'Mixed', 90, 180, $3, $4) RETURNING id`,
+        [courseType, title, createdBy, status]
     );
     const testId = gt.id;
     await fillTestQuestions(testId, courseType, 90, 'Mixed', null, null, studentEmail);
@@ -1077,6 +1082,12 @@ function linearRegression(points) {
     return { slope: (n * sumXY - sumX * sumY) / denom, intercept: (sumY - (n * sumXY - sumX * sumY) / denom * sumX) / n };
 }
 
+// NEET subject sections carry equal weight (45 questions / 180 marks each
+// out of the 720 total) — this is real NEET exam structure, not a guess, so
+// prorating the overall score prediction across sections this way is a
+// sound (not fabricated) way to give subject-wise cutoff figures.
+const NEET_SUBJECT_SHARE = { Physics: 0.25, Chemistry: 0.25, Botany: 0.25, Zoology: 0.25 };
+
 async function predictCutoff(aim, category, state, examDate, currentAccuracyPct = null) {
     const instKey = INSTITUTION_KEY[aim] || 'govt';
     const cat = HISTORICAL_CUTOFFS.some(r => r.category === category) ? category : (CATEGORY_FALLBACK[category] || 'General');
@@ -1095,22 +1106,111 @@ async function predictCutoff(aim, category, state, examDate, currentAccuracyPct 
         const diff = (currentAccuracyPct / 100) * NEET_MAX_SCORE - targetScore;
         admissionProbability = Math.round((1 / (1 + Math.exp(-0.08 * diff))) * 1000) / 10;
     }
+    const safeScore = Math.round(Math.min(NEET_MAX_SCORE, predicted + 12));
+    const stretchScore = Math.round(Math.min(NEET_MAX_SCORE, predicted + 28));
+
+    const subjectCutoffs = {};
+    for (const [subject, share] of Object.entries(NEET_SUBJECT_SHARE)) {
+        subjectCutoffs[subject] = {
+            safeScore: Math.round(safeScore * share),
+            targetScore: Math.round(targetScore * share),
+            stretchScore: Math.round(stretchScore * share),
+            maxMarks: Math.round(NEET_MAX_SCORE * share)
+        };
+    }
+
     return {
-        category: cat, institution: aim, targetYear,
-        safeScore: Math.round(Math.min(NEET_MAX_SCORE, predicted + 12)),
-        targetScore,
-        stretchScore: Math.round(Math.min(NEET_MAX_SCORE, predicted + 28)),
+        exam: 'NEET', category: cat, institution: aim, targetYear,
+        safeScore, targetScore, stretchScore, maxMarks: NEET_MAX_SCORE,
+        subjectCutoffs,
         estimatedRank: { low: Math.max(1, Math.round(estimatedRank * 0.7)), high: Math.round(estimatedRank * 1.3), mid: estimatedRank },
         admissionProbability,
-        modelInfo: { method: usingLiveData ? 'linear-regression-live' : 'linear-regression-static', usingLiveData }
+        modelInfo: {
+            method: usingLiveData ? 'linear-regression-live' : 'linear-regression-static',
+            usingLiveData, dataSource: usingLiveData ? 'web-research-ai' : 'historical-regression'
+        }
+    };
+}
+
+// JEE Main qualifying percentile cutoffs (for JEE Advanced eligibility),
+// category-wise, as publicly reported by NTA each year. Unlike NEET these
+// are NOT institution-tiered at the Main-exam stage (institution tiering
+// only happens later, in JoSAA counselling), so there's a single trend per
+// category rather than per-institution tiers.
+const HISTORICAL_JEE_CUTOFFS = [
+    { year: 2021, category: 'General', percentile: 87.8992241 },
+    { year: 2021, category: 'EWS',     percentile: 66.2214845 },
+    { year: 2021, category: 'OBC',     percentile: 68.0234447 },
+    { year: 2021, category: 'SC',      percentile: 46.8825338 },
+    { year: 2021, category: 'ST',      percentile: 34.6728999 },
+    { year: 2022, category: 'General', percentile: 88.4121383 },
+    { year: 2022, category: 'EWS',     percentile: 63.1114141 },
+    { year: 2022, category: 'OBC',     percentile: 67.0090297 },
+    { year: 2022, category: 'SC',      percentile: 43.0820954 },
+    { year: 2022, category: 'ST',      percentile: 26.7771328 },
+    { year: 2023, category: 'General', percentile: 90.7788642 },
+    { year: 2023, category: 'EWS',     percentile: 73.6114227 },
+    { year: 2023, category: 'OBC',     percentile: 73.6114227 },
+    { year: 2023, category: 'SC',      percentile: 51.9776027 },
+    { year: 2023, category: 'ST',      percentile: 37.2348772 },
+    { year: 2024, category: 'General', percentile: 93.2362181 },
+    { year: 2024, category: 'EWS',     percentile: 81.3221276 },
+    { year: 2024, category: 'OBC',     percentile: 79.6757881 },
+    { year: 2024, category: 'SC',      percentile: 60.0923182 },
+    { year: 2024, category: 'ST',      percentile: 46.6975840 }
+];
+const JEE_ESTIMATED_CANDIDATES = 1200000; // approx annual JEE Main candidate pool
+
+// JEE Main's 3 subjects carry equal weight (100 marks each of 300 total),
+// so a subject-wise breakdown is expressed the same accuracy-percentage
+// way the student's own `targets` table already is (see computeJeeTargets
+// below) rather than trying to invent a percentile-per-subject split —
+// JEE percentile is a whole-exam normalized figure and doesn't decompose
+// per-subject the way a raw NEET score does.
+async function predictJeeCutoff(category, examDate, currentAccuracyPct = null) {
+    const cat = HISTORICAL_JEE_CUTOFFS.some(r => r.category === category) ? category : (CATEGORY_FALLBACK[category] || 'General');
+    const targetYear = examDate ? new Date(examDate).getFullYear() : (new Date().getFullYear() + 1);
+    const rows = HISTORICAL_JEE_CUTOFFS.filter(r => r.category === cat).map(r => ({ x: r.year, y: r.percentile }));
+    const { slope, intercept } = linearRegression(rows);
+    let predicted = slope * targetYear + intercept;
+    predicted = Math.min(99.9999999, Math.max(1, predicted));
+    const targetPercentile = Math.round(predicted * 1000000) / 1000000;
+    const estimatedRank = Math.max(1, Math.round(JEE_ESTIMATED_CANDIDATES * (1 - predicted / 100)));
+
+    let admissionProbability = null;
+    if (currentAccuracyPct !== null) {
+        const diff = currentAccuracyPct - predicted;
+        admissionProbability = Math.round((1 / (1 + Math.exp(-0.15 * diff))) * 1000) / 10;
+    }
+
+    const jeeTargets = computeJeeTargets(cat);
+    return {
+        exam: 'JEE', category: cat, targetYear,
+        safePercentile: Math.round(Math.min(99.9999999, predicted + 2) * 1000000) / 1000000,
+        targetPercentile,
+        stretchPercentile: Math.round(Math.min(99.9999999, predicted + 5) * 1000000) / 1000000,
+        subjectCutoffs: {
+            Physics:     { accuracyTargetPct: jeeTargets.phy },
+            Chemistry:   { accuracyTargetPct: jeeTargets.chem },
+            Mathematics: { accuracyTargetPct: jeeTargets.math }
+        },
+        estimatedRank: { low: Math.max(1, Math.round(estimatedRank * 0.7)), high: Math.round(estimatedRank * 1.3), mid: estimatedRank },
+        admissionProbability,
+        modelInfo: { method: 'linear-regression-static', usingLiveData: false, dataSource: 'historical-regression' }
     };
 }
 
 const AIM_BASE_TARGETS = {
-    'AIIMS':                      { bio: 92, phy: 88, chem: 90 },
-    'Government Medical College': { bio: 85, phy: 78, chem: 82 },
-    'Private Medical College':    { bio: 75, phy: 65, chem: 70 }
+    'AIIMS':                      { bio: 92, phy: 88, chem: 90, zoo: 92 },
+    'Government Medical College': { bio: 85, phy: 78, chem: 82, zoo: 85 },
+    'Private Medical College':    { bio: 75, phy: 65, chem: 70, zoo: 75 }
 };
+
+// JEE has no institution-tier "aim" field in onboarding (JEE Main qualifying
+// cutoffs are category-wise only, not institution-tiered — tiering only
+// happens later in JoSAA counselling), so this is a single flat baseline
+// adjusted by category, mirroring the NEET relax logic below.
+const JEE_BASE_TARGETS = { phy: 80, chem: 78, math: 82 };
 
 function computeTargets(aim, category) {
     const base = AIM_BASE_TARGETS[aim] || AIM_BASE_TARGETS['Government Medical College'];
@@ -1118,7 +1218,18 @@ function computeTargets(aim, category) {
     return {
         bio:  Math.max(50, base.bio  - relax),
         phy:  Math.max(50, base.phy  - relax),
-        chem: Math.max(50, base.chem - relax)
+        chem: Math.max(50, base.chem - relax),
+        zoo:  Math.max(50, base.zoo  - relax),
+        math: Math.max(50, JEE_BASE_TARGETS.math - relax)
+    };
+}
+
+function computeJeeTargets(category) {
+    const relax = ['OBC','SC','ST','EWS','PwD'].includes(category) ? 5 : 0;
+    return {
+        phy:  Math.max(50, JEE_BASE_TARGETS.phy  - relax),
+        chem: Math.max(50, JEE_BASE_TARGETS.chem - relax),
+        math: Math.max(50, JEE_BASE_TARGETS.math - relax)
     };
 }
 
@@ -1146,8 +1257,8 @@ const TOPIC_BANK = {
 module.exports = {
     pool, initSchema,
     CURRICULUM, TEST_SUBJECT_DIST, DIFFICULTY_RATIOS,
-    computeTargets, TOPIC_BANK, AIM_BASE_TARGETS,
-    predictCutoff, HISTORICAL_CUTOFFS, STATE_ADJUSTMENT,
+    computeTargets, computeJeeTargets, TOPIC_BANK, AIM_BASE_TARGETS,
+    predictCutoff, predictJeeCutoff, HISTORICAL_CUTOFFS, HISTORICAL_JEE_CUTOFFS, STATE_ADJUSTMENT,
     refreshCutoffCache, getCachedCutoffRows, isCutoffCacheStale,
     generateDailyTest, generateWeeklyTest, generateMonthlyTest,
     generateGrandTest, generateChapterComboTest, generateMockTest,

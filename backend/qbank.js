@@ -5,7 +5,8 @@ function init(deps) {
         pool, authenticate, requireRole, CURRICULUM,
         generateDailyTest, generateWeeklyTest, generateMonthlyTest,
         generateGrandTest, generateChapterComboTest, generateMockTest,
-        fillTestQuestions, computeScore, applyBridgeProgressUpdate
+        fillTestQuestions, computeScore, applyBridgeProgressUpdate,
+        tryDirectJsonParse, structureWithAI, parseQuestionsRuleBased
     } = deps;
 
     const router = Router();
@@ -400,14 +401,15 @@ function init(deps) {
     });
 
     // Grand Tests are published by faculty, not generated on demand by
-    // students. Students can only fetch the most recently published one
-    // for their course and take it (once).
+    // students. Students can only fetch the most recently PUBLISHED one
+    // for their course and take it (once) -- drafts still being reviewed/
+    // edited by faculty are invisible here.
     router.get('/api/bridge/tests/grand', authenticate, requireRole('student'), async (req, res) => {
         const courseType = req.query.courseType || 'NEET';
         try {
             const { rows: [gt] } = await pool.query(
                 `SELECT id, title, time_limit_min, question_count, created_at
-                 FROM generated_tests WHERE test_type='grand' AND course_type=$1
+                 FROM generated_tests WHERE test_type='grand' AND course_type=$1 AND status='published'
                  ORDER BY created_at DESC LIMIT 1`,
                 [courseType]
             );
@@ -424,9 +426,10 @@ function init(deps) {
         }
     });
 
-    // Faculty: publish a Grand Test for a course type. Publishing the same
-    // courseType + label twice returns the already-published test rather
-    // than creating a duplicate.
+    // Faculty: start a Grand Test draft for a course type. Creating the
+    // same courseType + label twice returns the existing draft/published
+    // test rather than creating a duplicate. Drafts are NOT visible to
+    // students until explicitly published below.
     router.post('/api/bridge/faculty/tests/grand', authenticate, requireRole('faculty'), async (req, res) => {
         const courseType = req.body.courseType || 'NEET';
         const now = new Date();
@@ -436,9 +439,9 @@ function init(deps) {
                 `SELECT id FROM generated_tests WHERE test_type='grand' AND course_type=$1 AND title=$2`,
                 [courseType, `${courseType} Grand Test — ${label}`]
             );
-            const testId = await generateGrandTest(courseType, label, null, req.user.email);
+            const testId = await generateGrandTest(courseType, label, null, req.user.email, 'draft');
             const { rows: [gt] } = await pool.query(
-                `SELECT id, title, time_limit_min, question_count, created_at FROM generated_tests WHERE id=$1`, [testId]
+                `SELECT id, title, course_type, time_limit_min, question_count, status, created_at FROM generated_tests WHERE id=$1`, [testId]
             );
             res.json({ success: true, test: gt, alreadyPublished: existingBefore.length > 0 });
         } catch (err) {
@@ -447,11 +450,11 @@ function init(deps) {
         }
     });
 
-    // Faculty: list published Grand Tests with attempt counts.
+    // Faculty: list Grand Tests (draft and published) with attempt counts.
     router.get('/api/bridge/faculty/tests/grand', authenticate, requireRole('faculty'), async (req, res) => {
         try {
             const { rows } = await pool.query(
-                `SELECT gt.id, gt.title, gt.course_type, gt.question_count, gt.time_limit_min, gt.created_at,
+                `SELECT gt.id, gt.title, gt.course_type, gt.question_count, gt.time_limit_min, gt.status, gt.created_at,
                         COUNT(ta.id) AS attempt_count
                  FROM generated_tests gt
                  LEFT JOIN test_attempts ta ON ta.test_id = gt.id
@@ -460,6 +463,163 @@ function init(deps) {
                  ORDER BY gt.created_at DESC`
             );
             res.json(rows);
+        } catch (err) {
+            console.error(err);
+            res.status(500).json({ error: 'Server error.' });
+        }
+    });
+
+    // Faculty: full question list for a Grand Test draft (or published
+    // test) -- used for the preview/edit screen before publishing.
+    router.get('/api/bridge/faculty/tests/grand/:id/questions', authenticate, requireRole('faculty'), async (req, res) => {
+        const testId = parseInt(req.params.id);
+        try {
+            const { rows: [gt] } = await pool.query(`SELECT * FROM generated_tests WHERE id=$1 AND test_type='grand'`, [testId]);
+            if (!gt) return res.status(404).json({ error: 'Grand Test not found.' });
+            const { rows: questions } = await pool.query(
+                `SELECT qb.id, qb.subject, qb.chapter_name, qb.topic, qb.question_text,
+                        qb.option_a, qb.option_b, qb.option_c, qb.option_d, qb.correct_answer, qb.difficulty,
+                        gtq.position
+                 FROM generated_test_questions gtq
+                 JOIN question_bank qb ON qb.id = gtq.question_id
+                 WHERE gtq.test_id = $1
+                 ORDER BY gtq.position ASC`,
+                [testId]
+            );
+            res.json({ test: gt, questions });
+        } catch (err) {
+            console.error(err);
+            res.status(500).json({ error: 'Server error.' });
+        }
+    });
+
+    // Faculty: edit a single question already linked to a Grand Test draft.
+    router.put('/api/bridge/faculty/tests/grand/:id/questions/:questionId', authenticate, requireRole('faculty'), async (req, res) => {
+        const testId = parseInt(req.params.id);
+        const questionId = parseInt(req.params.questionId);
+        const { questionText, optionA, optionB, optionC, optionD, correctAnswer, subject, chapterName, topic, difficulty } = req.body;
+        try {
+            const { rows: [linked] } = await pool.query(
+                `SELECT 1 FROM generated_test_questions WHERE test_id=$1 AND question_id=$2`, [testId, questionId]
+            );
+            if (!linked) return res.status(404).json({ error: 'That question is not part of this test.' });
+            if (correctAnswer && !['A','B','C','D'].includes(correctAnswer))
+                return res.status(400).json({ error: 'correctAnswer must be A, B, C, or D.' });
+
+            const { rows: [updated] } = await pool.query(
+                `UPDATE question_bank SET
+                    question_text = COALESCE($1, question_text),
+                    option_a = COALESCE($2, option_a), option_b = COALESCE($3, option_b),
+                    option_c = COALESCE($4, option_c), option_d = COALESCE($5, option_d),
+                    correct_answer = COALESCE($6, correct_answer),
+                    subject = COALESCE($7, subject), chapter_name = COALESCE($8, chapter_name),
+                    topic = COALESCE($9, topic), difficulty = COALESCE($10, difficulty)
+                 WHERE id = $11
+                 RETURNING *`,
+                [questionText||null, optionA||null, optionB||null, optionC||null, optionD||null,
+                 correctAnswer||null, subject||null, chapterName||null, topic||null, difficulty||null, questionId]
+            );
+            res.json({ success: true, question: updated });
+        } catch (err) {
+            console.error(err);
+            res.status(500).json({ error: 'Server error.' });
+        }
+    });
+
+    // Faculty: paste a batch of questions (same free-text interface the
+    // old Normal Test creation used) to ADD to a Grand Test draft. Because
+    // the total question count must stay the same, faculty must specify
+    // exactly as many existing questions to remove (removeQuestionIds) as
+    // new ones are extracted from the pasted text -- the new ones then
+    // take those slots (same position numbers) rather than just growing
+    // the test.
+    router.post('/api/bridge/faculty/tests/grand/:id/add-questions', authenticate, requireRole('faculty'), async (req, res) => {
+        const testId = parseInt(req.params.id);
+        const { rawText, subject, chapterName, removeQuestionIds } = req.body;
+        if (!rawText || !rawText.trim()) return res.status(400).json({ error: 'Please paste the question text.' });
+        if (!subject || !chapterName) return res.status(400).json({ error: 'Subject and chapter are required for the pasted questions.' });
+        if (!Array.isArray(removeQuestionIds)) return res.status(400).json({ error: 'removeQuestionIds must be an array.' });
+
+        try {
+            const { rows: [gt] } = await pool.query(`SELECT * FROM generated_tests WHERE id=$1 AND test_type='grand'`, [testId]);
+            if (!gt) return res.status(404).json({ error: 'Grand Test not found.' });
+            if (gt.status !== 'draft') return res.status(400).json({ error: 'Only a draft Grand Test can be edited -- this one is already published.' });
+
+            let extracted = tryDirectJsonParse(rawText);
+            if (!extracted) extracted = await structureWithAI(rawText);
+            if (!extracted) extracted = parseQuestionsRuleBased(rawText);
+            if (!extracted || extracted.length === 0)
+                return res.status(400).json({ error: 'No questions could be identified in that text.' });
+
+            if (extracted.length !== removeQuestionIds.length) {
+                return res.status(400).json({
+                    error: `You pasted ${extracted.length} question(s) but selected ${removeQuestionIds.length} to remove. Select exactly ${extracted.length} existing question(s) to replace, so the total stays at ${gt.question_count}.`
+                });
+            }
+
+            const { rows: existingLinks } = await pool.query(
+                `SELECT question_id, position FROM generated_test_questions WHERE test_id=$1 AND question_id = ANY($2::int[])`,
+                [testId, removeQuestionIds]
+            );
+            if (existingLinks.length !== removeQuestionIds.length)
+                return res.status(400).json({ error: 'One or more selected questions are not part of this test.' });
+            const freedPositions = existingLinks.map(r => r.position);
+
+            const letters = ['A', 'B', 'C', 'D'];
+            const difficultyMap = { Easy: 'Easy', Medium: 'Moderate', Hard: 'Difficult' };
+            const inserted = [];
+            for (const q of extracted) {
+                const options = (q.options || []).slice(0, 4);
+                while (options.length < 4) options.push('—');
+                const correctAnswer = letters[q.correctAnswerIndex] || 'A';
+                const difficulty = difficultyMap[q.difficulty] || 'Moderate';
+                const { rows: [row] } = await pool.query(
+                    `INSERT INTO question_bank
+                     (course_type, subject, chapter_name, topic, question_text,
+                      option_a, option_b, option_c, option_d, correct_answer,
+                      difficulty, status, submitted_by)
+                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'approved',$12)
+                     RETURNING id`,
+                    [gt.course_type, subject, chapterName, q.topic || null, q.questionText,
+                     options[0], options[1], options[2], options[3], correctAnswer,
+                     difficulty, req.user.email]
+                );
+                inserted.push(row.id);
+            }
+
+            await pool.query(`DELETE FROM generated_test_questions WHERE test_id=$1 AND question_id = ANY($2::int[])`, [testId, removeQuestionIds]);
+            for (let i = 0; i < inserted.length; i++) {
+                await pool.query(
+                    `INSERT INTO generated_test_questions (test_id, question_id, position) VALUES ($1,$2,$3)`,
+                    [testId, inserted[i], freedPositions[i]]
+                );
+            }
+
+            const { rows: questions } = await pool.query(
+                `SELECT qb.id, qb.subject, qb.chapter_name, qb.topic, qb.question_text,
+                        qb.option_a, qb.option_b, qb.option_c, qb.option_d, qb.correct_answer, qb.difficulty,
+                        gtq.position
+                 FROM generated_test_questions gtq JOIN question_bank qb ON qb.id = gtq.question_id
+                 WHERE gtq.test_id = $1 ORDER BY gtq.position ASC`,
+                [testId]
+            );
+            res.json({ success: true, addedCount: inserted.length, questions });
+        } catch (err) {
+            console.error(err);
+            res.status(500).json({ error: 'Server error while adding questions.' });
+        }
+    });
+
+    // Faculty: publish a draft Grand Test, making it visible to students.
+    router.post('/api/bridge/faculty/tests/grand/:id/publish', authenticate, requireRole('faculty'), async (req, res) => {
+        const testId = parseInt(req.params.id);
+        try {
+            const { rows: [gt] } = await pool.query(
+                `UPDATE generated_tests SET status='published' WHERE id=$1 AND test_type='grand' RETURNING id, title, status`,
+                [testId]
+            );
+            if (!gt) return res.status(404).json({ error: 'Grand Test not found.' });
+            res.json({ success: true, test: gt });
         } catch (err) {
             console.error(err);
             res.status(500).json({ error: 'Server error.' });

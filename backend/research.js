@@ -25,35 +25,77 @@ const CATEGORIES = ['General', 'EWS', 'OBC', 'SC', 'ST'];
 const NEET_MAX_SCORE = 720;
 
 // ---------------------------------------------------------------------------
-// STEP 1 — Free web search (DuckDuckGo HTML results, no API key)
+// STEP 1 — Free web search (DuckDuckGo, no API key)
+// Tries the "lite" HTML endpoint first (simpler markup, less prone to
+// being flagged as a bot than the full html.duckduckgo.com page), then
+// falls back to the regular HTML endpoint. Either can fail intermittently
+// from a datacenter/hosted IP (rate limiting, transient blocks) -- that's
+// fine, predictCutoff() always has the historical-regression fallback and
+// never depends on this succeeding.
 // ---------------------------------------------------------------------------
+async function fetchWithTimeout(url, options = {}, timeoutMs = 8000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        return await fetch(url, { ...options, signal: controller.signal });
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
 async function webSearchSnippets(query, maxResults = 6) {
-    const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
-    const res = await fetch(url, { headers: { 'User-Agent': SEARCH_UA } });
-    if (!res.ok) throw new Error(`Search request failed (${res.status})`);
-    const html = await res.text();
+    const strip = (s) => s.replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&#x27;/g, "'").replace(/&quot;/g, '"').trim();
 
-    // DuckDuckGo's HTML endpoint wraps each result snippet in a
-    // result__snippet class; titles are in result__a. Simple regex
-    // extraction avoids pulling in a full HTML-parsing dependency.
-    const snippetRegex = /class="result__snippet"[^>]*>(.*?)<\/a>/gs;
-    const titleRegex = /class="result__a"[^>]*>(.*?)<\/a>/gs;
-
-    const strip = (s) => s.replace(/<[^>]+>/g, '').replace(/&amp;/g, '&').replace(/&#x27;/g, "'").trim();
-
-    const snippets = [];
-    let m;
-    while ((m = snippetRegex.exec(html)) && snippets.length < maxResults) {
-        const text = strip(m[1]);
-        if (text) snippets.push(text);
+    // Attempt 1: lite.duckduckgo.com/lite/ — plain-text-ish table markup,
+    // much less likely to be served a bot-detection page than the full
+    // html.duckduckgo.com endpoint.
+    try {
+        const url = `https://lite.duckduckgo.com/lite/?q=${encodeURIComponent(query)}`;
+        const res = await fetchWithTimeout(url, { headers: { 'User-Agent': SEARCH_UA } });
+        if (res.ok) {
+            const html = await res.text();
+            const rowRegex = /<a[^>]+class="result-link"[^>]*>(.*?)<\/a>[\s\S]*?<td[^>]*class="result-snippet"[^>]*>(.*?)<\/td>/gs;
+            const out = [];
+            let m;
+            while ((m = rowRegex.exec(html)) && out.length < maxResults) {
+                const title = strip(m[1]);
+                const snippet = strip(m[2]);
+                if (title) out.push(title);
+                if (snippet) out.push(snippet);
+            }
+            if (out.length > 0) return out;
+        }
+    } catch (err) {
+        console.warn(`Lite DuckDuckGo search failed for "${query}":`, err.message);
     }
-    const titles = [];
-    while ((m = titleRegex.exec(html)) && titles.length < maxResults) {
-        const text = strip(m[1]);
-        if (text) titles.push(text);
-    }
 
-    return [...titles, ...snippets].filter(Boolean);
+    // Attempt 2: html.duckduckgo.com/html/ — the original endpoint, kept
+    // as a second attempt in case the lite endpoint's markup changes.
+    try {
+        const url = `https://html.duckduckgo.com/html/?q=${encodeURIComponent(query)}`;
+        const res = await fetchWithTimeout(url, { headers: { 'User-Agent': SEARCH_UA } });
+        if (!res.ok) throw new Error(`Search request failed (${res.status})`);
+        const html = await res.text();
+
+        const snippetRegex = /class="result__snippet"[^>]*>(.*?)<\/a>/gs;
+        const titleRegex = /class="result__a"[^>]*>(.*?)<\/a>/gs;
+
+        const snippets = [];
+        let m;
+        while ((m = snippetRegex.exec(html)) && snippets.length < maxResults) {
+            const text = strip(m[1]);
+            if (text) snippets.push(text);
+        }
+        const titles = [];
+        while ((m = titleRegex.exec(html)) && titles.length < maxResults) {
+            const text = strip(m[1]);
+            if (text) titles.push(text);
+        }
+        return [...titles, ...snippets].filter(Boolean);
+    } catch (err) {
+        console.warn(`HTML DuckDuckGo search failed for "${query}":`, err.message);
+        return [];
+    }
 }
 
 // ---------------------------------------------------------------------------
