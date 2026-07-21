@@ -11,6 +11,23 @@ function init(deps) {
 
     const router = Router();
 
+    // Entry Test 1 is mandatory: students must complete it for a course
+    // type before they can access any other Test Centre test (daily,
+    // weekly, monthly, mock, chapter-combo, grand). Returns true if no
+    // Entry Test 1 exists for that course type (nothing to block on).
+    async function isEntryTest1Complete(courseType, email) {
+        const { rows: [entry] } = await pool.query(
+            `SELECT test_id FROM entry_tests WHERE course_type=$1 AND test_number=1`,
+            [courseType]
+        );
+        if (!entry) return true;
+        const { rows: [attempt] } = await pool.query(
+            `SELECT id FROM test_attempts WHERE test_id=$1 AND student_email=$2`,
+            [entry.test_id, email]
+        );
+        return !!attempt;
+    }
+
     // ============================================================
     // QUESTION BANK — Faculty CRUD + approval workflow
     // ============================================================
@@ -318,6 +335,8 @@ function init(deps) {
     router.get('/api/bridge/tests/daily', authenticate, requireRole('student'), async (req, res) => {
         const courseType = req.query.courseType || 'NEET';
         try {
+            if (!(await isEntryTest1Complete(courseType, req.user.email)))
+                return res.status(403).json({ error: 'Complete mandatory Entry Test 1 before accessing this test.', entryTest1Required: true });
             const testId = await generateDailyTest(courseType);
             const { rows: [gt] } = await pool.query(
                 `SELECT id, title, time_limit_min, question_count FROM generated_tests WHERE id=$1`, [testId]
@@ -339,6 +358,8 @@ function init(deps) {
         const monday = new Date(now);
         monday.setDate(now.getDate() - ((now.getDay() + 6) % 7));
         try {
+            if (!(await isEntryTest1Complete(courseType, req.user.email)))
+                return res.status(403).json({ error: 'Complete mandatory Entry Test 1 before accessing this test.', entryTest1Required: true });
             const testId = await generateWeeklyTest(courseType, monday);
             const { rows: [gt] } = await pool.query(
                 `SELECT id, title, time_limit_min, question_count FROM generated_tests WHERE id=$1`, [testId]
@@ -357,6 +378,8 @@ function init(deps) {
         const courseType = req.query.courseType || 'NEET';
         const now = new Date();
         try {
+            if (!(await isEntryTest1Complete(courseType, req.user.email)))
+                return res.status(403).json({ error: 'Complete mandatory Entry Test 1 before accessing this test.', entryTest1Required: true });
             const testId = await generateMonthlyTest(courseType, now.getMonth() + 1, now.getFullYear());
             const { rows: [gt] } = await pool.query(
                 `SELECT id, title, time_limit_min, question_count FROM generated_tests WHERE id=$1`, [testId]
@@ -375,6 +398,8 @@ function init(deps) {
         const courseType = req.body.courseType || 'NEET';
         const difficultyMode = req.body.difficultyMode || 'Mixed';
         try {
+            if (!(await isEntryTest1Complete(courseType, req.user.email)))
+                return res.status(403).json({ error: 'Complete mandatory Entry Test 1 before accessing this test.', entryTest1Required: true });
             const testId = await generateMockTest(courseType, difficultyMode, req.user.email);
             const { rows: [gt] } = await pool.query(
                 `SELECT id, title, time_limit_min, question_count FROM generated_tests WHERE id=$1`, [testId]
@@ -390,6 +415,8 @@ function init(deps) {
         if (!courseType || !subject || !Array.isArray(chapters) || chapters.length === 0)
             return res.status(400).json({ error: 'courseType, subject, and chapters array required.' });
         try {
+            if (!(await isEntryTest1Complete(courseType, req.user.email)))
+                return res.status(403).json({ error: 'Complete mandatory Entry Test 1 before accessing this test.', entryTest1Required: true });
             const testId = await generateChapterComboTest(courseType, subject, chapters, req.user.email);
             const { rows: [gt] } = await pool.query(
                 `SELECT id, title, time_limit_min, question_count FROM generated_tests WHERE id=$1`, [testId]
@@ -407,6 +434,8 @@ function init(deps) {
     router.get('/api/bridge/tests/grand', authenticate, requireRole('student'), async (req, res) => {
         const courseType = req.query.courseType || 'NEET';
         try {
+            if (!(await isEntryTest1Complete(courseType, req.user.email)))
+                return res.status(403).json({ error: 'Complete mandatory Entry Test 1 before accessing this test.', entryTest1Required: true });
             const { rows: [gt] } = await pool.query(
                 `SELECT id, title, time_limit_min, question_count, created_at
                  FROM generated_tests WHERE test_type='grand' AND course_type=$1 AND status='published'

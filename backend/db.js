@@ -3,6 +3,7 @@
 // centralized question bank, all test types, and faculty approval workflow.
 
 const { Pool } = require('pg');
+const { REAL_IMPORTED_QUESTIONS } = require('./real_imported_questions');
 
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
@@ -419,8 +420,15 @@ async function initSchema() {
     // Seed question bank with dummy questions
     await seedQuestionBank();
 
+    // Import real Bridge Course questions (Physics/Chemistry/Botany/Zoology)
+    await importRealQuestions();
+
     // Pre-generate entry tests
     await seedEntryTests();
+
+    // If entry tests already existed from before the import above, rebuild
+    // them so they draw from the real questions instead of dummy ones
+    await migrateEntryTestsToRealQuestions();
 
     // Seed default admin
     const { rows: adminRows } = await pool.query(`SELECT id FROM users WHERE role = 'admin' LIMIT 1`);
@@ -606,8 +614,76 @@ async function seedQuestionBank() {
 }
 
 // ---------------------------------------------------------------------------
-// GENERATE ENTRY TESTS (3 per course, fixed for all students)
+// REAL QUESTION IMPORT — Bridge Course source material (Physics, Chemistry,
+// Botany, Zoology). Replaces reliance on dummy questions for these subjects.
+// Botany & Zoology share the same underlying Biology questions. Idempotent:
+// tagged via subtopic = 'bridge_course_import' so it only inserts once even
+// if the server restarts many times.
 // ---------------------------------------------------------------------------
+async function importRealQuestions() {
+    const { rows: [{ c }] } = await pool.query(
+        `SELECT COUNT(*) AS c FROM question_bank WHERE subtopic = 'bridge_course_import'`
+    );
+    if (parseInt(c, 10) > 0) return; // already imported
+
+    const CHUNK = 200;
+    for (let i = 0; i < REAL_IMPORTED_QUESTIONS.length; i += CHUNK) {
+        const chunk = REAL_IMPORTED_QUESTIONS.slice(i, i + CHUNK);
+        const values = [];
+        const params = [];
+        let p = 0;
+        for (const q of chunk) {
+            const row = [
+                q.course_type, q.subject, q.chapter_name, q.topic, 'bridge_course_import',
+                q.question_text, q.option_a, q.option_b, q.option_c, q.option_d,
+                q.correct_answer, q.explanation, q.difficulty, q.estimated_time
+            ];
+            values.push(`(${row.map(() => `$${++p}`).join(',')},'approved')`);
+            params.push(...row);
+        }
+        await pool.query(
+            `INSERT INTO question_bank
+             (course_type, subject, chapter_name, topic, subtopic,
+              question_text, option_a, option_b, option_c, option_d,
+              correct_answer, explanation, difficulty, estimated_time, status)
+             VALUES ${values.join(',')}`,
+            params
+        );
+    }
+    console.log(`✅  Imported ${REAL_IMPORTED_QUESTIONS.length} real Bridge Course questions (Physics/Chemistry/Botany/Zoology)`);
+}
+
+// ---------------------------------------------------------------------------
+// ENTRY TEST MIGRATION — if entry tests were already generated (e.g. on an
+// existing dev database) before the real questions above were imported,
+// they'd still be built from dummy questions. This checks whether any
+// current entry-test question is real (non-dummy) content; if not, it wipes
+// just the entry tests (not any other test type) and lets seedEntryTests()
+// rebuild them — which now prefers real questions (see seedEntryTests below).
+// Safe to run on every startup: it's a no-op once entry tests are real.
+// ---------------------------------------------------------------------------
+async function migrateEntryTestsToRealQuestions() {
+    const { rows: [{ c }] } = await pool.query(`
+        SELECT COUNT(*) AS c
+        FROM entry_tests et
+        JOIN generated_test_questions gtq ON gtq.test_id = et.test_id
+        JOIN question_bank qb ON qb.id = gtq.question_id
+        WHERE qb.subtopic = 'bridge_course_import'
+    `);
+    if (parseInt(c, 10) > 0) return; // already using real questions
+
+    const { rows: ets } = await pool.query(`SELECT test_id FROM entry_tests`);
+    if (ets.length === 0) return; // nothing generated yet — seedEntryTests() will handle it fresh
+
+    const testIds = ets.map(r => r.test_id);
+    await pool.query(`DELETE FROM generated_test_questions WHERE test_id = ANY($1::int[])`, [testIds]);
+    await pool.query(`DELETE FROM entry_tests`);
+    await pool.query(`DELETE FROM generated_tests WHERE id = ANY($1::int[])`, [testIds]);
+
+    await seedEntryTests();
+    console.log('✅  Regenerated entry tests using real Bridge Course questions');
+}
+
 async function seedEntryTests() {
     const { rows } = await pool.query(`SELECT COUNT(*) AS c FROM entry_tests`);
     if (parseInt(rows[0].c, 10) > 0) return;
@@ -627,11 +703,15 @@ async function seedEntryTests() {
             let position = 0;
 
             for (const [subject, count] of Object.entries(dist)) {
-                // offset by testNum so each entry test gets different questions
+                // offset by testNum so each entry test gets different questions.
+                // Real (imported) questions are ordered before dummy/sample
+                // ones so entry tests are filled with real content first,
+                // only falling back to dummy questions if there isn't
+                // enough real supply for a subject.
                 const { rows: questions } = await pool.query(
                     `SELECT id FROM question_bank
                      WHERE course_type = $1 AND subject = $2 AND status = 'approved'
-                     ORDER BY id
+                     ORDER BY COALESCE(subtopic = 'bridge_course_import', false) DESC, id
                      LIMIT $3 OFFSET $4`,
                     [courseType, subject, count, (testNum - 1) * count]
                 );
