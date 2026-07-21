@@ -1926,7 +1926,6 @@ function renderSubjectPage(subject) {
     physicsContent.style.display = '';
     genericContent.style.display = 'none';
     renderPhysicsDashboard();
-    renderPhysicsEntryTests();
     renderPhysicsMaterials();
     renderPhysicsLectures();
     renderPhysicsAnalytics();
@@ -1992,7 +1991,6 @@ async function renderPhysicsDashboard() {
   try {
     const d = await api('/api/physics/dashboard');
     el.innerHTML = `
-      ${d.entryTest1Required ? `<div class="badge warn mt-1">⚠️ Complete the mandatory Entry Test 1 below to unlock the full Physics learning system.</div>` : ''}
       <div class="flex-between mt-1">
         <span>Current level</span>
         ${proficiencyBadge(d.currentLevel)}
@@ -2485,13 +2483,15 @@ async function loadBridgeCurriculum() {
 async function initBridgePage() {
     bridgeActiveCourseType = document.getElementById('bridgeCourseSelect').value || 'NEET';
 
-    // Load entry tests
+    // Load entry tests. Entry Test 1 is mandatory: every other test in the
+    // Test Centre stays locked until it's completed.
+    let entryTest1Done = false;
     try {
         const entries = await api(`/api/bridge/entry-tests?courseType=${bridgeActiveCourseType}`);
         const container = document.getElementById('bridgeEntryTests');
         container.innerHTML = entries.map(et => `
             <div class="card" style="text-align:center;">
-                <h4>${et.title}</h4>
+                <h4>${et.title} ${et.test_number === 1 ? '<span class="badge warn">Mandatory</span>' : ''}</h4>
                 <p style="font-size:.85rem; color:var(--ink-soft);">90 Questions · 3 hours</p>
                 ${et.submitted_at
                     ? `<p style="color:green; font-size:.85rem;">✅ Completed — Score: ${et.score}/${et.total}</p>`
@@ -2499,72 +2499,121 @@ async function initBridgePage() {
                 }
             </div>
         `).join('');
+        const test1 = entries.find(e => e.test_number === 1);
+        entryTest1Done = !test1 || !!test1.submitted_at;
     } catch (err) {
         document.getElementById('bridgeEntryTests').innerHTML = '<p style="color:var(--ink-soft);">Entry tests not available yet.</p>';
     }
 
-    // Load daily test status
-    try {
-        const daily = await api(`/api/bridge/tests/daily?courseType=${bridgeActiveCourseType}`);
-        document.getElementById('bridgeDailyInfo').innerHTML = daily.alreadyAttempted
-            ? `<p style="color:green; font-size:.9rem;">✅ Completed today</p>`
-            : `<p style="font-size:.85rem; color:var(--ink-soft);">${daily.test.title}</p>`;
-        document.getElementById('startDailyBtn').onclick = () => startGeneratedTest(daily.test.id, daily.test.title, daily.alreadyAttempted);
-    } catch (err) { document.getElementById('bridgeDailyInfo').innerHTML = '<p style="font-size:.85rem;">Loading...</p>'; }
+    const lockNotice = '<p style="font-size:.85rem; color:var(--ink-soft);">🔒 Complete mandatory Entry Test 1 above to unlock this.</p>';
+
+    // Daily
+    const dailyBtn = document.getElementById('startDailyBtn');
+    if (!entryTest1Done) {
+        document.getElementById('bridgeDailyInfo').innerHTML = lockNotice;
+        dailyBtn.disabled = true; dailyBtn.onclick = null;
+    } else {
+        dailyBtn.disabled = false;
+        try {
+            const daily = await api(`/api/bridge/tests/daily?courseType=${bridgeActiveCourseType}`);
+            document.getElementById('bridgeDailyInfo').innerHTML = daily.alreadyAttempted
+                ? `<p style="color:green; font-size:.9rem;">✅ Completed today</p>`
+                : `<p style="font-size:.85rem; color:var(--ink-soft);">${daily.test.title}</p>`;
+            dailyBtn.onclick = () => startGeneratedTest(daily.test.id, daily.test.title, daily.alreadyAttempted);
+        } catch (err) { document.getElementById('bridgeDailyInfo').innerHTML = '<p style="font-size:.85rem;">Loading...</p>'; }
+    }
 
     // Weekly
-    try {
-        const weekly = await api(`/api/bridge/tests/weekly?courseType=${bridgeActiveCourseType}`);
-        document.getElementById('bridgeWeeklyInfo').innerHTML = weekly.alreadyAttempted
-            ? `<p style="color:green; font-size:.9rem;">✅ Completed this week</p>`
-            : `<p style="font-size:.85rem; color:var(--ink-soft);">${weekly.test.title}</p>`;
-        document.getElementById('startWeeklyBtn').onclick = () => startGeneratedTest(weekly.test.id, weekly.test.title, weekly.alreadyAttempted);
-    } catch (err) { document.getElementById('bridgeWeeklyInfo').innerHTML = '<p style="font-size:.85rem;">Loading...</p>'; }
+    const weeklyBtn = document.getElementById('startWeeklyBtn');
+    if (!entryTest1Done) {
+        document.getElementById('bridgeWeeklyInfo').innerHTML = lockNotice;
+        weeklyBtn.disabled = true; weeklyBtn.onclick = null;
+    } else {
+        weeklyBtn.disabled = false;
+        try {
+            const weekly = await api(`/api/bridge/tests/weekly?courseType=${bridgeActiveCourseType}`);
+            document.getElementById('bridgeWeeklyInfo').innerHTML = weekly.alreadyAttempted
+                ? `<p style="color:green; font-size:.9rem;">✅ Completed this week</p>`
+                : `<p style="font-size:.85rem; color:var(--ink-soft);">${weekly.test.title}</p>`;
+            weeklyBtn.onclick = () => startGeneratedTest(weekly.test.id, weekly.test.title, weekly.alreadyAttempted);
+        } catch (err) { document.getElementById('bridgeWeeklyInfo').innerHTML = '<p style="font-size:.85rem;">Loading...</p>'; }
+    }
 
     // Monthly
-    try {
-        const monthly = await api(`/api/bridge/tests/monthly?courseType=${bridgeActiveCourseType}`);
-        document.getElementById('bridgeMonthlyInfo').innerHTML = monthly.alreadyAttempted
-            ? `<p style="color:green; font-size:.9rem;">✅ Completed this month</p>`
-            : `<p style="font-size:.85rem; color:var(--ink-soft);">${monthly.test.title}</p>`;
-        document.getElementById('startMonthlyBtn').onclick = () => startGeneratedTest(monthly.test.id, monthly.test.title, monthly.alreadyAttempted);
-    } catch (err) { document.getElementById('bridgeMonthlyInfo').innerHTML = '<p style="font-size:.85rem;">Loading...</p>'; }
+    const monthlyBtn = document.getElementById('startMonthlyBtn');
+    if (!entryTest1Done) {
+        document.getElementById('bridgeMonthlyInfo').innerHTML = lockNotice;
+        monthlyBtn.disabled = true; monthlyBtn.onclick = null;
+    } else {
+        monthlyBtn.disabled = false;
+        try {
+            const monthly = await api(`/api/bridge/tests/monthly?courseType=${bridgeActiveCourseType}`);
+            document.getElementById('bridgeMonthlyInfo').innerHTML = monthly.alreadyAttempted
+                ? `<p style="color:green; font-size:.9rem;">✅ Completed this month</p>`
+                : `<p style="font-size:.85rem; color:var(--ink-soft);">${monthly.test.title}</p>`;
+            monthlyBtn.onclick = () => startGeneratedTest(monthly.test.id, monthly.test.title, monthly.alreadyAttempted);
+        } catch (err) { document.getElementById('bridgeMonthlyInfo').innerHTML = '<p style="font-size:.85rem;">Loading...</p>'; }
+    }
 
     // Mock test button
-    document.getElementById('startMockBtn').onclick = async () => {
-        const diff = document.getElementById('mockDifficultySelect').value;
-        try {
-            const res = await api('/api/bridge/tests/mock', {
-                method: 'POST',
-                body: JSON.stringify({ courseType: bridgeActiveCourseType, difficultyMode: diff })
-            });
-            startGeneratedTest(res.test.id, res.test.title, false);
-        } catch (err) { showToast('Error generating mock test: ' + err.message, 'error'); }
-    };
+    const mockBtn = document.getElementById('startMockBtn');
+    const mockSelect = document.getElementById('mockDifficultySelect');
+    if (!entryTest1Done) {
+        mockBtn.disabled = true; mockBtn.onclick = null;
+        mockSelect.disabled = true;
+    } else {
+        mockBtn.disabled = false; mockSelect.disabled = false;
+        mockBtn.onclick = async () => {
+            const diff = mockSelect.value;
+            try {
+                const res = await api('/api/bridge/tests/mock', {
+                    method: 'POST',
+                    body: JSON.stringify({ courseType: bridgeActiveCourseType, difficultyMode: diff })
+                });
+                startGeneratedTest(res.test.id, res.test.title, false);
+            } catch (err) { showToast('Error generating mock test: ' + err.message, 'error'); }
+        };
+    }
 
     // Chapter combo setup
-    await setupChapterComboUI();
+    const comboBtn = document.getElementById('startComboBtn');
+    const comboSelect = document.getElementById('comboSubjectSelect');
+    if (!entryTest1Done) {
+        comboBtn.disabled = true;
+        comboSelect.disabled = true;
+        document.getElementById('comboChapterList').innerHTML = lockNotice;
+    } else {
+        comboBtn.disabled = false;
+        comboSelect.disabled = false;
+        await setupChapterComboUI();
+    }
 
     // Grand test — published by faculty, students just take it.
-    try {
-        const grand = await api(`/api/bridge/tests/grand?courseType=${bridgeActiveCourseType}`);
-        const grandBtn = document.getElementById('startGrandBtn');
-        if (!grand.available) {
-            grandBtn.disabled = true;
-            grandBtn.style.display = 'none';
-            if (document.getElementById('bridgeGrandInfo'))
-                document.getElementById('bridgeGrandInfo').innerHTML = '<p style="font-size:.9rem; color:var(--ink-soft);">No test available at the moment.</p>';
-        } else {
-            grandBtn.disabled = false;
-            grandBtn.style.display = '';
-            grandBtn.textContent = grand.alreadyAttempted ? 'Already completed' : 'Attempt Test';
-            if (document.getElementById('bridgeGrandInfo'))
-                document.getElementById('bridgeGrandInfo').innerHTML = grand.alreadyAttempted
-                    ? `<p style="color:green; font-size:.9rem;">✅ Completed — ${grand.test.title}</p>`
-                    : `<p style="font-size:.85rem; color:var(--ink-soft);">${grand.test.title}</p>`;
-            grandBtn.onclick = () => startGeneratedTest(grand.test.id, grand.test.title, grand.alreadyAttempted);
-        }
-    } catch (err) { showToast('Error loading grand test: ' + err.message, 'error'); }
+    const grandBtn = document.getElementById('startGrandBtn');
+    if (!entryTest1Done) {
+        grandBtn.disabled = true; grandBtn.onclick = null;
+        if (document.getElementById('bridgeGrandInfo'))
+            document.getElementById('bridgeGrandInfo').innerHTML = lockNotice;
+    } else {
+        try {
+            const grand = await api(`/api/bridge/tests/grand?courseType=${bridgeActiveCourseType}`);
+            if (!grand.available) {
+                grandBtn.disabled = true;
+                grandBtn.style.display = 'none';
+                if (document.getElementById('bridgeGrandInfo'))
+                    document.getElementById('bridgeGrandInfo').innerHTML = '<p style="font-size:.9rem; color:var(--ink-soft);">No test available at the moment.</p>';
+            } else {
+                grandBtn.disabled = false;
+                grandBtn.style.display = '';
+                grandBtn.textContent = grand.alreadyAttempted ? 'Already completed' : 'Attempt Test';
+                if (document.getElementById('bridgeGrandInfo'))
+                    document.getElementById('bridgeGrandInfo').innerHTML = grand.alreadyAttempted
+                        ? `<p style="color:green; font-size:.9rem;">✅ Completed — ${grand.test.title}</p>`
+                        : `<p style="font-size:.85rem; color:var(--ink-soft);">${grand.test.title}</p>`;
+                grandBtn.onclick = () => startGeneratedTest(grand.test.id, grand.test.title, grand.alreadyAttempted);
+            }
+        } catch (err) { showToast('Error loading grand test: ' + err.message, 'error'); }
+    }
 
     // Test history
     await loadBridgeHistory();
