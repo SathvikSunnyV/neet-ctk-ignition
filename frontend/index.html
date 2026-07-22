@@ -42,7 +42,23 @@
       <div class="eyebrow">Connectomic Theory of Knowledge</div>
       <h1>Climb the Seven Hills.<br>Connect the concepts.<br>Reach your Target.</h1>
       <p class="lead">A calm, intelligent learning companion that turns isolated exam facts into a connected map of understanding — built around Prof. Konuri's Seven Hills of Knowledge.</p>
-      <button class="btn btn-primary" id="startNowBtn">Start Your Journey →</button>
+      <button class="btn btn-primary" id="startNowBtn" style="display:none;">Start Your Journey →</button>
+
+      <div class="eyebrow" style="margin-bottom:0.75rem;">Choose Your Path</div>
+      <div class="grid-3" style="text-align:left; max-width:920px; margin:0 auto 1rem;">
+        <div class="card" style="text-align:center; cursor:pointer;" onclick="showPage('login')">
+          <h3>🧬 NEET</h3>
+          <p style="color:var(--ink-soft); font-size:0.92rem;">Medical entrance preparation — Physics, Chemistry, Botany &amp; Zoology.</p>
+        </div>
+        <div class="card" style="text-align:center; cursor:pointer;" onclick="showPage('login')">
+          <h3>⚙️ JEE</h3>
+          <p style="color:var(--ink-soft); font-size:0.92rem;">Engineering entrance preparation — Physics, Chemistry &amp; Mathematics.</p>
+        </div>
+        <div class="card" style="text-align:center; cursor:pointer;" onclick="showPage('medical')">
+          <h3>🩺 MEDICAL</h3>
+          <p style="color:var(--ink-soft); font-size:0.92rem;">The Connectomic Medical Classroom — a connectomic approach to medical education.</p>
+        </div>
+      </div>
 
       <div class="ridge" aria-hidden="true">
         <svg viewBox="0 0 920 190" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
@@ -91,6 +107,145 @@
         </div> 
       </div>
     </div> -->
+  </div>
+
+  <!-- ===================== MEDICAL (Connectomic Medical Classroom) ===================== -->
+  <div id="medicalPage" class="page">
+    <style>
+      /* Scoped styles for the embedded Connectomic Medical Classroom page.
+         Every selector is prefixed with #medicalPage so it cannot leak out
+         into or be affected by the rest of the app's styles.css. */
+      #medicalPage{
+        font-family:Arial,Helvetica,sans-serif; color:#222; line-height:1.6;
+        background:#f3f3f3;
+        padding:1.5rem;
+        border-radius:var(--radius-lg);
+      }
+      #medicalPage *{ margin:0; padding:0; box-sizing:border-box; }
+      #medicalPage .mc-back{ max-width:900px; margin:0 auto 16px; padding:0 20px; }
+      #medicalPage .mc-doc{ max-width:900px; margin:0 auto 30px; background:#fff; box-shadow:0 5px 18px rgba(0,0,0,.15); font-family:Arial,Helvetica,sans-serif; color:#222; line-height:1.6; }
+      #medicalPage .mc-hero{ background:#000; color:#fff; padding:70px 50px; position:relative; overflow:hidden; }
+      #medicalPage .mc-hero:before{
+        content:"";
+        position:absolute; left:-40px; top:-30px;
+        width:170px; height:170px; border-radius:50%;
+        background:radial-gradient(circle,#ffe680,#61ff61,#3a5cff,#7a2cff);
+        filter:saturate(150%);
+      }
+      #medicalPage .mc-hero:after{
+        content:"";
+        position:absolute; right:-40px; bottom:-40px;
+        width:150px; height:150px; border-radius:50%;
+        background:radial-gradient(circle,#ffb3b3,#ff3030,#7a0000);
+      }
+      #medicalPage .mc-dna{
+        position:absolute; right:30px; top:-10px;
+        width:120px; height:120px;
+        border-right:8px solid #d46cff; border-radius:50%;
+        transform:rotate(30deg); opacity:.8;
+      }
+      #medicalPage .mc-hero h1{ font-family:Georgia,serif; font-size:60px; font-weight:400; line-height:1.05; margin-left:170px; color:#fff; }
+      #medicalPage .mc-hero p{ margin-left:170px; font-size:24px; margin-top:12px; color:#ddd; }
+      #medicalPage .mc-content{ padding:35px; }
+      #medicalPage .mc-section-title{ background:#000; color:#fff; padding:16px 22px; border-radius:10px; font-family:Georgia,serif; font-size:26px; margin:18px 0 24px; }
+      #medicalPage .mc-content p{ font-size:20px; margin-bottom:18px; }
+      #medicalPage .mc-twocol{ display:grid; grid-template-columns:1fr 1.5fr; gap:35px; margin:20px 0; }
+      #medicalPage .mc-content h3{ font-size:28px; margin-bottom:10px; }
+      #medicalPage .mc-content ul{ padding-left:28px; font-size:20px; }
+      #medicalPage .mc-content li{ margin-bottom:8px; }
+      #medicalPage .mc-content strong{ font-weight:700; }
+      #medicalPage .mc-italic{ font-style:italic; }
+      #medicalPage .mc-callout{ margin:18px 0; font-size:20px; }
+      #medicalPage .mc-footer-space{ height:50px; }
+      @media(max-width:768px){
+        #medicalPage .mc-hero h1, #medicalPage .mc-hero p{ margin-left:0; }
+        #medicalPage .mc-hero{ padding:50px 25px; }
+        #medicalPage .mc-hero h1{ font-size:42px; }
+        #medicalPage .mc-hero p{ font-size:18px; }
+        #medicalPage .mc-twocol{ grid-template-columns:1fr; }
+        #medicalPage .mc-content{ padding:20px; }
+      }
+    </style>
+
+    <div class="mc-back">
+      <button class="btn btn-outline" onclick="showPage('welcome')">← Back</button>
+    </div>
+
+    <div class="mc-doc">
+      <div class="mc-hero">
+        <div class="mc-dna"></div>
+        <h1>The Connectomic<br>Medical Classroom</h1>
+        <p>A connectomic approach to medical education</p>
+      </div>
+
+      <div class="mc-content">
+
+        <div class="mc-section-title">Introduction</div>
+
+        <p>Welcome to <span class="mc-italic">The Connectomic Classroom</span>, a dedicated space for medical students and educators seeking a deeper, more interconnected understanding of medicine. Our mission is to move beyond rote memorization and foster a robust conceptual framework that integrates anatomy, physiology, and biochemistry.</p>
+
+        <div class="mc-twocol">
+          <div>
+            <h3>Core Principles:</h3>
+            <ul>
+              <li>Conceptual Clarity</li>
+              <li>Interdisciplinary Integration</li>
+              <li>Clinical Relevance</li>
+              <li>Evidence-Based Learning</li>
+            </ul>
+          </div>
+
+          <div>
+            <p>In the Connectomic Classroom, we emphasize the importance of understanding how different areas of medical knowledge are interconnected. We believe that by building a strong "connectome" of medical concepts, students can develop a more comprehensive and lasting understanding of the human body in health and disease. Our approach is rooted in evidence-based learning strategies, prioritizing conceptual clarity and clinical relevance.</p>
+          </div>
+        </div>
+
+        <div class="mc-section-title">Key Features</div>
+
+        <p>This platform offers several features designed to enhance your learning experience:</p>
+
+        <ul>
+          <li><strong>Long-Form Educational Posts:</strong> In-depth explorations of key medical topics, designed for high readability and conceptual understanding.</li>
+          <li><strong>Annotated Diagrams &amp; Concept Maps:</strong> Visual aids to illustrate complex relationships and facilitate knowledge integration.</li>
+          <li><strong>Clinical Connectors:</strong> Dedicated callout boxes highlighting the clinical relevance of basic science concepts.</li>
+          <li><strong>Common Misconceptions:</strong> Addressing and clarifying frequently misunderstood concepts in medicine.</li>
+          <li><strong>Connectomic Summary:</strong> Concise summaries that integrate key concepts from anatomy, physiology, and biochemistry.</li>
+        </ul>
+
+        <div class="mc-section-title">Example Content: Neuroanatomy &amp; Clinical Correlation</div>
+
+        <p>Let's explore an example of how <span class="mc-italic">The Connectomic Classroom</span> approaches complex medical subjects, such as neuroanatomy:</p>
+
+        <div class="mc-twocol">
+          <div>
+            <h3>Example Topics</h3>
+            <ul>
+              <li>Corticospinal Tract</li>
+              <li>Basal Ganglia</li>
+              <li>Cerebellum</li>
+              <li>Visual Pathways</li>
+            </ul>
+          </div>
+
+          <div>
+            <p>Each post will delve into the intricate details of a specific neuroanatomical structure or pathway. We will explore not only the anatomical components but also the comparative anatomical and physiological functions involved. Furthermore, we will highlight relevant clinical correlations to solidify your understanding and demonstrate the practical application of your knowledge.</p>
+          </div>
+        </div>
+
+        <p class="mc-callout"><strong>Clinical Connector:</strong> A lesion in the corticospinal tract can lead to upper motor neuron signs, such as spasticity and hyperreflexia.</p>
+
+        <p class="mc-callout"><strong>Misconception:</strong> It's a common mistake to think that the basal ganglia only control movement. They also play a crucial role in cognition, emotions, and motivation.</p>
+
+        <p class="mc-callout"><strong>Connectomic Summary:</strong> By understanding the interconnections between the cerebral cortex, basal ganglia, thalamus, and cerebellum, we can appreciate the complexity of motor control and the diverse range of neurological disorders that can arise from dysfunction in these areas.</p>
+
+        <div class="mc-section-title">Conclusion</div>
+
+        <p><span class="mc-italic">The Connectomic Classroom</span> is designed to support medical students and educators in their pursuit of a more integrated and conceptually sound understanding of medicine. We invite you to explore the resources available on this platform and join us in building a stronger "connectome" of medical knowledge.</p>
+
+        <div class="mc-footer-space"></div>
+
+      </div>
+    </div>
   </div>
 
   <!-- ===================== REGISTER (AUTH) ===================== -->
