@@ -511,6 +511,17 @@ const TEST_SUBJECT_DIST = {
     JEE:  { Physics: 30, Chemistry: 30, Mathematics: 30 }
 };
 
+// Entry tests specifically: no real Mathematics content has been imported
+// for JEE (only Physics & Chemistry), so JEE entry tests are built from
+// Physics + Chemistry only, without a Mathematics component. NEET is
+// unaffected. This intentionally does NOT touch TEST_SUBJECT_DIST above,
+// which still governs JEE daily/weekly/monthly/mock tests (those keep
+// their Mathematics share).
+const ENTRY_TEST_SUBJECT_DIST = {
+    NEET: TEST_SUBJECT_DIST.NEET,
+    JEE:  { Physics: 45, Chemistry: 45 }
+};
+
 // Difficulty ratios per mode
 const DIFFICULTY_RATIOS = {
     Easy:     { Easy: 0.70, Moderate: 0.25, Difficult: 0.05 },
@@ -621,36 +632,44 @@ async function seedQuestionBank() {
 // if the server restarts many times.
 // ---------------------------------------------------------------------------
 async function importRealQuestions() {
-    const { rows: [{ c }] } = await pool.query(
-        `SELECT COUNT(*) AS c FROM question_bank WHERE subtopic = 'bridge_course_import'`
-    );
-    if (parseInt(c, 10) > 0) return; // already imported
+    const byCourseType = {};
+    for (const q of REAL_IMPORTED_QUESTIONS) {
+        (byCourseType[q.course_type] = byCourseType[q.course_type] || []).push(q);
+    }
 
     const CHUNK = 200;
-    for (let i = 0; i < REAL_IMPORTED_QUESTIONS.length; i += CHUNK) {
-        const chunk = REAL_IMPORTED_QUESTIONS.slice(i, i + CHUNK);
-        const values = [];
-        const params = [];
-        let p = 0;
-        for (const q of chunk) {
-            const row = [
-                q.course_type, q.subject, q.chapter_name, q.topic, 'bridge_course_import',
-                q.question_text, q.option_a, q.option_b, q.option_c, q.option_d,
-                q.correct_answer, q.explanation, q.difficulty, q.estimated_time
-            ];
-            values.push(`(${row.map(() => `$${++p}`).join(',')},'approved')`);
-            params.push(...row);
-        }
-        await pool.query(
-            `INSERT INTO question_bank
-             (course_type, subject, chapter_name, topic, subtopic,
-              question_text, option_a, option_b, option_c, option_d,
-              correct_answer, explanation, difficulty, estimated_time, status)
-             VALUES ${values.join(',')}`,
-            params
+    for (const [courseType, qs] of Object.entries(byCourseType)) {
+        const { rows: [{ c }] } = await pool.query(
+            `SELECT COUNT(*) AS c FROM question_bank WHERE subtopic = 'bridge_course_import' AND course_type = $1`,
+            [courseType]
         );
+        if (parseInt(c, 10) > 0) continue; // this course type's real questions already imported
+
+        for (let i = 0; i < qs.length; i += CHUNK) {
+            const chunk = qs.slice(i, i + CHUNK);
+            const values = [];
+            const params = [];
+            let p = 0;
+            for (const q of chunk) {
+                const row = [
+                    q.course_type, q.subject, q.chapter_name, q.topic, 'bridge_course_import',
+                    q.question_text, q.option_a, q.option_b, q.option_c, q.option_d,
+                    q.correct_answer, q.explanation, q.difficulty, q.estimated_time
+                ];
+                values.push(`(${row.map(() => `$${++p}`).join(',')},'approved')`);
+                params.push(...row);
+            }
+            await pool.query(
+                `INSERT INTO question_bank
+                 (course_type, subject, chapter_name, topic, subtopic,
+                  question_text, option_a, option_b, option_c, option_d,
+                  correct_answer, explanation, difficulty, estimated_time, status)
+                 VALUES ${values.join(',')}`,
+                params
+            );
+        }
+        console.log(`✅  Imported ${qs.length} real Bridge Course questions for ${courseType}`);
     }
-    console.log(`✅  Imported ${REAL_IMPORTED_QUESTIONS.length} real Bridge Course questions (Physics/Chemistry/Botany/Zoology)`);
 }
 
 // ---------------------------------------------------------------------------
@@ -663,33 +682,43 @@ async function importRealQuestions() {
 // Safe to run on every startup: it's a no-op once entry tests are real.
 // ---------------------------------------------------------------------------
 async function migrateEntryTestsToRealQuestions() {
-    const { rows: [{ c }] } = await pool.query(`
-        SELECT COUNT(*) AS c
-        FROM entry_tests et
-        JOIN generated_test_questions gtq ON gtq.test_id = et.test_id
-        JOIN question_bank qb ON qb.id = gtq.question_id
-        WHERE qb.subtopic = 'bridge_course_import'
-    `);
-    if (parseInt(c, 10) > 0) return; // already using real questions
+    for (const courseType of ['NEET', 'JEE']) {
+        const { rows: [{ c }] } = await pool.query(`
+            SELECT COUNT(*) AS c
+            FROM entry_tests et
+            JOIN generated_test_questions gtq ON gtq.test_id = et.test_id
+            JOIN question_bank qb ON qb.id = gtq.question_id
+            WHERE qb.subtopic = 'bridge_course_import' AND et.course_type = $1
+        `, [courseType]);
+        if (parseInt(c, 10) > 0) continue; // this course type's entry tests already real
 
-    const { rows: ets } = await pool.query(`SELECT test_id FROM entry_tests`);
-    if (ets.length === 0) return; // nothing generated yet — seedEntryTests() will handle it fresh
+        const { rows: ets } = await pool.query(
+            `SELECT test_id FROM entry_tests WHERE course_type = $1`, [courseType]
+        );
+        if (ets.length === 0) continue; // nothing generated yet for this course type — seedEntryTests() will handle it fresh
 
-    const testIds = ets.map(r => r.test_id);
-    await pool.query(`DELETE FROM generated_test_questions WHERE test_id = ANY($1::int[])`, [testIds]);
-    await pool.query(`DELETE FROM entry_tests`);
-    await pool.query(`DELETE FROM generated_tests WHERE id = ANY($1::int[])`, [testIds]);
+        const testIds = ets.map(r => r.test_id);
+        await pool.query(`DELETE FROM generated_test_questions WHERE test_id = ANY($1::int[])`, [testIds]);
+        await pool.query(`DELETE FROM entry_tests WHERE course_type = $1`, [courseType]);
+        await pool.query(`DELETE FROM generated_tests WHERE id = ANY($1::int[])`, [testIds]);
 
-    await seedEntryTests();
-    console.log('✅  Regenerated entry tests using real Bridge Course questions');
+        await seedEntryTests();
+        console.log(`✅  Regenerated ${courseType} entry tests using real Bridge Course questions`);
+    }
 }
 
 async function seedEntryTests() {
-    const { rows } = await pool.query(`SELECT COUNT(*) AS c FROM entry_tests`);
-    if (parseInt(rows[0].c, 10) > 0) return;
-
     for (const courseType of ['NEET','JEE']) {
         for (let testNum = 1; testNum <= 3; testNum++) {
+            // Per (course_type, test_number) check — NOT a global count — so
+            // e.g. adding JEE later doesn't get skipped just because NEET's
+            // entry tests already exist.
+            const { rows: existing } = await pool.query(
+                `SELECT 1 FROM entry_tests WHERE course_type = $1 AND test_number = $2`,
+                [courseType, testNum]
+            );
+            if (existing.length > 0) continue;
+
             // Create the generated_test record
             const { rows: [gt] } = await pool.query(
                 `INSERT INTO generated_tests (test_type, course_type, title, difficulty_mode, question_count, time_limit_min)
@@ -698,8 +727,10 @@ async function seedEntryTests() {
             );
             const testId = gt.id;
 
-            // Pick 90 approved questions, balanced across subjects, low overlap between tests
-            const dist = TEST_SUBJECT_DIST[courseType];
+            // Pick 90 approved questions, balanced across subjects, low overlap between tests.
+            // Uses ENTRY_TEST_SUBJECT_DIST (not TEST_SUBJECT_DIST) so JEE entry
+            // tests are Physics + Chemistry only — see note above.
+            const dist = ENTRY_TEST_SUBJECT_DIST[courseType];
             let position = 0;
 
             for (const [subject, count] of Object.entries(dist)) {
@@ -732,7 +763,7 @@ async function seedEntryTests() {
             );
         }
     }
-    console.log('✅  Pre-generated 3 entry tests each for NEET & JEE');
+    console.log('✅  Entry tests up to date for NEET & JEE');
 }
 
 // ---------------------------------------------------------------------------
