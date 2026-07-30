@@ -313,6 +313,23 @@ async function initSchema() {
             created_at      TIMESTAMPTZ DEFAULT NOW()
         );
 
+        -- Chapter notes: lecturer-authored HTML pages shown as-is to
+        -- students, organised simply by subject + chapter (no term /
+        -- conceptual-formulae-applications categorisation). Fully
+        -- editable by any faculty member, same shared-content model as
+        -- chapters itself -- add, edit or delete at any time.
+        CREATE TABLE IF NOT EXISTS chapter_notes (
+            id              SERIAL PRIMARY KEY,
+            chapter_id      INTEGER REFERENCES chapters(id) ON DELETE CASCADE,
+            subject         TEXT NOT NULL,
+            title           TEXT NOT NULL,
+            html_content    TEXT NOT NULL,
+            position        INTEGER NOT NULL DEFAULT 0,
+            created_by      TEXT REFERENCES faculty(email) ON DELETE SET NULL,
+            created_at      TIMESTAMPTZ DEFAULT NOW(),
+            updated_at      TIMESTAMPTZ DEFAULT NOW()
+        );
+
         CREATE TABLE IF NOT EXISTS lecture_progress (
             student_email           TEXT REFERENCES students(email) ON DELETE CASCADE,
             lecture_id              INTEGER REFERENCES lectures(id) ON DELETE CASCADE,

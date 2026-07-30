@@ -39,7 +39,11 @@ const app  = express();
 const PORT = process.env.PORT || 4000;
 
 app.use(cors());
-app.use(express.json());
+// Default body-parser limit is 100kb, which is too small for chapter notes
+// (self-contained HTML pages with inline CSS/JS/canvas can easily run into
+// several hundred KB or more). Raised generously so faculty can paste in
+// notes "as large as possible" without hitting PayloadTooLargeError.
+app.use(express.json({ limit: '50mb' }));
 app.use(express.static(path.join(__dirname, '..', 'frontend')));
 
 // Question bank & test engine (additive)
@@ -752,18 +756,31 @@ app.delete('/api/faculty/lectures/:id', authenticate, requireRole('faculty'), as
 
 // ---------------------------------------------------------------------------
 // List chapters for a subject (any authenticated user — faculty use this to
-// populate dropdowns when uploading materials/tests/lectures; students use
-// it to browse chapter-wise).
+// populate dropdowns when uploading materials/tests/lectures/notes; students
+// use it to browse chapter-wise).
+//
+// This endpoint is intentionally NOT course-aware (unlike /api/qbank/chapters)
+// -- materials/lectures/notes are shown by subject only, regardless of NEET
+// vs JEE. But CURRICULUM seeds identical Physics/Chemistry chapter names for
+// both NEET and JEE (see db.js), so the underlying `chapters` table has two
+// rows per shared chapter name -- one per course_type. Without de-duplication
+// every one of those showed up twice in every dropdown here. DISTINCT ON
+// collapses each chapter name down to a single row, preferring the NEET one
+// when both exist (arbitrary but consistent) so any subject/chapter-linked
+// content keeps pointing at the same row it always has.
 // ---------------------------------------------------------------------------
 app.get('/api/chapters', authenticate, async (req, res) => {
     const subject = req.query.subject || 'Physics';
     try {
         const { rows } = await pool.query(
-            `SELECT c.*,
-                    (SELECT COUNT(*) FROM materials m WHERE m.chapter_id = c.id) AS material_count,
-                    (SELECT COUNT(*) FROM tests t WHERE t.chapter_id = c.id) AS test_count,
-                    (SELECT COUNT(*) FROM lectures l WHERE l.chapter_id = c.id) AS lecture_count
-             FROM chapters c WHERE c.subject = $1 ORDER BY c.position ASC, c.created_at ASC`,
+            `SELECT * FROM (
+                SELECT DISTINCT ON (c.name) c.*,
+                        (SELECT COUNT(*) FROM materials m WHERE m.chapter_id = c.id) AS material_count,
+                        (SELECT COUNT(*) FROM tests t WHERE t.chapter_id = c.id) AS test_count,
+                        (SELECT COUNT(*) FROM lectures l WHERE l.chapter_id = c.id) AS lecture_count
+                 FROM chapters c WHERE c.subject = $1
+                 ORDER BY c.name, (c.course_type = 'NEET') DESC, c.position ASC, c.created_at ASC
+             ) deduped ORDER BY deduped.position ASC, deduped.created_at ASC`,
             [subject]
         );
         res.json(rows);
@@ -863,6 +880,95 @@ app.post('/api/faculty/chapters/reorder', authenticate, requireRole('faculty'), 
         res.status(500).json({ error: 'Server error while reordering chapters.' });
     } finally {
         client.release();
+    }
+});
+
+// ===========================================================================
+// CHAPTER NOTES — lecturer-authored HTML pages shown as-is to students,
+// organised simply by subject + chapter (no term / conceptual-formulae-
+// applications categorisation). Shared curriculum content like `chapters`
+// itself — any authenticated faculty member can add, edit or delete any
+// note, not just the ones they personally created.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// List notes for a chapter (any authenticated user — students read, faculty
+// use this to see what's already published before adding/editing).
+// ---------------------------------------------------------------------------
+app.get('/api/chapters/:chapterId/notes', authenticate, async (req, res) => {
+    try {
+        const { rows } = await pool.query(
+            `SELECT id, chapter_id, subject, title, html_content, position, created_by, created_at, updated_at
+             FROM chapter_notes WHERE chapter_id = $1 ORDER BY position ASC, created_at ASC`,
+            [req.params.chapterId]
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server error while listing chapter notes.' });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// FACULTY: publish a new HTML note for a chapter
+// ---------------------------------------------------------------------------
+app.post('/api/faculty/chapter-notes', authenticate, requireRole('faculty'), async (req, res) => {
+    const { chapterId, title, htmlContent } = req.body;
+    if (!chapterId) return res.status(400).json({ error: 'A chapter is required.' });
+    if (!title?.trim() || !htmlContent?.trim())
+        return res.status(400).json({ error: 'Title and HTML content are required.' });
+
+    try {
+        const chapterRow = await resolveChapter(chapterId);
+        if (!chapterRow) return res.status(404).json({ error: 'Chapter not found.' });
+
+        const { rows: [maxPos] } = await pool.query(
+            `SELECT COALESCE(MAX(position), -1) AS max_pos FROM chapter_notes WHERE chapter_id = $1`, [chapterId]
+        );
+        const { rows: [note] } = await pool.query(
+            `INSERT INTO chapter_notes (chapter_id, subject, title, html_content, position, created_by)
+             VALUES ($1,$2,$3,$4,$5,$6) RETURNING *`,
+            [chapterId, chapterRow.subject, title.trim(), htmlContent, parseInt(maxPos.max_pos, 10) + 1, req.user.email]
+        );
+        res.status(201).json({ success: true, note });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server error while saving the note.' });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// FACULTY: edit a note's title and/or HTML content
+// ---------------------------------------------------------------------------
+app.put('/api/faculty/chapter-notes/:id', authenticate, requireRole('faculty'), async (req, res) => {
+    const { title, htmlContent } = req.body;
+    if (!title?.trim() || !htmlContent?.trim())
+        return res.status(400).json({ error: 'Title and HTML content are required.' });
+
+    try {
+        const { rows: [note] } = await pool.query(
+            `UPDATE chapter_notes SET title = $1, html_content = $2, updated_at = NOW() WHERE id = $3 RETURNING *`,
+            [title.trim(), htmlContent, req.params.id]
+        );
+        if (!note) return res.status(404).json({ error: 'Note not found.' });
+        res.json({ success: true, note });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server error while updating the note.' });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// FACULTY: delete a note
+// ---------------------------------------------------------------------------
+app.delete('/api/faculty/chapter-notes/:id', authenticate, requireRole('faculty'), async (req, res) => {
+    try {
+        const { rowCount } = await pool.query(`DELETE FROM chapter_notes WHERE id = $1`, [req.params.id]);
+        if (rowCount === 0) return res.status(404).json({ error: 'Note not found.' });
+        res.json({ success: true });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server error while deleting the note.' });
     }
 });
 
