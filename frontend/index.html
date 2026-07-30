@@ -28,6 +28,7 @@
       <button class="nav-btn" data-page="practice" id="navPractice" style="display:none;">Practice</button>
       <button class="nav-btn" data-page="progress" id="navProgress" style="display:none;">Progress</button>
       <button class="nav-btn" data-page="physics" id="navPhysics" style="display:none;">📖 Subjects</button>
+      <button class="nav-btn" data-page="chapterNotes" id="navChapterNotes" style="display:none;">📝 Notes</button>
       <button class="nav-btn" data-page="bridge" id="navBridge" style="display:none;">Test Centre</button>
       <button class="nav-btn" data-page="qbank" id="navQBank" style="display:none;">Question Bank</button>
       <button class="nav-btn" data-page="lecturer" id="navLecturer" style="display:none;">Lecturer Hub</button>
@@ -562,6 +563,33 @@
     </div>
   </div>
 
+  <!-- ===================== CHAPTER NOTES (STUDENT VIEW) ===================== -->
+  <div id="chapterNotesPage" class="page">
+    <div class="hero" style="padding: 1rem 1rem 1.75rem;">
+      <div class="eyebrow">Chapter-wise notes</div>
+      <h1 style="font-size: clamp(1.7rem, 4vw, 2.4rem);">📝 Chapter Notes</h1>
+      <p class="lead" style="margin-bottom:0;">Pick a subject and chapter to read the notes your faculty has published.</p>
+    </div>
+
+    <div class="card">
+      <div class="grid-2">
+        <div class="field-group">
+          <label class="field-label" for="notesViewSubjectSelect">Subject</label>
+          <select id="notesViewSubjectSelect" class="field"><option>Physics</option><option>Chemistry</option><option>Biology</option></select>
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="notesViewChapterSelect">Chapter</label>
+          <select id="notesViewChapterSelect" class="field"></select>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Notes</h3>
+      <div id="notesViewList" class="mt-2"></div>
+    </div>
+  </div>
+
   <!-- ===================== ADMIN PORTAL (separate from student/faculty login) ===================== -->
   <div id="adminLoginPage" class="page">
     <div class="card" style="max-width:480px; margin:0 auto;">
@@ -661,6 +689,7 @@
     <div class="subnav" id="facultySubnav">
       <button class="subnav-btn active" data-fsec="fsecOverview">🏠 Overview &amp; Lectures</button>
       <button class="subnav-btn" data-fsec="fsecChapters">📂 Chapters</button>
+      <button class="subnav-btn" data-fsec="fsecNotes">📝 Chapter Notes</button>
       <button class="subnav-btn" data-fsec="fsecTests">📝 Tests</button>
       <button class="subnav-btn" data-fsec="fsecMaterials">📚 Materials</button>
       <button class="subnav-btn" data-fsec="fsecStudents">🧑‍🎓 Student Analytics</button>
@@ -740,6 +769,35 @@
       <div id="chapterList" class="mt-2"></div>
     </div>
     </div><!-- /fsecChapters -->
+
+    <!-- ===== CHAPTER NOTES MANAGEMENT ===== -->
+    <div class="faculty-section" id="fsecNotes">
+    <div class="card">
+      <h3>📝 Chapter notes</h3>
+      <p style="color:var(--ink-soft); font-size:0.92rem; margin-bottom:1rem;">Publish HTML lecture notes for a chapter — students see them rendered exactly as you provide them. Just pick a subject and chapter, paste the note's HTML, and publish. Add new notes, edit existing ones, or remove them at any time.</p>
+      <div class="grid-2">
+        <div class="field-group">
+          <label class="field-label" for="noteSubjectSelect">Subject</label>
+          <select id="noteSubjectSelect"><option>Physics</option><option>Chemistry</option><option>Biology</option></select>
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="noteChapterSelect">Chapter</label>
+          <select id="noteChapterSelect"></select>
+        </div>
+        <div class="field-group" style="grid-column:1/-1;">
+          <label class="field-label" for="newNoteTitle">Note title</label>
+          <input type="text" id="newNoteTitle" placeholder="e.g. Newton's Laws — full notes">
+        </div>
+        <div class="field-group" style="grid-column:1/-1;">
+          <label class="field-label" for="newNoteHtml">HTML content</label>
+          <textarea id="newNoteHtml" class="field" rows="8" style="width:100%; font-family:monospace;" placeholder="Paste the full HTML page for this note..."></textarea>
+        </div>
+      </div>
+      <button id="addNoteBtn" class="btn btn-primary">+ Add note</button>
+      <div id="noteMessage" class="mt-2"></div>
+      <div id="notesManageList" class="mt-2"></div>
+    </div>
+    </div><!-- /fsecNotes -->
 
     <!-- ===== TEST SCHEDULING ===== -->
     <div class="faculty-section" id="fsecTests">
@@ -1196,6 +1254,20 @@
 </div>
 
 <div id="toast"></div>
+
+<!-- ===================== FULLSCREEN NOTE VIEWER ===================== -->
+<!-- Used both for students reading a chapter note and faculty previewing
+     one before/after publishing. Covers the entire viewport like a
+     dedicated page rather than a small embedded box, and the iframe is
+     torn down on close so any running animations/timers actually stop. -->
+<div id="noteFullscreenOverlay" style="display:none; position:fixed; inset:0; z-index:9999; background:#0a0f1e; flex-direction:column;">
+  <div style="display:flex; align-items:center; justify-content:space-between; padding:0.75rem 1.25rem; background:var(--paper); border-bottom:1px solid var(--border); flex-shrink:0;">
+    <strong id="noteFullscreenTitle" style="font-size:1rem;"></strong>
+    <button class="btn btn-outline" id="noteFullscreenCloseBtn">✕ Close</button>
+  </div>
+  <iframe id="noteFullscreenFrame" style="flex:1 1 auto; width:100%; border:none; background:#fff;"></iframe>
+</div>
+
 <script src="app.js"></script>
 </body>
 </html>

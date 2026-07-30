@@ -1041,6 +1041,216 @@ window.moveChapter = async (index, direction) => {
 };
 
 // ====================================================================
+// CHAPTER NOTES — lecturer-authored HTML pages shown as-is per chapter
+// (faculty CRUD in the Lecturer Hub + a dedicated student viewing page).
+// Organised simply by subject + chapter — no term / conceptual-formulae-
+// applications categorisation.
+// ====================================================================
+let notesCache = {};
+
+function escapeHtmlText(str) {
+  return String(str).replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+}
+
+// ---- Fullscreen note viewer (shared by faculty preview + student reading) ----
+// Notes are full self-contained HTML pages (their own CSS/canvas/JS
+// animations), so they're shown covering the whole viewport like a
+// dedicated page rather than a small embedded box. `allow-scripts` is
+// required here or none of the note's JS (animations, sliders, buttons)
+// runs at all; `allow-same-origin` lets its own inline styles/canvas work
+// normally. The iframe is torn down completely on close so any
+// requestAnimationFrame loops or timers inside the note actually stop
+// instead of continuing to run invisibly in the background.
+function openNoteFullscreen(title, htmlContent) {
+  const overlay = document.getElementById('noteFullscreenOverlay');
+  document.getElementById('noteFullscreenTitle').textContent = title;
+  const oldFrame = document.getElementById('noteFullscreenFrame');
+  const freshFrame = oldFrame.cloneNode(false);
+  oldFrame.replaceWith(freshFrame);
+  freshFrame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups');
+  overlay.style.display = 'flex';
+  document.body.style.overflow = 'hidden';
+  freshFrame.srcdoc = htmlContent;
+}
+
+function closeNoteFullscreen() {
+  const overlay = document.getElementById('noteFullscreenOverlay');
+  const oldFrame = document.getElementById('noteFullscreenFrame');
+  // Replacing the iframe node (rather than just hiding it) fully unloads
+  // its document, which stops any animation loops/timers it started.
+  const freshFrame = oldFrame.cloneNode(false);
+  oldFrame.replaceWith(freshFrame);
+  overlay.style.display = 'none';
+  document.body.style.overflow = '';
+}
+window.closeNoteFullscreen = closeNoteFullscreen;
+
+async function populateNoteChapterSelect() {
+  const subject = document.getElementById('noteSubjectSelect').value;
+  const select = document.getElementById('noteChapterSelect');
+  try {
+    const chapters = await api(`/api/chapters?subject=${encodeURIComponent(subject)}`);
+    const prevValue = select.value;
+    select.innerHTML = chapters.length
+      ? chapters.map(c => `<option value="${c.id}">${c.name}</option>`).join('')
+      : `<option value="">— No chapters yet —</option>`;
+    if (chapters.some(c => String(c.id) === prevValue)) select.value = prevValue;
+    return chapters;
+  } catch (err) {
+    showToast(err.message, 'error');
+    return [];
+  }
+}
+
+async function renderNotesManageList() {
+  const container = document.getElementById('notesManageList');
+  if (!container) return;
+  const chapterId = document.getElementById('noteChapterSelect').value;
+  if (!chapterId) { container.innerHTML = `<div class="empty-state"><p>Create a chapter first (in the Chapters tab), then add notes here.</p></div>`; return; }
+  container.innerHTML = `<div class="loading-row"><div class="spinner"></div></div>`;
+  try {
+    const notes = await api(`/api/chapters/${chapterId}/notes`);
+    notes.forEach(n => { notesCache[n.id] = n; });
+    container.innerHTML = notes.length ? notes.map(n => `
+      <div class="card" style="margin-top:0.75rem;" id="noteRow-${n.id}">
+        <div class="flex-between">
+          <strong>${escapeHtmlText(n.title)}</strong>
+          <div class="flex-row">
+            <button class="btn btn-outline" onclick="previewNoteFullscreen(${n.id})">👁 Preview</button>
+            <button class="btn btn-outline" onclick="startEditNote(${n.id})">Edit</button>
+            <button class="btn btn-outline" onclick="deleteNote(${n.id})">Delete</button>
+          </div>
+        </div>
+        <div id="noteBody-${n.id}"></div>
+      </div>`).join('') : `<div class="empty-state"><p>No notes published for this chapter yet — add one above.</p></div>`;
+  } catch (err) {
+    container.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
+  }
+}
+
+window.previewNoteFullscreen = (id) => {
+  const note = notesCache[id];
+  if (!note) return;
+  openNoteFullscreen(note.title, note.html_content);
+};
+
+window.startEditNote = (id) => {
+  const body = document.getElementById(`noteBody-${id}`);
+  const note = notesCache[id];
+  if (!body || !note) return;
+  body.dataset.open = '1';
+  body.innerHTML = `
+    <div class="mt-2">
+      <div class="field-group">
+        <label class="field-label">Title</label>
+        <input type="text" class="field" style="width:100%;" id="editNoteTitle-${id}" value="${escapeHtmlText(note.title)}">
+      </div>
+      <div class="field-group mt-1">
+        <label class="field-label">HTML content</label>
+        <textarea class="field" id="editNoteHtml-${id}" rows="8" style="width:100%; font-family:monospace;">${escapeHtmlText(note.html_content)}</textarea>
+      </div>
+      <div class="flex-row mt-1">
+        <button class="btn btn-primary" onclick="saveNoteEdit(${id})">Save</button>
+        <button class="btn btn-outline" onclick="renderNotesManageList()">Cancel</button>
+      </div>
+    </div>`;
+};
+
+window.saveNoteEdit = async (id) => {
+  const title = document.getElementById(`editNoteTitle-${id}`).value.trim();
+  const htmlContent = document.getElementById(`editNoteHtml-${id}`).value;
+  if (!title || !htmlContent.trim()) { showToast('Title and HTML content are required.', 'error'); return; }
+  try {
+    await api(`/api/faculty/chapter-notes/${id}`, { method: 'PUT', body: JSON.stringify({ title, htmlContent }) });
+    showToast('Note updated.', 'success');
+    renderNotesManageList();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+};
+
+window.deleteNote = async (id) => {
+  if (!confirm('Delete this note? This cannot be undone.')) return;
+  try {
+    await api(`/api/faculty/chapter-notes/${id}`, { method: 'DELETE' });
+    showToast('Note deleted.', '');
+    renderNotesManageList();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+};
+
+async function addNote() {
+  const btn = document.getElementById('addNoteBtn');
+  const msgEl = document.getElementById('noteMessage');
+  const chapterId = document.getElementById('noteChapterSelect').value;
+  const title = document.getElementById('newNoteTitle').value.trim();
+  const htmlContent = document.getElementById('newNoteHtml').value;
+  if (!chapterId) { msgEl.innerHTML = `<span class="badge danger">Create/select a chapter first.</span>`; return; }
+  if (!title || !htmlContent.trim()) { msgEl.innerHTML = `<span class="badge danger">Title and HTML content are required.</span>`; return; }
+  btn.disabled = true;
+  try {
+    await api('/api/faculty/chapter-notes', { method: 'POST', body: JSON.stringify({ chapterId, title, htmlContent }) });
+    msgEl.innerHTML = `<span class="badge success">✅ Note published.</span>`;
+    document.getElementById('newNoteTitle').value = '';
+    document.getElementById('newNoteHtml').value = '';
+    showToast('Note published.', 'success');
+    renderNotesManageList();
+  } catch (err) {
+    msgEl.innerHTML = `<span class="badge danger">${err.message}</span>`;
+    showToast(err.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+// ---- Student-facing Chapter Notes page ----
+async function populateNotesViewChapterSelect() {
+  const subject = document.getElementById('notesViewSubjectSelect').value;
+  const select = document.getElementById('notesViewChapterSelect');
+  try {
+    const chapters = await api(`/api/chapters?subject=${encodeURIComponent(subject)}`);
+    const prevValue = select.value;
+    select.innerHTML = chapters.length
+      ? chapters.map(c => `<option value="${c.id}">${c.name}</option>`).join('')
+      : `<option value="">— No chapters yet —</option>`;
+    if (chapters.some(c => String(c.id) === prevValue)) select.value = prevValue;
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+}
+
+async function renderNotesViewList() {
+  const container = document.getElementById('notesViewList');
+  if (!container) return;
+  const chapterId = document.getElementById('notesViewChapterSelect').value;
+  if (!chapterId) { container.innerHTML = `<div class="empty-state"><p>No chapters published for this subject yet.</p></div>`; return; }
+  container.innerHTML = `<div class="loading-row"><div class="spinner"></div></div>`;
+  try {
+    const notes = await api(`/api/chapters/${chapterId}/notes`);
+    notes.forEach(n => { notesCache[n.id] = n; });
+    container.innerHTML = notes.length ? notes.map(n => `
+      <div class="flex-between" style="padding:0.75rem 0; border-bottom:1px solid var(--border);">
+        <strong>${escapeHtmlText(n.title)}</strong>
+        <button class="btn btn-primary" onclick="openStudentNote(${n.id})">📖 Read note</button>
+      </div>`).join('') : `<div class="empty-state"><p>No notes published for this chapter yet.</p></div>`;
+  } catch (err) {
+    container.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
+  }
+}
+
+window.openStudentNote = (id) => {
+  const note = notesCache[id];
+  if (!note) return;
+  openNoteFullscreen(note.title, note.html_content);
+};
+
+async function loadChapterNotesPage() {
+  await populateNotesViewChapterSelect();
+  renderNotesViewList();
+}
+
+// ====================================================================
 // GRAND TEST DRAFT EDITOR — FACULTY
 // Faculty can preview every generated question, edit any of them, and
 // paste extra questions (AI-arranged) to replace generated ones -- the
@@ -2303,7 +2513,7 @@ async function renderPhysicsRecommendations() {
 // NAVIGATION
 // ====================================================================
 const AUTH_REQUIRED_PAGES = {
-  guidance: 'student', practice: 'student', progress: 'student', physics: 'student',
+  guidance: 'student', practice: 'student', progress: 'student', physics: 'student', chapterNotes: 'student',
   onboarding: 'student', lecturer: 'faculty', facultyDashboard: 'faculty', admin: 'admin'
 };
 
@@ -2332,11 +2542,13 @@ function showPage(pageId) {
   if (pageId === 'practice') renderPractice();
   if (pageId === 'progress') renderProgress();
   if (pageId === 'physics') loadPhysicsModule();
+  if (pageId === 'chapterNotes') loadChapterNotesPage();
   if (pageId === 'lecturer') {
     renderMySubmissions(); renderFacultyTests(); renderFacultyAnalytics(); renderFacultyMaterials();
     populateChapterSelects(); renderChapterList(); renderFacLectures();
     populateStudentAnalyticsSelect(); renderErrorAtlas(); renderGrandTestsList();
     loadFacultyExamDate();
+    populateNoteChapterSelect().then(renderNotesManageList);
   }
   if (pageId === 'onboarding') prefillOnboarding();
   if (pageId === 'admin') {
@@ -2359,6 +2571,7 @@ function updateNavForAuth() {
   document.getElementById('navPractice').style.display    = (loggedIn && role === 'student') ? '' : 'none';
   document.getElementById('navProgress').style.display    = (loggedIn && role === 'student') ? '' : 'none';
   document.getElementById('navPhysics').style.display     = (loggedIn && role === 'student') ? '' : 'none';
+  document.getElementById('navChapterNotes').style.display = (loggedIn && role === 'student') ? '' : 'none';
   document.getElementById('navBridge').style.display      = (loggedIn && role === 'student') ? '' : 'none';
   document.getElementById('navQBank').style.display       = (loggedIn && (role === 'faculty' || role === 'admin')) ? '' : 'none';
   document.getElementById('navLecturer').style.display    = (loggedIn && role === 'faculty') ? '' : 'none';
@@ -2422,6 +2635,23 @@ window.onload = () => {
   // analytics, Error Atlas.
   document.getElementById('chapterSubjectSelect').onchange = () => { populateChapterSelects(); renderChapterList(); };
   document.getElementById('createChapterBtn').onclick = createChapter;
+
+  // Chapter Notes — faculty management
+  document.getElementById('noteSubjectSelect').onchange = () => { populateNoteChapterSelect().then(renderNotesManageList); };
+  document.getElementById('noteChapterSelect').onchange = renderNotesManageList;
+  document.getElementById('addNoteBtn').onclick = addNote;
+
+  // Chapter Notes — student viewing page
+  document.getElementById('notesViewSubjectSelect').onchange = () => { populateNotesViewChapterSelect().then(renderNotesViewList); };
+  document.getElementById('notesViewChapterSelect').onchange = renderNotesViewList;
+
+  // Fullscreen note viewer — close via button or Escape key
+  document.getElementById('noteFullscreenCloseBtn').onclick = closeNoteFullscreen;
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && document.getElementById('noteFullscreenOverlay').style.display === 'flex') {
+      closeNoteFullscreen();
+    }
+  });
   document.getElementById('cancelMaterialEditBtn').onclick = resetMaterialForm;
   document.getElementById('facLectureSaveBtn').onclick = saveFacLecture;
   document.getElementById('cancelFacLectureEditBtn').onclick = resetFacLectureForm;
