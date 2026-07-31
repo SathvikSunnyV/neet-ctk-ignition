@@ -1170,6 +1170,130 @@ app.get('/api/admin/feedback', authenticate, requireRole('admin'), async (req, r
     res.json(rows);
 });
 
+// ===========================================================================
+// ADMIN — USER MANAGEMENT (students + faculty) & impersonation
+//
+// Gives admin full control over accounts: list everyone, permanently
+// remove an account (login row + profile row + their email, so they can
+// no longer sign in and their email is free to re-register), and "view
+// as" a specific student or faculty account to see exactly what they see
+// -- not a summary, their actual dashboard/Lecturer Hub.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// List every student account (for the admin Manage Students panel).
+// ---------------------------------------------------------------------------
+app.get('/api/admin/students', authenticate, requireRole('admin'), async (req, res) => {
+    try {
+        const { rows } = await pool.query(
+            `SELECT s.email, s.name, s.category, s.aim, s.target_exam, s.created_at, u.is_verified
+             FROM students s
+             LEFT JOIN users u ON u.email = s.email
+             ORDER BY s.created_at DESC`
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server error while listing students.' });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// List every faculty account (for the admin Manage Lecturers panel).
+// ---------------------------------------------------------------------------
+app.get('/api/admin/faculty', authenticate, requireRole('admin'), async (req, res) => {
+    try {
+        const { rows } = await pool.query(
+            `SELECT f.email, f.name, f.department, f.created_at, u.is_verified
+             FROM faculty f
+             LEFT JOIN users u ON u.email = f.email
+             ORDER BY f.created_at DESC`
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server error while listing faculty.' });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// Permanently delete a student: removes their login (users) row AND their
+// students-table row (their email is not a foreign key of `users`, so both
+// have to be deleted explicitly). Everything owned by the student — progress,
+// targets, test attempts, material/lecture progress, mistakes, generated
+// tests, etc. — cascades away automatically (ON DELETE CASCADE on
+// students.email). The email is fully freed up for re-registration.
+// ---------------------------------------------------------------------------
+app.delete('/api/admin/students/:email', authenticate, requireRole('admin'), async (req, res) => {
+    const email = req.params.email.toLowerCase();
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const { rows: [student] } = await client.query(`SELECT email FROM students WHERE email = $1`, [email]);
+        if (!student) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Student not found.' }); }
+        await client.query(`DELETE FROM students WHERE email = $1`, [email]);
+        await client.query(`DELETE FROM users WHERE email = $1 AND role = 'student'`, [email]);
+        await client.query('COMMIT');
+        res.json({ success: true });
+    } catch (err) {
+        await client.query('ROLLBACK');
+        console.error(err);
+        res.status(500).json({ error: 'Server error while deleting the student.' });
+    } finally {
+        client.release();
+    }
+});
+
+// ---------------------------------------------------------------------------
+// Permanently delete a faculty account: removes their login (users) row,
+// which cascades to delete the faculty-table row too (faculty.email
+// REFERENCES users(email) ON DELETE CASCADE). Chapters/materials/tests/
+// notes/question-bank entries they created are NOT deleted -- they're
+// shared curriculum content, so ownership is simply cleared (ON DELETE SET
+// NULL on every created_by/uploaded_by column) rather than losing the
+// content itself. The email is fully freed up for re-registration.
+// ---------------------------------------------------------------------------
+app.delete('/api/admin/faculty/:email', authenticate, requireRole('admin'), async (req, res) => {
+    const email = req.params.email.toLowerCase();
+    try {
+        const { rowCount } = await pool.query(`DELETE FROM users WHERE email = $1 AND role = 'faculty'`, [email]);
+        if (rowCount === 0) return res.status(404).json({ error: 'Faculty account not found.' });
+        res.json({ success: true });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server error while deleting the faculty account.' });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// Impersonate a student or faculty account: issues a real session token for
+// that account (identical in shape to a normal login token), so switching
+// into it takes the admin straight into that exact person's dashboard /
+// Lecturer Hub -- not a read-only preview. The admin's own session is kept
+// client-side and restored when they exit impersonation.
+// ---------------------------------------------------------------------------
+app.post('/api/admin/impersonate', authenticate, requireRole('admin'), async (req, res) => {
+    const email = (req.body.email || '').trim().toLowerCase();
+    const role = req.body.role;
+    if (!email || !['student', 'faculty'].includes(role))
+        return res.status(400).json({ error: 'A valid email and role (student or faculty) are required.' });
+
+    try {
+        const { rows: [user] } = await pool.query(`SELECT * FROM users WHERE email = $1 AND role = $2`, [email, role]);
+        if (!user) return res.status(404).json({ error: 'No account found with that email and role.' });
+
+        const token = signToken(user);
+        res.json({
+            success: true,
+            token,
+            user: { id: user.id, name: user.name, email: user.email, role: user.role, onboardingDone: user.onboarding_done }
+        });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server error while starting impersonation.' });
+    }
+});
+
 // ---------------------------------------------------------------------------
 // ERROR ATLAS
 // ---------------------------------------------------------------------------
