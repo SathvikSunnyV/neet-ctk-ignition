@@ -30,7 +30,47 @@ function clearSession() {
   localStorage.removeItem('ctk_bridge_token');
   localStorage.removeItem('ctk_bridge_user');
   localStorage.removeItem('ctk_bridge_email');
+  localStorage.removeItem('ctk_bridge_admin_original');
   sessionStorage.removeItem('ctk_bridge_admin'); // retire any legacy passcode-unlocked admin session
+}
+
+// ---------------------------------------------------------- admin impersonation
+// Lets an admin "view as" a specific student or faculty account -- their
+// real dashboard/Lecturer Hub, not a summary. The admin's own session is
+// stashed separately (survives a refresh) and restored on exit.
+function startImpersonation(token, user) {
+  // Stash the admin's own session the first time only, so repeatedly
+  // switching between accounts never overwrites the real admin session.
+  if (!localStorage.getItem('ctk_bridge_admin_original')) {
+    localStorage.setItem('ctk_bridge_admin_original', JSON.stringify({ token: authToken, user: currentUser }));
+  }
+  setSession(token, user);
+  updateImpersonationBanner();
+  updateNavForAuth();
+  showPage(user.role === 'student' ? 'guidance' : 'lecturer');
+}
+
+function exitImpersonation() {
+  const stashed = localStorage.getItem('ctk_bridge_admin_original');
+  if (!stashed) return;
+  const { token, user } = JSON.parse(stashed);
+  localStorage.removeItem('ctk_bridge_admin_original');
+  setSession(token, user);
+  updateImpersonationBanner();
+  updateNavForAuth();
+  showPage('admin');
+}
+window.exitImpersonation = exitImpersonation;
+
+function updateImpersonationBanner() {
+  const banner = document.getElementById('impersonationBanner');
+  const stashed = localStorage.getItem('ctk_bridge_admin_original');
+  if (stashed && currentUser) {
+    banner.style.display = 'block';
+    document.getElementById('impersonationTarget').textContent = `${currentUser.name} (${currentUser.role})`;
+  } else {
+    banner.style.display = 'none';
+  }
 }
 
 // ---------------------------------------------------------------- toast
@@ -311,6 +351,7 @@ async function loginUser() {
 function logoutUser() {
   clearSession();
   updateNavForAuth();
+  updateImpersonationBanner();
   showToast('Logged out.', '');
   showPage('welcome');
 }
@@ -1924,6 +1965,9 @@ async function renderAdmin() {
     const { examDate } = await api('/api/admin/exam-date');
     document.getElementById('adminExamDate').value = examDate || '';
 
+    renderAdminStudents();
+    renderAdminFaculty();
+
     const pending = await api('/api/admin/pending-lectures');
     document.getElementById('pendingLecturesAdmin').innerHTML = pending.length ? pending.map(s => `
       <div class="card" style="margin-bottom:0.75rem; background:var(--cream-deep); border:none;">
@@ -1974,6 +2018,101 @@ async function renderAdmin() {
 
   renderCutoffCacheTable();
 }
+
+// ---- Admin: manage students (view-as + delete) ----
+let adminStudentsCache = [];
+
+async function renderAdminStudents() {
+  const container = document.getElementById('adminStudentsList');
+  if (!container) return;
+  container.innerHTML = `<div class="loading-row"><div class="spinner"></div></div>`;
+  try {
+    adminStudentsCache = await api('/api/admin/students');
+    renderAdminStudentsList(adminStudentsCache);
+  } catch (err) {
+    container.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
+  }
+}
+
+function renderAdminStudentsList(students) {
+  const container = document.getElementById('adminStudentsList');
+  if (!container) return;
+  container.innerHTML = students.length ? students.map(s => `
+    <div class="flex-between" style="padding:0.6rem 0; border-bottom:1px solid var(--border);">
+      <div>
+        <strong>${escapeHtmlText(s.name)}</strong>
+        <div class="helper-text">${escapeHtmlText(s.email)} · ${s.category || '—'} · ${s.aim || '—'} · ${s.target_exam || 'NEET'}${!s.is_verified ? ' · <span style="color:#b5482c;">unverified</span>' : ''}</div>
+      </div>
+      <div class="flex-row">
+        <button class="btn btn-outline" onclick="impersonateUser('${s.email}','student')">👁 View as</button>
+        <button class="btn btn-danger" onclick="deleteAdminStudent('${s.email}')">Delete</button>
+      </div>
+    </div>`).join('') : `<div class="empty-state"><p>No students match.</p></div>`;
+}
+
+window.deleteAdminStudent = async (email) => {
+  if (!confirm(`Permanently delete the student account for ${email}? This removes their login and all their data (progress, attempts, etc.) and cannot be undone.`)) return;
+  try {
+    await api(`/api/admin/students/${encodeURIComponent(email)}`, { method: 'DELETE' });
+    showToast('Student account deleted.', '');
+    renderAdminStudents();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+};
+
+// ---- Admin: manage faculty/lecturers (view-as + delete) ----
+let adminFacultyCache = [];
+
+async function renderAdminFaculty() {
+  const container = document.getElementById('adminFacultyList');
+  if (!container) return;
+  container.innerHTML = `<div class="loading-row"><div class="spinner"></div></div>`;
+  try {
+    adminFacultyCache = await api('/api/admin/faculty');
+    renderAdminFacultyList(adminFacultyCache);
+  } catch (err) {
+    container.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
+  }
+}
+
+function renderAdminFacultyList(faculty) {
+  const container = document.getElementById('adminFacultyList');
+  if (!container) return;
+  container.innerHTML = faculty.length ? faculty.map(f => `
+    <div class="flex-between" style="padding:0.6rem 0; border-bottom:1px solid var(--border);">
+      <div>
+        <strong>${escapeHtmlText(f.name)}</strong>
+        <div class="helper-text">${escapeHtmlText(f.email)} · ${f.department || '—'}${!f.is_verified ? ' · <span style="color:#b5482c;">unverified</span>' : ''}</div>
+      </div>
+      <div class="flex-row">
+        <button class="btn btn-outline" onclick="impersonateUser('${f.email}','faculty')">👁 View as</button>
+        <button class="btn btn-danger" onclick="deleteAdminFaculty('${f.email}')">Delete</button>
+      </div>
+    </div>`).join('') : `<div class="empty-state"><p>No lecturers match.</p></div>`;
+}
+
+window.deleteAdminFaculty = async (email) => {
+  if (!confirm(`Permanently delete the lecturer account for ${email}? This removes their login and email. Content they published (chapters, materials, tests, notes) stays published, just unowned.`)) return;
+  try {
+    await api(`/api/admin/faculty/${encodeURIComponent(email)}`, { method: 'DELETE' });
+    showToast('Lecturer account deleted.', '');
+    renderAdminFaculty();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+};
+
+// ---- Admin: impersonate (view as a specific student/faculty account) ----
+window.impersonateUser = async (email, role) => {
+  try {
+    const data = await api('/api/admin/impersonate', { method: 'POST', body: JSON.stringify({ email, role }) });
+    startImpersonation(data.token, data.user);
+    showToast(`Now viewing as ${data.user.name}.`, 'success');
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+};
 
 async function renderCutoffCacheTable() {
   const tableEl = document.getElementById('cutoffCacheTable');
@@ -2612,6 +2751,15 @@ window.onload = () => {
   document.getElementById('setExamDateBtn').onclick = setExamDate;
   document.getElementById('resetAllDataBtn').onclick = resetAllData;
   document.getElementById('refreshCutoffCacheBtn').onclick = refreshCutoffCache;
+  document.getElementById('exitImpersonationBtn').onclick = exitImpersonation;
+  document.getElementById('adminStudentSearch').oninput = (e) => {
+    const q = e.target.value.trim().toLowerCase();
+    renderAdminStudentsList(adminStudentsCache.filter(s => s.name.toLowerCase().includes(q) || s.email.toLowerCase().includes(q)));
+  };
+  document.getElementById('adminFacultySearch').oninput = (e) => {
+    const q = e.target.value.trim().toLowerCase();
+    renderAdminFacultyList(adminFacultyCache.filter(f => f.name.toLowerCase().includes(q) || f.email.toLowerCase().includes(q)));
+  };
 
   // Existing app features
   document.getElementById('submitLectureBtn').onclick = submitLecture;
@@ -2674,6 +2822,7 @@ window.onload = () => {
   );
 
   updateNavForAuth();
+  updateImpersonationBanner();
 
   if (currentUser?.role === 'student' && currentStudentEmail) {
     loadStudentData(currentStudentEmail).then(() => showPage('welcome'));

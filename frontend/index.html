@@ -11,6 +11,9 @@
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+<div id="impersonationBanner" style="display:none; position:sticky; top:0; z-index:1000; background:#7a3b12; color:#fff; padding:0.6rem 1rem; text-align:center; font-size:0.9rem;">
+  👁 Viewing as <strong id="impersonationTarget"></strong> — <button id="exitImpersonationBtn" style="background:#fff; color:#7a3b12; border:none; border-radius:6px; padding:0.2rem 0.7rem; font-weight:600; cursor:pointer; margin-left:0.5rem;">Exit &amp; return to Admin</button>
+</div>
 <div class="container">
 
   <!-- ===================== NAV ===================== -->
@@ -654,17 +657,32 @@
         </div>
       </div>
 
-      <div class="card">
+     <div class="card">
         <h3>🎯 Live Cutoff Data (NEET/JEE)</h3>
         <p class="helper-text">Real cutoff figures fetched from the open web and parsed by AI (see backend). Refreshes automatically every 30 days, or trigger manually below.</p>
         <button id="refreshCutoffCacheBtn" class="btn btn-primary mt-1">Refresh live cutoff data now</button>
         <div id="cutoffCacheMessage" class="mt-2"></div>
         <div id="cutoffCacheTable" class="mt-2"></div>
-      </div>
+      </div> 
 
       <div class="card">
         <h3>⏳ Pending lecturer submissions</h3>
         <div id="pendingLecturesAdmin"></div>
+      </div>
+      
+
+      <div class="card">
+        <h3>🧑‍🎓 Manage students</h3>
+        <p class="helper-text">View any student's exact dashboard as they see it, or permanently remove their account (their email is freed up for re-registration).</p>
+        <input type="text" id="adminStudentSearch" placeholder="Search by name or email..." style="margin-top:0.5rem;">
+        <div id="adminStudentsList" class="mt-2"></div>
+      </div>
+
+      <div class="card">
+        <h3>👨‍🏫 Manage lecturers</h3>
+        <p class="helper-text">View any lecturer's exact Lecturer Hub as they see it, or permanently remove their account. Chapters/materials/tests/notes they created stay published — only their ownership is cleared.</p>
+        <input type="text" id="adminFacultySearch" placeholder="Search by name or email..." style="margin-top:0.5rem;">
+        <div id="adminFacultyList" class="mt-2"></div>
       </div>
 
       <div class="card">
