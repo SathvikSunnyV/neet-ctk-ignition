@@ -32,7 +32,7 @@ function init(deps) {
     // QUESTION BANK — Faculty CRUD + approval workflow
     // ============================================================
 
-    router.post('/api/qbank/questions', authenticate, requireRole('faculty'), async (req, res) => {
+    router.post('/api/qbank/questions', authenticate, requireRole('faculty', 'admin'), async (req, res) => {
         const {
             courseType, subject, chapterName, topic, subtopic,
             questionText, optionA, optionB, optionC, optionD,
@@ -49,17 +49,23 @@ function init(deps) {
         if (!['A','B','C','D'].includes(correctAnswer))
             return res.status(400).json({ error: 'correctAnswer must be A, B, C, or D.' });
 
+        // Admin-authored questions go live immediately; faculty submissions
+        // still go through the approval queue.
+        const isAdmin = req.user.role === 'admin';
+
         try {
             const { rows: [q] } = await pool.query(
                 `INSERT INTO question_bank
                  (course_type, subject, chapter_name, topic, subtopic, question_text,
                   option_a, option_b, option_c, option_d, correct_answer,
-                  explanation, difficulty, estimated_time, status, submitted_by)
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,'pending',$15)
+                  explanation, difficulty, estimated_time, status, submitted_by, approved_by, approved_at)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
                  RETURNING id, status, created_at`,
                 [courseType, subject, chapterName, topic||null, subtopic||null, questionText,
                  optionA, optionB, optionC, optionD, correctAnswer,
-                 explanation||null, difficulty||'Moderate', estimatedTime||60, req.user.email]
+                 explanation||null, difficulty||'Moderate', estimatedTime||60,
+                 isAdmin ? 'approved' : 'pending', req.user.email,
+                 isAdmin ? req.user.email : null, isAdmin ? new Date() : null]
             );
             res.status(201).json({ success: true, question: q });
         } catch (err) {
@@ -68,26 +74,41 @@ function init(deps) {
         }
     });
 
-    router.post('/api/qbank/questions/bulk', authenticate, requireRole('faculty'), async (req, res) => {
-        const { questions } = req.body;
+    // Bulk JSON import. Admin (and faculty) picks a course type + subject
+    // once in the UI; every question in the array inherits that unless it
+    // explicitly sets its own courseType/subject. Admin-authored questions
+    // are auto-approved; faculty bulk imports still queue for approval.
+    router.post('/api/qbank/questions/bulk', authenticate, requireRole('faculty', 'admin'), async (req, res) => {
+        const { questions, courseType: defaultCourseType, subject: defaultSubject } = req.body;
         if (!Array.isArray(questions) || questions.length === 0)
             return res.status(400).json({ error: 'questions array required.' });
 
+        const isAdmin = req.user.role === 'admin';
         const inserted = [], errors = [];
         for (let i = 0; i < questions.length; i++) {
             const q = questions[i];
+            const courseType = q.courseType || defaultCourseType || 'NEET';
+            const subject = q.subject || defaultSubject;
             try {
+                if (!subject) throw new Error('subject is required (select one above, or set it per-question).');
+                if (!q.chapterName || !q.questionText || !q.optionA || !q.optionB ||
+                    !q.optionC || !q.optionD || !q.correctAnswer)
+                    throw new Error('chapterName, questionText, optionA-D, and correctAnswer are all required.');
+                if (!['A','B','C','D'].includes(q.correctAnswer))
+                    throw new Error('correctAnswer must be A, B, C, or D.');
+
                 const { rows: [row] } = await pool.query(
                     `INSERT INTO question_bank
-                     (course_type, subject, chapter_name, topic, question_text,
+                     (course_type, subject, chapter_name, topic, subtopic, question_text,
                       option_a, option_b, option_c, option_d, correct_answer,
-                      explanation, difficulty, estimated_time, status, submitted_by)
-                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'pending',$14)
+                      explanation, difficulty, estimated_time, status, submitted_by, approved_by, approved_at)
+                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
                      RETURNING id`,
-                    [q.courseType||'NEET', q.subject, q.chapterName, q.topic||null,
+                    [courseType, subject, q.chapterName, q.topic||null, q.subtopic||null,
                      q.questionText, q.optionA, q.optionB, q.optionC, q.optionD,
                      q.correctAnswer, q.explanation||null, q.difficulty||'Moderate',
-                     q.estimatedTime||60, req.user.email]
+                     q.estimatedTime||60, isAdmin ? 'approved' : 'pending', req.user.email,
+                     isAdmin ? req.user.email : null, isAdmin ? new Date() : null]
                 );
                 inserted.push(row.id);
             } catch (err) {
@@ -150,25 +171,54 @@ function init(deps) {
         }
     });
 
-    router.put('/api/qbank/questions/:id', authenticate, requireRole('faculty'), async (req, res) => {
+    router.put('/api/qbank/questions/:id', authenticate, requireRole('faculty', 'admin'), async (req, res) => {
         const { rows: [q] } = await pool.query(`SELECT * FROM question_bank WHERE id = $1`, [req.params.id]);
         if (!q) return res.status(404).json({ error: 'Not found.' });
-        if (q.submitted_by !== req.user.email)
-            return res.status(403).json({ error: 'You can only edit your own questions.' });
-        if (q.status === 'approved')
-            return res.status(400).json({ error: 'Approved questions cannot be edited.' });
 
-        const { questionText, optionA, optionB, optionC, optionD, correctAnswer, explanation, difficulty } = req.body;
+        const isAdmin = req.user.role === 'admin';
+        if (!isAdmin) {
+            if (q.submitted_by !== req.user.email)
+                return res.status(403).json({ error: 'You can only edit your own questions.' });
+            if (q.status === 'approved')
+                return res.status(400).json({ error: 'Approved questions cannot be edited.' });
+        }
+
+        const {
+            courseType, subject, chapterName, topic, subtopic,
+            questionText, optionA, optionB, optionC, optionD,
+            correctAnswer, explanation, difficulty, estimatedTime
+        } = req.body;
+
+        if (correctAnswer && !['A','B','C','D'].includes(correctAnswer))
+            return res.status(400).json({ error: 'correctAnswer must be A, B, C, or D.' });
+        if (courseType && !['NEET','JEE','BOTH'].includes(courseType))
+            return res.status(400).json({ error: 'courseType must be NEET, JEE, or BOTH.' });
+
+        // Admin edits are final and keep the question live (or approve it on
+        // the spot if it wasn't already). Faculty edits send it back for
+        // re-review, same as before.
         try {
             await pool.query(
-                `UPDATE question_bank SET question_text=$1, option_a=$2, option_b=$3, option_c=$4, option_d=$5,
-                 correct_answer=$6, explanation=$7, difficulty=$8, status='pending' WHERE id=$9`,
-                [questionText||q.question_text, optionA||q.option_a, optionB||q.option_b,
+                `UPDATE question_bank SET
+                 course_type=$1, subject=$2, chapter_name=$3, topic=$4, subtopic=$5,
+                 question_text=$6, option_a=$7, option_b=$8, option_c=$9, option_d=$10,
+                 correct_answer=$11, explanation=$12, difficulty=$13, estimated_time=$14,
+                 status=$15, approved_by=$16, approved_at=$17
+                 WHERE id=$18`,
+                [courseType||q.course_type, subject||q.subject, chapterName||q.chapter_name,
+                 topic!==undefined?topic:q.topic, subtopic!==undefined?subtopic:q.subtopic,
+                 questionText||q.question_text, optionA||q.option_a, optionB||q.option_b,
                  optionC||q.option_c, optionD||q.option_d, correctAnswer||q.correct_answer,
-                 explanation||q.explanation, difficulty||q.difficulty, req.params.id]
+                 explanation!==undefined?explanation:q.explanation, difficulty||q.difficulty,
+                 estimatedTime||q.estimated_time,
+                 isAdmin ? 'approved' : 'pending',
+                 isAdmin ? req.user.email : q.approved_by,
+                 isAdmin ? new Date() : q.approved_at,
+                 req.params.id]
             );
             res.json({ success: true });
         } catch (err) {
+            console.error(err);
             res.status(500).json({ error: 'Server error.' });
         }
     });

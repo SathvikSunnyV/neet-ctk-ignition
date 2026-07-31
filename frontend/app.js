@@ -2114,6 +2114,232 @@ window.impersonateUser = async (email, role) => {
   }
 };
 
+// ====================================================================
+// ADMIN — QUESTION BANK (MCQ) MANAGEMENT
+// Full CRUD over question_bank: browse/filter, add one, edit any,
+// delete any, and bulk-import a JSON array under a chosen course+subject.
+// ====================================================================
+let adminQuestionsCache = [];
+let adminQPage = 1;
+let adminQCache = {};
+
+function subjectsForCourse(curriculum, courseType) {
+  if (courseType && curriculum[courseType]) return Object.keys(curriculum[courseType]);
+  // "All" (no course picked) -> union of every subject across NEET/JEE
+  const set = new Set();
+  Object.values(curriculum || {}).forEach(subjMap => Object.keys(subjMap || {}).forEach(s => set.add(s)));
+  return [...set];
+}
+
+async function initAdminQuestionManagement() {
+  const curriculum = await loadBridgeCurriculum();
+
+  const wireCascade = (courseSelId, subjSelId, includeAll) => {
+    const courseSel = document.getElementById(courseSelId);
+    const subjSel = document.getElementById(subjSelId);
+    const refresh = () => {
+      const subjects = subjectsForCourse(curriculum, courseSel.value);
+      const allOption = includeAll ? `<option value="">All</option>` : '';
+      subjSel.innerHTML = allOption + subjects.map(s => `<option>${s}</option>`).join('');
+    };
+    courseSel.onchange = refresh;
+    refresh();
+  };
+
+  wireCascade('adminQCourse', 'adminQSubject', true);
+  wireCascade('newQCourse', 'newQSubject', false);
+  wireCascade('bulkQCourse', 'bulkQSubject', false);
+
+  renderAdminQuestionsList(1);
+}
+
+async function renderAdminQuestionsList(page = 1) {
+  adminQPage = page;
+  const container = document.getElementById('adminQList');
+  const pager = document.getElementById('adminQPager');
+  if (!container) return;
+  container.innerHTML = `<div class="loading-row"><div class="spinner"></div></div>`;
+
+  const params = new URLSearchParams({ page, limit: 20 });
+  const course = document.getElementById('adminQCourse').value;
+  const subject = document.getElementById('adminQSubject').value;
+  const status = document.getElementById('adminQStatus').value;
+  const chapterSearch = document.getElementById('adminQChapterSearch').value.trim();
+  if (course) params.set('courseType', course);
+  if (subject) params.set('subject', subject);
+  if (status) params.set('status', status);
+  if (chapterSearch) params.set('chapter', chapterSearch);
+
+  try {
+    const data = await api(`/api/qbank/questions?${params.toString()}`);
+    adminQuestionsCache = data.questions;
+    adminQuestionsCache.forEach(q => { adminQCache[q.id] = q; });
+    container.innerHTML = data.questions.length ? data.questions.map(q => `
+      <div class="card" style="margin-top:0.6rem;" id="adminQRow-${q.id}">
+        <div class="flex-between">
+          <div>
+            <span class="badge ${q.status === 'approved' ? 'success' : q.status === 'rejected' ? 'danger' : ''}">${q.status}</span>
+            <span class="helper-text">${q.course_type} · ${escapeHtmlText(q.subject)} · ${escapeHtmlText(q.chapter_name)} · ${q.difficulty}</span>
+          </div>
+          <div class="flex-row">
+            <button class="btn btn-outline" onclick="startEditAdminQuestion(${q.id})">Edit</button>
+            <button class="btn btn-outline" onclick="deleteAdminQuestion(${q.id})">Delete</button>
+          </div>
+        </div>
+        <p style="margin-top:0.5rem;">${escapeHtmlText(q.question_text)}</p>
+        <p class="helper-text">Correct: ${q.correct_answer}</p>
+        <div id="adminQEdit-${q.id}"></div>
+      </div>`).join('') : `<div class="empty-state"><p>No questions match these filters.</p></div>`;
+
+    const totalPages = Math.max(1, Math.ceil(data.total / data.limit));
+    pager.innerHTML = totalPages > 1 ? `
+      <button class="btn btn-outline" ${page <= 1 ? 'disabled' : ''} onclick="renderAdminQuestionsList(${page - 1})">← Prev</button>
+      <span class="helper-text">Page ${page} of ${totalPages} (${data.total} total)</span>
+      <button class="btn btn-outline" ${page >= totalPages ? 'disabled' : ''} onclick="renderAdminQuestionsList(${page + 1})">Next →</button>
+    ` : '';
+  } catch (err) {
+    container.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
+  }
+}
+
+window.startEditAdminQuestion = (id) => {
+  const q = adminQCache[id];
+  const body = document.getElementById(`adminQEdit-${id}`);
+  if (!q || !body) return;
+  body.innerHTML = `
+    <div class="mt-2" style="border-top:1px solid var(--border); padding-top:0.75rem;">
+      <div class="grid-2" style="gap:0.5rem;">
+        <div class="field-group"><label class="field-label">Chapter</label><input type="text" class="field" id="editQChapter-${id}" value="${escapeHtmlText(q.chapter_name)}"></div>
+        <div class="field-group"><label class="field-label">Topic</label><input type="text" class="field" id="editQTopic-${id}" value="${escapeHtmlText(q.topic || '')}"></div>
+        <div class="field-group" style="grid-column:1/-1;"><label class="field-label">Question text</label><textarea class="field" id="editQText-${id}" rows="2" style="width:100%;">${escapeHtmlText(q.question_text)}</textarea></div>
+        <div class="field-group"><label class="field-label">Option A</label><input type="text" class="field" id="editQA-${id}" value="${escapeHtmlText(q.option_a)}"></div>
+        <div class="field-group"><label class="field-label">Option B</label><input type="text" class="field" id="editQB-${id}" value="${escapeHtmlText(q.option_b)}"></div>
+        <div class="field-group"><label class="field-label">Option C</label><input type="text" class="field" id="editQC-${id}" value="${escapeHtmlText(q.option_c)}"></div>
+        <div class="field-group"><label class="field-label">Option D</label><input type="text" class="field" id="editQD-${id}" value="${escapeHtmlText(q.option_d)}"></div>
+        <div class="field-group">
+          <label class="field-label">Correct answer</label>
+          <select class="field" id="editQCorrect-${id}">${['A','B','C','D'].map(o => `<option ${o === q.correct_answer ? 'selected' : ''}>${o}</option>`).join('')}</select>
+        </div>
+        <div class="field-group">
+          <label class="field-label">Difficulty</label>
+          <select class="field" id="editQDifficulty-${id}">${['Easy','Moderate','Difficult'].map(o => `<option ${o === q.difficulty ? 'selected' : ''}>${o}</option>`).join('')}</select>
+        </div>
+      </div>
+      <div class="flex-row mt-1">
+        <button class="btn btn-primary" onclick="saveAdminQuestionEdit(${id})">Save</button>
+        <button class="btn btn-outline" onclick="document.getElementById('adminQEdit-${id}').innerHTML=''">Cancel</button>
+      </div>
+    </div>`;
+};
+
+window.saveAdminQuestionEdit = async (id) => {
+  const body = {
+    chapterName: document.getElementById(`editQChapter-${id}`).value.trim(),
+    topic: document.getElementById(`editQTopic-${id}`).value.trim(),
+    questionText: document.getElementById(`editQText-${id}`).value.trim(),
+    optionA: document.getElementById(`editQA-${id}`).value.trim(),
+    optionB: document.getElementById(`editQB-${id}`).value.trim(),
+    optionC: document.getElementById(`editQC-${id}`).value.trim(),
+    optionD: document.getElementById(`editQD-${id}`).value.trim(),
+    correctAnswer: document.getElementById(`editQCorrect-${id}`).value,
+    difficulty: document.getElementById(`editQDifficulty-${id}`).value
+  };
+  try {
+    await api(`/api/qbank/questions/${id}`, { method: 'PUT', body: JSON.stringify(body) });
+    showToast('Question updated.', 'success');
+    renderAdminQuestionsList(adminQPage);
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+};
+
+window.deleteAdminQuestion = async (id) => {
+  if (!confirm('Delete this question permanently?')) return;
+  try {
+    await api(`/api/qbank/questions/${id}`, { method: 'DELETE' });
+    showToast('Question deleted.', '');
+    renderAdminQuestionsList(adminQPage);
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+};
+
+async function addAdminQuestion() {
+  const msgEl = document.getElementById('addAdminQMessage');
+  const body = {
+    courseType: document.getElementById('newQCourse').value,
+    subject: document.getElementById('newQSubject').value,
+    chapterName: document.getElementById('newQChapter').value.trim(),
+    topic: document.getElementById('newQTopic').value.trim(),
+    questionText: document.getElementById('newQText').value.trim(),
+    optionA: document.getElementById('newQOptA').value.trim(),
+    optionB: document.getElementById('newQOptB').value.trim(),
+    optionC: document.getElementById('newQOptC').value.trim(),
+    optionD: document.getElementById('newQOptD').value.trim(),
+    correctAnswer: document.getElementById('newQCorrect').value,
+    difficulty: document.getElementById('newQDifficulty').value,
+    explanation: document.getElementById('newQExplanation').value.trim()
+  };
+  if (!body.chapterName || !body.questionText || !body.optionA || !body.optionB || !body.optionC || !body.optionD) {
+    msgEl.innerHTML = `<span class="badge danger">Chapter, question text, and all four options are required.</span>`;
+    return;
+  }
+  try {
+    await api('/api/qbank/questions', { method: 'POST', body: JSON.stringify(body) });
+    msgEl.innerHTML = `<span class="badge success">✅ Question added and live.</span>`;
+    showToast('Question added.', 'success');
+    ['newQChapter','newQTopic','newQText','newQOptA','newQOptB','newQOptC','newQOptD','newQExplanation']
+      .forEach(id => { document.getElementById(id).value = ''; });
+    renderAdminQuestionsList(adminQPage);
+  } catch (err) {
+    msgEl.innerHTML = `<span class="badge danger">${err.message}</span>`;
+    showToast(err.message, 'error');
+  }
+}
+
+async function bulkUploadQuestions() {
+  const msgEl = document.getElementById('bulkUploadQMessage');
+  const raw = document.getElementById('bulkQJson').value.trim();
+  if (!raw) { msgEl.innerHTML = `<span class="badge danger">Paste a JSON array of questions first.</span>`; return; }
+
+  let questions;
+  try {
+    questions = JSON.parse(raw);
+  } catch (err) {
+    msgEl.innerHTML = `<span class="badge danger">That's not valid JSON: ${err.message}</span>`;
+    return;
+  }
+  if (!Array.isArray(questions) || questions.length === 0) {
+    msgEl.innerHTML = `<span class="badge danger">Expected a JSON array of question objects, e.g. [ {...}, {...} ].</span>`;
+    return;
+  }
+
+  const btn = document.getElementById('bulkUploadQBtn');
+  btn.disabled = true;
+  try {
+    const data = await api('/api/qbank/questions/bulk', {
+      method: 'POST',
+      body: JSON.stringify({
+        courseType: document.getElementById('bulkQCourse').value,
+        subject: document.getElementById('bulkQSubject').value,
+        questions
+      })
+    });
+    const errorList = data.errors.length
+      ? `<div class="mt-1">${data.errors.map(e => `<div class="helper-text">Row ${e.index + 1}: ${escapeHtmlText(e.error)}</div>`).join('')}</div>`
+      : '';
+    msgEl.innerHTML = `<span class="badge ${data.errors.length ? '' : 'success'}">✅ ${data.inserted} question(s) added and live${data.errors.length ? `, ${data.errors.length} failed` : ''}.</span>${errorList}`;
+    showToast(`${data.inserted} question(s) uploaded.`, data.errors.length ? '' : 'success');
+    if (data.inserted > 0) document.getElementById('bulkQJson').value = '';
+    renderAdminQuestionsList(1);
+  } catch (err) {
+    msgEl.innerHTML = `<span class="badge danger">${err.message}</span>`;
+    showToast(err.message, 'error');
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 async function renderCutoffCacheTable() {
   const tableEl = document.getElementById('cutoffCacheTable');
   if (!tableEl) return;
@@ -2692,6 +2918,7 @@ function showPage(pageId) {
   if (pageId === 'onboarding') prefillOnboarding();
   if (pageId === 'admin') {
     renderAdmin();
+    initAdminQuestionManagement();
   }
   window.scrollTo({ top: 0, behavior: 'smooth' });
 }
@@ -2752,6 +2979,9 @@ window.onload = () => {
   document.getElementById('resetAllDataBtn').onclick = resetAllData;
   document.getElementById('refreshCutoffCacheBtn').onclick = refreshCutoffCache;
   document.getElementById('exitImpersonationBtn').onclick = exitImpersonation;
+  document.getElementById('adminQFilterBtn').onclick = () => renderAdminQuestionsList(1);
+  document.getElementById('addAdminQBtn').onclick = addAdminQuestion;
+  document.getElementById('bulkUploadQBtn').onclick = bulkUploadQuestions;
   document.getElementById('adminStudentSearch').oninput = (e) => {
     const q = e.target.value.trim().toLowerCase();
     renderAdminStudentsList(adminStudentsCache.filter(s => s.name.toLowerCase().includes(q) || s.email.toLowerCase().includes(q)));

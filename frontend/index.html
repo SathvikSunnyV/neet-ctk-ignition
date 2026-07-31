@@ -657,19 +657,18 @@
         </div>
       </div>
 
-     <div class="card">
+      <div class="card">
         <h3>🎯 Live Cutoff Data (NEET/JEE)</h3>
         <p class="helper-text">Real cutoff figures fetched from the open web and parsed by AI (see backend). Refreshes automatically every 30 days, or trigger manually below.</p>
         <button id="refreshCutoffCacheBtn" class="btn btn-primary mt-1">Refresh live cutoff data now</button>
         <div id="cutoffCacheMessage" class="mt-2"></div>
         <div id="cutoffCacheTable" class="mt-2"></div>
-      </div> 
+      </div>
 
       <div class="card">
         <h3>⏳ Pending lecturer submissions</h3>
         <div id="pendingLecturesAdmin"></div>
       </div>
-      
 
       <div class="card">
         <h3>🧑‍🎓 Manage students</h3>
@@ -683,6 +682,96 @@
         <p class="helper-text">View any lecturer's exact Lecturer Hub as they see it, or permanently remove their account. Chapters/materials/tests/notes they created stay published — only their ownership is cleared.</p>
         <input type="text" id="adminFacultySearch" placeholder="Search by name or email..." style="margin-top:0.5rem;">
         <div id="adminFacultyList" class="mt-2"></div>
+      </div>
+
+      <div class="card">
+        <h3>🗂️ Manage Questions (MCQs)</h3>
+        <p class="helper-text">Full control over the question bank — add, edit, delete, or bulk-import via JSON. Questions you add or edit here go live immediately, no approval queue.</p>
+
+        <h4 style="margin-top:0.75rem;">Browse &amp; filter</h4>
+        <div class="grid-2" style="gap:0.6rem;">
+          <div class="field-group">
+            <label class="field-label" for="adminQCourse">Course</label>
+            <select id="adminQCourse" class="field"><option value="">All</option><option value="NEET">NEET</option><option value="JEE">JEE</option><option value="BOTH">BOTH</option></select>
+          </div>
+          <div class="field-group">
+            <label class="field-label" for="adminQSubject">Subject</label>
+            <select id="adminQSubject" class="field"><option value="">All</option></select>
+          </div>
+          <div class="field-group">
+            <label class="field-label" for="adminQStatus">Status</label>
+            <select id="adminQStatus" class="field"><option value="">All</option><option value="approved">Approved</option><option value="pending">Pending</option><option value="rejected">Rejected</option></select>
+          </div>
+          <div class="field-group">
+            <label class="field-label" for="adminQChapterSearch">Chapter contains</label>
+            <input type="text" id="adminQChapterSearch" class="field" placeholder="e.g. Kinematics">
+          </div>
+        </div>
+        <button class="btn btn-outline" id="adminQFilterBtn" style="margin-top:0.6rem;">🔍 Filter</button>
+        <div id="adminQList" class="mt-2"></div>
+        <div id="adminQPager" class="flex-row mt-1" style="justify-content:center; gap:0.5rem;"></div>
+
+        <hr style="margin:1.25rem 0; border:none; border-top:1px solid var(--border);">
+
+        <h4>+ Add a single question</h4>
+        <div class="grid-2" style="gap:0.6rem;">
+          <div class="field-group">
+            <label class="field-label" for="newQCourse">Course</label>
+            <select id="newQCourse" class="field"><option value="NEET">NEET</option><option value="JEE">JEE</option><option value="BOTH">BOTH</option></select>
+          </div>
+          <div class="field-group">
+            <label class="field-label" for="newQSubject">Subject</label>
+            <select id="newQSubject" class="field"></select>
+          </div>
+          <div class="field-group" style="grid-column:1/-1;">
+            <label class="field-label" for="newQChapter">Chapter name</label>
+            <input type="text" id="newQChapter" class="field" style="width:100%;" placeholder="e.g. Laws of Motion">
+          </div>
+          <div class="field-group" style="grid-column:1/-1;">
+            <label class="field-label" for="newQTopic">Topic (optional)</label>
+            <input type="text" id="newQTopic" class="field" style="width:100%;">
+          </div>
+          <div class="field-group" style="grid-column:1/-1;">
+            <label class="field-label" for="newQText">Question text</label>
+            <textarea id="newQText" class="field" rows="2" style="width:100%;"></textarea>
+          </div>
+          <div class="field-group"><label class="field-label" for="newQOptA">Option A</label><input type="text" id="newQOptA" class="field" style="width:100%;"></div>
+          <div class="field-group"><label class="field-label" for="newQOptB">Option B</label><input type="text" id="newQOptB" class="field" style="width:100%;"></div>
+          <div class="field-group"><label class="field-label" for="newQOptC">Option C</label><input type="text" id="newQOptC" class="field" style="width:100%;"></div>
+          <div class="field-group"><label class="field-label" for="newQOptD">Option D</label><input type="text" id="newQOptD" class="field" style="width:100%;"></div>
+          <div class="field-group">
+            <label class="field-label" for="newQCorrect">Correct answer</label>
+            <select id="newQCorrect" class="field"><option>A</option><option>B</option><option>C</option><option>D</option></select>
+          </div>
+          <div class="field-group">
+            <label class="field-label" for="newQDifficulty">Difficulty</label>
+            <select id="newQDifficulty" class="field"><option>Easy</option><option selected>Moderate</option><option>Difficult</option></select>
+          </div>
+          <div class="field-group" style="grid-column:1/-1;">
+            <label class="field-label" for="newQExplanation">Explanation (optional)</label>
+            <textarea id="newQExplanation" class="field" rows="2" style="width:100%;"></textarea>
+          </div>
+        </div>
+        <button class="btn btn-primary" id="addAdminQBtn" style="margin-top:0.75rem;">+ Add question</button>
+        <div id="addAdminQMessage" class="mt-2"></div>
+
+        <hr style="margin:1.25rem 0; border:none; border-top:1px solid var(--border);">
+
+        <h4>📥 Bulk-import questions (JSON)</h4>
+        <p class="helper-text">Pick the course and subject these questions belong to, then paste a JSON array — every question in it uses the course/subject picked here unless it sets its own.</p>
+        <div class="grid-2" style="gap:0.6rem;">
+          <div class="field-group">
+            <label class="field-label" for="bulkQCourse">Course</label>
+            <select id="bulkQCourse" class="field"><option value="NEET">NEET</option><option value="JEE">JEE</option><option value="BOTH">BOTH</option></select>
+          </div>
+          <div class="field-group">
+            <label class="field-label" for="bulkQSubject">Subject</label>
+            <select id="bulkQSubject" class="field"></select>
+          </div>
+        </div>
+        <textarea id="bulkQJson" class="field" rows="12" style="width:100%; font-family:monospace; margin-top:0.6rem;" placeholder='[&#10;  {&#10;    "chapterName": "Laws of Motion",&#10;    "topic": "Second law of motion",&#10;    "questionText": "A body of mass 2 kg accelerates at 5 m/s^2. What is the net force acting on it?",&#10;    "optionA": "5 N",&#10;    "optionB": "10 N",&#10;    "optionC": "15 N",&#10;    "optionD": "20 N",&#10;    "correctAnswer": "B",&#10;    "explanation": "F = ma = 2 x 5 = 10 N",&#10;    "difficulty": "Moderate",&#10;    "estimatedTime": 60&#10;  }&#10;]&#10;&#10;Required per question: chapterName, questionText, optionA, optionB, optionC, optionD, correctAnswer (A/B/C/D).&#10;Optional per question: topic, subtopic, explanation, difficulty (Easy/Moderate/Difficult), estimatedTime (seconds).&#10;courseType/subject can also be set per question to override the dropdowns above.'></textarea>
+        <button class="btn btn-primary" id="bulkUploadQBtn" style="margin-top:0.75rem;">📥 Upload JSON</button>
+        <div id="bulkUploadQMessage" class="mt-2"></div>
       </div>
 
       <div class="card">
