@@ -630,16 +630,13 @@ function subjectTargetRow(label, current, target) {
 // PRACTICE PAGE
 // ====================================================================
 async function renderPractice() {
-  // Prof lectures (lecturer_name = 'CTK Faculty') and community lectures both
-  // come from the same approved-lectures API — no hardcoded data.
-  const profContainer     = document.getElementById('profLecturesList');
-  const approvedContainer = document.getElementById('approvedLecturesList');
-  profContainer.innerHTML     = `<div class="loading-row"><div class="spinner"></div></div>`;
-  approvedContainer.innerHTML = `<div class="loading-row"><div class="spinner"></div></div>`;
+  // Prof lectures (lecturer_name = 'CTK Faculty') come from the
+  // approved-lectures API — no hardcoded data.
+  const profContainer = document.getElementById('profLecturesList');
+  profContainer.innerHTML = `<div class="loading-row"><div class="spinner"></div></div>`;
   try {
     const approved = await api('/api/approved-lectures');
-    const profLectures  = approved.filter(l => l.lecturer_name === 'CTK Faculty');
-    const communityLecs = approved.filter(l => l.lecturer_name !== 'CTK Faculty');
+    const profLectures = approved.filter(l => l.lecturer_name === 'CTK Faculty');
 
     const cardHtml = (l, showAuthor) => `
       <div class="video-card">
@@ -653,16 +650,9 @@ async function renderPractice() {
     profContainer.innerHTML = profLectures.length
       ? profLectures.map(l => cardHtml(l, false)).join('')
       : `<div class="empty-state"><span class="icon">🎓</span><p>No CTK Faculty lectures yet — check back soon.</p></div>`;
-
-    approvedContainer.innerHTML = communityLecs.length
-      ? communityLecs.map(l => cardHtml(l, true)).join('')
-      : `<div class="empty-state"><span class="icon">📭</span><p>No approved faculty lectures yet — check back soon.</p></div>`;
   } catch (err) {
-    profContainer.innerHTML     = `<div class="empty-state"><p>${err.message}</p></div>`;
-    approvedContainer.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
+    profContainer.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
   }
-
-  renderMaterials();
 
   if (currentUser?.role === 'student') {
     renderStudentTests();
@@ -3003,8 +2993,6 @@ window.onload = () => {
   document.getElementById('refreshStudentTestsBtn').onclick = renderStudentTests;
   document.getElementById('uploadMaterialBtn').onclick = uploadMaterial;
   document.getElementById('refreshFacultyMaterialsBtn').onclick = renderFacultyMaterials;
-  document.getElementById('refreshMaterialsBtn').onclick = renderMaterials;
-  document.getElementById('materialsSubjectFilter').onchange = renderMaterials;
   document.getElementById('materialSubject').onchange = toggleMaterialTermField;
   document.getElementById('refreshPhysicsMaterialsBtn').onclick = renderPhysicsMaterials;
   document.getElementById('physicsTopicFilter').onchange = (e) => jumpToPhysicsTopic(e.target.value);

@@ -431,6 +431,18 @@ async function initSchema() {
             ON chapters (course_type, subject, name);
     `);
 
+    // Unique index on lectures.url so seedProfKonuriLectures() below can use
+    // ON CONFLICT (url) DO NOTHING as an idempotent top-up target. Existing
+    // databases can already have duplicate urls (e.g. a lecture submitted
+    // twice before this index existed), which would make the index creation
+    // itself fail -- so duplicates are cleaned up first, keeping the oldest
+    // row (lowest id) for each url.
+    await pool.query(`
+        DELETE FROM lectures a USING lectures b
+            WHERE a.url = b.url AND a.id > b.id;
+        CREATE UNIQUE INDEX IF NOT EXISTS lectures_url_uidx ON lectures (url);
+    `);
+
     // Seed chapters
     await seedChapters();
 
@@ -483,6 +495,14 @@ async function initSchema() {
             ('Calculus Fundamentals for JEE', 'Mathematics', 'https://www.youtube.com/embed/WUvTyaaNkzM', 'Prof. Ramesh Kumar', 1, 'JEE')
         `);
     }
+
+    // Idempotent top-up (like seedChapters): adds Prof. Konuri's Connectomic
+    // lecture videos on every startup via ON CONFLICT (url) DO NOTHING, so
+    // it's safe to re-run against a database that's already live and never
+    // duplicates rows. lecturer_name = 'CTK Faculty' is what the frontend
+    // (renderPractice() in app.js) filters on to populate the "Prof.
+    // Konuri's Connectomic Lectures" section on the Practice page.
+    await seedProfKonuriLectures();
 
     console.log('✅  CTK Bridge Course database schema ready');
 }
@@ -569,6 +589,68 @@ async function seedChapters() {
         }
     }
     console.log('✅  Chapters up to date for NEET & JEE');
+}
+
+// Prof. Konuri's Connectomic lecture videos, hosted on the CDN. Grouped
+// under lecturer_name = 'CTK Faculty' so they surface in the dedicated
+// "Prof. Konuri's Connectomic Lectures" section on the Practice page
+// (see renderPractice() in frontend/app.js), separate from community/
+// approved faculty lectures. Titles/subjects can be edited later from
+// the Lecturer Hub if needed -- this just gets them onto the platform.
+const PROF_KONURI_LECTURE_BASE_URL = 'https://pub-8521d28a1e0d44bb9c7da4e801284a66.r2.dev';
+const PROF_KONURI_LECTURES = [
+    ['Connectomic_Method.mp4',                          'Connectomic Method'],
+    ['Connectomics_Beats_Medical_Exam_Cramming.m4a',     'Connectomics Beats Medical Exam Cramming'],
+    ['Don_t_Calculate.mp4',                              "Don't Calculate"],
+    ['Lorry_vs.mp4',                                     'Lorry vs.'],
+    ['Lorry_vs_Bullet_paradox.mp4',                      'Lorry vs Bullet Paradox'],
+    ['One_Key,_Many_Doors.mp4',                          'One Key, Many Doors'],
+    ['Replace_mental_boxes_with_neural_highways.m4a',    'Replace Mental Boxes With Neural Highways'],
+    ['Scaling_the_Seven_Hills.mp4',                       'Scaling the Seven Hills'],
+    ['Scaling_the_Seven_Hills_with_AI.m4a',               'Scaling the Seven Hills with AI'],
+    ['The_Fifth_and_Sixth_Hills.mp4',                     'The Fifth and Sixth Hills'],
+    ['The_First_Hill.mp4',                                'The First Hill'],
+    ['The_Inclined_Plane.mp4',                            'The Inclined Plane'],
+    ['The_NEET_Challenge.mp4',                            'The NEET Challenge'],
+    ['The_Second_Hill.mp4',                               'The Second Hill'],
+    ['The_Seventh_Hill.mp4',                              'The Seventh Hill'],
+    ['The_Third_Hill__Discovery.mp4',                     'The Third Hill Discovery'],
+    ['Why_Oil_Doesn_t_Mix.mp4',                           "Why Oil Doesn't Mix"],
+];
+
+async function seedProfKonuriLectures() {
+    // One-time cleanup: two filenames were corrected after being seeded
+    // under the wrong URL (typo'd "Al" -> "AI", missing double underscore
+    // in "Third_Hill__Discovery"). Remove the old, now-broken rows so they
+    // don't linger as duplicate 404 cards alongside the corrected ones.
+    await pool.query(
+        `DELETE FROM lectures WHERE lecturer_name = 'CTK Faculty' AND url = ANY($1::text[])`,
+        [[
+            `${PROF_KONURI_LECTURE_BASE_URL}/Scaling_the_Seven_Hills_with_Al.m4a`,
+            `${PROF_KONURI_LECTURE_BASE_URL}/The_Third_Hill_Discovery.mp4`,
+        ]]
+    );
+
+    for (const [fileName, title] of PROF_KONURI_LECTURES) {
+        // DO UPDATE (not DO NOTHING): self-healing on every startup, so if a
+        // row for this url already exists with a stale/incorrect
+        // lecturer_name (e.g. it was added once through the regular faculty
+        // "submit lecture" flow before this seed existed, or survived a
+        // dedup pass with the wrong lecturer_name), it gets corrected back
+        // to 'CTK Faculty' instead of silently staying wrong forever.
+        await pool.query(
+            `INSERT INTO lectures (title, subject, url, lecturer_name, approved, course_type)
+             VALUES ($1, 'Connectomic Theory', $2, 'CTK Faculty', 1, 'NEET')
+             ON CONFLICT (url) DO UPDATE SET
+                title         = EXCLUDED.title,
+                subject       = EXCLUDED.subject,
+                lecturer_name = EXCLUDED.lecturer_name,
+                approved      = EXCLUDED.approved,
+                course_type   = EXCLUDED.course_type`,
+            [title, `${PROF_KONURI_LECTURE_BASE_URL}/${fileName}`]
+        );
+    }
+    console.log('✅  Prof. Konuri Connectomic lectures up to date');
 }
 
 // ---------------------------------------------------------------------------
