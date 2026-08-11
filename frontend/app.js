@@ -2941,6 +2941,27 @@ function updateNavForAuth() {
 
 window.showPage = showPage;
 
+// Seven Hills preview videos on the public Welcome page -- no login/API
+// call needed, just plays the given CDN url in a modal. Visible to anyone,
+// registered or not, since welcomePage itself requires no auth.
+function playHillVideo(url, title) {
+  const modal  = document.getElementById('hillVideoModal');
+  const player = document.getElementById('hillVideoModalPlayer');
+  document.getElementById('hillVideoModalTitle').textContent = title;
+  player.src = url;
+  modal.style.display = 'flex';
+}
+function closeHillVideoModal() {
+  const modal  = document.getElementById('hillVideoModal');
+  const player = document.getElementById('hillVideoModalPlayer');
+  player.pause();
+  player.removeAttribute('src');
+  player.load();
+  modal.style.display = 'none';
+}
+window.playHillVideo = playHillVideo;
+window.closeHillVideoModal = closeHillVideoModal;
+
 // ====================================================================
 // INIT
 // ====================================================================

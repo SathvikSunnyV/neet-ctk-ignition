@@ -46,6 +46,25 @@
       <div class="eyebrow">Connectomic Theory of Knowledge</div>
       <h1>Climb the Seven Hills.<br>Connect the concepts.<br>Reach your Target.</h1>
       <p class="lead">A calm, intelligent learning companion that turns isolated exam facts into a connected map of understanding — built around Prof. Konuri's Seven Hills of Knowledge.</p>
+
+      <div class="ridge" aria-hidden="true">
+        <svg viewBox="0 0 920 190" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M0,190 L0,120 Q120,50 240,110 T460,90 T680,120 T920,80 L920,190 Z" fill="var(--hill-7)"/>
+          <path d="M0,190 L0,150 Q160,90 320,140 T620,120 T920,140 L920,190 Z" fill="var(--hill-5)"/>
+          <path d="M0,190 L0,165 Q200,120 400,160 T800,150 T920,165 L920,190 Z" fill="var(--hill-3)"/>
+          <path d="M0,190 L0,178 Q260,150 460,178 T920,178 L920,190 Z" fill="var(--hill-2)"/>
+        </svg>
+      </div>
+      <div class="grid-7 mt-1">
+        <div class="badge badge-hill" onclick="playHillVideo('https://pub-8521d28a1e0d44bb9c7da4e801284a66.r2.dev/The_First_Hill.mp4','1 · Known → Unknown')"><span class="badge-hill-play">▶</span>1 · Known → Unknown</div>
+        <div class="badge badge-hill" onclick="playHillVideo('https://pub-8521d28a1e0d44bb9c7da4e801284a66.r2.dev/The_Second_Hill.mp4','2 · Central Point')"><span class="badge-hill-play">▶</span>2 · Central Point</div>
+        <div class="badge badge-hill" onclick="playHillVideo('https://pub-8521d28a1e0d44bb9c7da4e801284a66.r2.dev/The_Third_Hill__Discovery.mp4','3 · Let Student Discover')"><span class="badge-hill-play">▶</span>3 · Let Student Discover</div>
+        <div class="badge badge-hill" onclick="playHillVideo('https://pub-8521d28a1e0d44bb9c7da4e801284a66.r2.dev/One_Key,_Many_Doors.mp4','4 · One Key, Many Doors')"><span class="badge-hill-play">▶</span>4 · One Key, Many Doors</div>
+        <div class="badge badge-hill" onclick="playHillVideo('https://pub-8521d28a1e0d44bb9c7da4e801284a66.r2.dev/The_Fifth_and_Sixth_Hills.mp4','5 · Recognise Patterns')"><span class="badge-hill-play">▶</span>5 · Recognise Patterns</div>
+        <div class="badge badge-hill" onclick="playHillVideo('https://pub-8521d28a1e0d44bb9c7da4e801284a66.r2.dev/The_Fifth_and_Sixth_Hills.mp4','6 · Build Connections')"><span class="badge-hill-play">▶</span>6 · Build Connections</div>
+        <div class="badge badge-hill" onclick="playHillVideo('https://pub-8521d28a1e0d44bb9c7da4e801284a66.r2.dev/The_Seventh_Hill.mp4','7 · Real-World Wisdom')"><span class="badge-hill-play">▶</span>7 · Real-World Wisdom</div>
+      </div>
+
       <button class="btn btn-primary" id="startNowBtn" style="display:none;">Start Your Journey →</button>
 
       <div class="eyebrow" style="margin-bottom:0.75rem;">Choose Your Path</div>
@@ -64,22 +83,13 @@
         </div> -->
       </div>
 
-      <div class="ridge" aria-hidden="true">
-        <svg viewBox="0 0 920 190" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
-          <path d="M0,190 L0,120 Q120,50 240,110 T460,90 T680,120 T920,80 L920,190 Z" fill="var(--hill-7)"/>
-          <path d="M0,190 L0,150 Q160,90 320,140 T620,120 T920,140 L920,190 Z" fill="var(--hill-5)"/>
-          <path d="M0,190 L0,165 Q200,120 400,160 T800,150 T920,165 L920,190 Z" fill="var(--hill-3)"/>
-          <path d="M0,190 L0,178 Q260,150 460,178 T920,178 L920,190 Z" fill="var(--hill-2)"/>
-        </svg>
-      </div>
-      <div class="grid-7 mt-1">
-        <div class="badge">1 · Known → Unknown</div>
-        <div class="badge">2 · Central Point</div>
-        <div class="badge">3 · Let Student Discover</div>
-        <div class="badge">4 · One Key, Many Doors</div>
-        <div class="badge">5 · Recognise Patterns</div>
-        <div class="badge">6 · Build Connections</div>
-        <div class="badge">7 · Real-World Wisdom</div>
+      <!-- Hill video modal: public, no login required, scoped to the Welcome page -->
+      <div id="hillVideoModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.8); z-index:1200; align-items:center; justify-content:center;" onclick="if(event.target===this) closeHillVideoModal()">
+        <div style="background:var(--paper); border-radius:14px; max-width:720px; width:92%; padding:1rem; position:relative;">
+          <button class="btn btn-outline" onclick="closeHillVideoModal()" style="position:absolute; top:-14px; right:-14px; border-radius:999px; width:36px; height:36px; padding:0; background:var(--paper);">✕</button>
+          <h3 id="hillVideoModalTitle" style="margin-bottom:0.75rem;"></h3>
+          <video id="hillVideoModalPlayer" controls autoplay style="width:100%; border-radius:10px; display:block; background:#000;"></video>
+        </div>
       </div>
     </div>
 

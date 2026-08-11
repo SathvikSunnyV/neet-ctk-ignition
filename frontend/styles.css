@@ -150,6 +150,19 @@ textarea{ resize: vertical; min-height: 100px; }
 .badge.success{ background:#E4F0E6; color:#4F7A5C; border-color:#CDE3D2; }
 .badge.warn{ background:#F6EBD9; color:#A1742F; border-color:#EFDDBE; }
 .badge.danger{ background:#F7E4E4; color:#B6504F; border-color:#F0CFCF; }
+.badge-hill{
+  cursor:pointer; transition: transform 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
+  background: var(--accent-soft); border-color: var(--accent); color: var(--accent-deep);
+  box-shadow: 0 2px 6px rgba(217,142,91,0.25);
+  display:inline-flex; align-items:center; gap:0.4rem;
+}
+.badge-hill:hover{ background: var(--accent); color:#fff; transform: translateY(-2px); box-shadow: 0 4px 10px rgba(217,142,91,0.4); }
+.badge-hill:hover .badge-hill-play{ background:#fff; color: var(--accent-deep); }
+.badge-hill-play{
+  display:inline-flex; align-items:center; justify-content:center;
+  width:16px; height:16px; border-radius:50%; background: var(--accent-deep); color:#fff;
+  font-size:0.6em; line-height:1; padding-left:1px; flex-shrink:0;
+}
 
 /* ---------------------------------------------------------------- pages */
 .page{ display:none; animation: fadeIn .45s ease; }
