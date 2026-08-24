@@ -101,17 +101,21 @@ app.post('/api/auth/register', async (req, res) => {
         const passwordHash = await hashPassword(password);
         const otp = generateOTP();
         const expiry = otpExpiry();
+        // Faculty accounts need admin sign-off before they can log in;
+        // students and admins (already gated behind the invite code above)
+        // are approved by default.
+        const initialApproved = finalRole !== 'faculty';
 
         if (existing) {
             await pool.query(
-                `UPDATE users SET name=$1, password_hash=$2, role=$3, otp_code=$4, otp_expires_at=$5 WHERE email=$6`,
-                [name.trim(), passwordHash, finalRole, otp, expiry, cleanEmail]
+                `UPDATE users SET name=$1, password_hash=$2, role=$3, otp_code=$4, otp_expires_at=$5, is_approved=$6 WHERE email=$7`,
+                [name.trim(), passwordHash, finalRole, otp, expiry, initialApproved, cleanEmail]
             );
         } else {
             await pool.query(
-                `INSERT INTO users (name, email, password_hash, role, is_verified, otp_code, otp_expires_at)
-                 VALUES ($1,$2,$3,$4, FALSE, $5, $6)`,
-                [name.trim(), cleanEmail, passwordHash, finalRole, otp, expiry]
+                `INSERT INTO users (name, email, password_hash, role, is_verified, otp_code, otp_expires_at, is_approved)
+                 VALUES ($1,$2,$3,$4, FALSE, $5, $6, $7)`,
+                [name.trim(), cleanEmail, passwordHash, finalRole, otp, expiry, initialApproved]
             );
         }
 
@@ -127,7 +131,9 @@ app.post('/api/auth/register', async (req, res) => {
 
         return res.status(201).json({
             success: true,
-            message: 'Registration successful. Please check your email for the OTP to verify your account.',
+            message: finalRole === 'faculty'
+                ? 'Registration successful. Please check your email for the OTP to verify your account. Your faculty account will also need admin approval before you can log in.'
+                : 'Registration successful. Please check your email for the OTP to verify your account.',
             email: cleanEmail
         });
     } catch (err) {
@@ -220,6 +226,10 @@ app.post('/api/auth/login', async (req, res) => {
 
         if (!user.is_verified) {
             return res.status(403).json({ error: 'Please verify your email with the OTP sent during registration before logging in.', needsVerification: true, email: cleanEmail });
+        }
+
+        if (user.role === 'faculty' && !user.is_approved) {
+            return res.status(403).json({ error: 'Your faculty account is pending admin approval. You will be able to log in once an admin approves it.', pendingApproval: true });
         }
 
         const token = signToken(user);
@@ -331,7 +341,8 @@ app.post('/api/onboarding/student', authenticate, requireRole('student'), async 
     const email = req.user.email;
     const name = req.user.name;
 
-    const aim = targetInstitution || 'Government Medical College';
+    const exam = targetExam || 'NEET';
+    const aim = targetInstitution || (exam === 'JEE' ? 'NIT' : 'Government Medical College');
     const cat = category || 'General';
 
     try {
@@ -344,7 +355,7 @@ app.post('/api/onboarding/student', authenticate, requireRole('student'), async 
                         daily_study_hours=$7, prep_level=$8, target_exam=$9
                  WHERE email=$10`,
                 [name, cat, aim, aim, state || null, currentClass || null,
-                 dailyStudyHours || null, prepLevel || 'Beginner', targetExam || 'NEET', email]
+                 dailyStudyHours || null, prepLevel || 'Beginner', exam, email]
             );
         } else {
             await pool.query(
@@ -352,7 +363,7 @@ app.post('/api/onboarding/student', authenticate, requireRole('student'), async 
                         target_institution, state, current_class, daily_study_hours, prep_level, target_exam)
                  VALUES ($1,$2,'',$3,$4,$5,$6,$7,$8,$9,$10)`,
                 [email, name, cat, aim, aim, state || null, currentClass || null,
-                 dailyStudyHours || null, prepLevel || 'Beginner', targetExam || 'NEET']
+                 dailyStudyHours || null, prepLevel || 'Beginner', exam]
             );
             await pool.query(
                 `INSERT INTO progress (email, bio_accuracy, phy_accuracy, chem_accuracy, quiz_count, weekly_history)
@@ -361,7 +372,7 @@ app.post('/api/onboarding/student', authenticate, requireRole('student'), async 
             );
         }
 
-        const t = computeTargets(aim, cat);
+        const t = computeTargets(aim, cat, exam);
         await pool.query(
             `INSERT INTO targets (email, bio, phy, chem, zoo, math) VALUES ($1,$2,$3,$4,$5,$6)
              ON CONFLICT (email) DO UPDATE SET bio=$2, phy=$3, chem=$4, zoo=$5, math=$6`,
@@ -372,8 +383,8 @@ app.post('/api/onboarding/student', authenticate, requireRole('student'), async 
 
         const bundle = await getStudentBundle(email);
         const { rows: [examRow] } = await pool.query(`SELECT value FROM settings WHERE key = 'exam_date'`);
-        const cutoff = (targetExam || 'NEET') === 'JEE'
-            ? await predictJeeCutoff(cat, examRow ? examRow.value : null, null)
+        const cutoff = exam === 'JEE'
+            ? await predictJeeCutoff(aim, cat, examRow ? examRow.value : null, null)
             : await predictCutoff(aim, cat, state, examRow ? examRow.value : null, null);
 
         return res.status(201).json({ ...bundle, cutoffPrediction: cutoff });
@@ -411,11 +422,11 @@ app.get('/api/cutoff-prediction/:email', authenticate, async (req, res) => {
 
         let prediction;
         if (targetExam === 'JEE') {
-            prediction = await predictJeeCutoff(student.category || 'General', globalExamDate, jeeAccuracy);
+            prediction = await predictJeeCutoff(student.aim || 'NIT', student.category || 'General', globalExamDate, jeeAccuracy);
         } else if (targetExam === 'BOTH') {
             const [neet, jee] = await Promise.all([
                 predictCutoff(student.aim || 'Government Medical College', student.category || 'General', student.state, globalExamDate, neetAccuracy),
-                predictJeeCutoff(student.category || 'General', globalExamDate, jeeAccuracy)
+                predictJeeCutoff(student.aim || 'NIT', student.category || 'General', globalExamDate, jeeAccuracy)
             ]);
             prediction = { exam: 'BOTH', neet, jee };
         } else {
@@ -1171,6 +1182,69 @@ app.get('/api/admin/feedback', authenticate, requireRole('admin'), async (req, r
 });
 
 // ===========================================================================
+// BLOGS — open community posts. Any authenticated user (student or
+// faculty) can write about anything; the author can remove their own
+// post, and admin can remove any post.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// List all blog posts, newest first (any authenticated user).
+// ---------------------------------------------------------------------------
+app.get('/api/blogs', authenticate, async (req, res) => {
+    try {
+        const { rows } = await pool.query(
+            `SELECT id, author_email, author_name, author_role, title, content, created_at, updated_at
+             FROM blogs ORDER BY created_at DESC`
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server error while listing blogs.' });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// Publish a new blog post as the logged-in user.
+// ---------------------------------------------------------------------------
+app.post('/api/blogs', authenticate, async (req, res) => {
+    const { title, content } = req.body;
+    if (!title?.trim() || !content?.trim())
+        return res.status(400).json({ error: 'Title and content are required.' });
+
+    try {
+        const { rows: [blog] } = await pool.query(
+            `INSERT INTO blogs (author_email, author_name, author_role, title, content)
+             VALUES ($1,$2,$3,$4,$5) RETURNING *`,
+            [req.user.email, req.user.name, req.user.role, title.trim(), content.trim()]
+        );
+        res.status(201).json({ success: true, blog });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server error while publishing the blog post.' });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// Delete a blog post — the author can remove their own post, and admin
+// can remove any post.
+// ---------------------------------------------------------------------------
+app.delete('/api/blogs/:id', authenticate, async (req, res) => {
+    try {
+        const { rows: [blog] } = await pool.query(`SELECT author_email FROM blogs WHERE id = $1`, [req.params.id]);
+        if (!blog) return res.status(404).json({ error: 'Blog post not found.' });
+
+        if (req.user.role !== 'admin' && req.user.email !== blog.author_email)
+            return res.status(403).json({ error: 'You can only remove your own blog posts.' });
+
+        await pool.query(`DELETE FROM blogs WHERE id = $1`, [req.params.id]);
+        res.json({ success: true });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server error while deleting the blog post.' });
+    }
+});
+
+// ===========================================================================
 // ADMIN — USER MANAGEMENT (students + faculty) & impersonation
 //
 // Gives admin full control over accounts: list everyone, permanently
@@ -1204,7 +1278,7 @@ app.get('/api/admin/students', authenticate, requireRole('admin'), async (req, r
 app.get('/api/admin/faculty', authenticate, requireRole('admin'), async (req, res) => {
     try {
         const { rows } = await pool.query(
-            `SELECT f.email, f.name, f.department, f.created_at, u.is_verified
+            `SELECT f.email, f.name, f.department, f.created_at, u.is_verified, u.is_approved
              FROM faculty f
              LEFT JOIN users u ON u.email = f.email
              ORDER BY f.created_at DESC`
@@ -1213,6 +1287,44 @@ app.get('/api/admin/faculty', authenticate, requireRole('admin'), async (req, re
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: 'Server error while listing faculty.' });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// List faculty accounts still awaiting admin approval (for the admin
+// "Pending faculty approvals" panel).
+// ---------------------------------------------------------------------------
+app.get('/api/admin/pending-faculty', authenticate, requireRole('admin'), async (req, res) => {
+    try {
+        const { rows } = await pool.query(
+            `SELECT f.email, f.name, f.department, f.created_at, u.is_verified
+             FROM faculty f
+             LEFT JOIN users u ON u.email = f.email
+             WHERE u.role = 'faculty' AND u.is_approved = FALSE
+             ORDER BY f.created_at ASC`
+        );
+        res.json(rows);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server error while listing pending faculty.' });
+    }
+});
+
+// ---------------------------------------------------------------------------
+// Approve a pending faculty account so it can log in.
+// ---------------------------------------------------------------------------
+app.post('/api/admin/approve-faculty/:email', authenticate, requireRole('admin'), async (req, res) => {
+    const email = req.params.email.toLowerCase();
+    try {
+        const { rows: [user] } = await pool.query(
+            `UPDATE users SET is_approved = TRUE WHERE email = $1 AND role = 'faculty' RETURNING email`,
+            [email]
+        );
+        if (!user) return res.status(404).json({ error: 'Faculty account not found.' });
+        res.json({ success: true });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server error while approving the faculty account.' });
     }
 });
 

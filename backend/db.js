@@ -25,6 +25,10 @@ async function initSchema() {
             password_hash   TEXT NOT NULL,
             role            TEXT NOT NULL DEFAULT 'student' CHECK (role IN ('student','faculty','admin')),
             is_verified     BOOLEAN DEFAULT FALSE,
+            -- Faculty accounts require admin sign-off before they can log
+            -- in (students/admins are approved by default). See the
+            -- ALTER TABLE migration below for existing databases.
+            is_approved     BOOLEAN NOT NULL DEFAULT TRUE,
             otp_code        TEXT,
             otp_expires_at  TIMESTAMPTZ,
             reset_otp_code      TEXT,
@@ -93,6 +97,21 @@ async function initSchema() {
             id          SERIAL PRIMARY KEY,
             message     TEXT NOT NULL,
             created_at  TIMESTAMPTZ DEFAULT NOW()
+        );
+
+        -- Student/community blog posts. Any authenticated user can write
+        -- one about anything; admin can remove any post. author_email
+        -- cascades on account deletion so removing a user cleans up their
+        -- posts automatically.
+        CREATE TABLE IF NOT EXISTS blogs (
+            id              SERIAL PRIMARY KEY,
+            author_email    TEXT NOT NULL REFERENCES users(email) ON DELETE CASCADE,
+            author_name     TEXT NOT NULL,
+            author_role     TEXT NOT NULL,
+            title           TEXT NOT NULL,
+            content         TEXT NOT NULL,
+            created_at      TIMESTAMPTZ DEFAULT NOW(),
+            updated_at      TIMESTAMPTZ DEFAULT NOW()
         );
 
         -- ===================================================================
@@ -365,6 +384,12 @@ async function initSchema() {
 
     // Migrations for backward compat
     await pool.query(`
+        -- Same "CREATE TABLE IF NOT EXISTS is a no-op on pre-existing
+        -- tables" issue as chapters/question_bank above: any users table
+        -- that already existed before is_approved was added needs it
+        -- backfilled explicitly. Defaults to TRUE so existing student/
+        -- admin/faculty accounts are not retroactively locked out.
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS is_approved BOOLEAN NOT NULL DEFAULT TRUE;
         ALTER TABLE students ADD COLUMN IF NOT EXISTS target_institution TEXT;
         ALTER TABLE students ADD COLUMN IF NOT EXISTS state TEXT;
         ALTER TABLE students ADD COLUMN IF NOT EXISTS current_class TEXT;
@@ -1369,7 +1394,37 @@ const HISTORICAL_JEE_CUTOFFS = [
     { year: 2024, category: 'SC',      percentile: 60.0923182 },
     { year: 2024, category: 'ST',      percentile: 46.6975840 }
 ];
-const JEE_ESTIMATED_CANDIDATES = 1200000; // approx annual JEE Main candidate pool
+// Static real-world-representative closing ranks (Common Rank List, overall
+// across branches) for JEE's 3 institution tiers, category-wise, by year --
+// the JEE-side counterpart to HISTORICAL_CUTOFFS above. Institution tiering
+// happens via JoSAA closing rank (not JEE Main percentile, which is exam-
+// wide only), so this is a separate static table rather than an extra
+// column on HISTORICAL_JEE_CUTOFFS. Category-wise rank lists are how JoSAA
+// itself reports cutoffs, so a lower number for a reserved category reflects
+// that category's own (smaller) rank list, not an "easier" bar.
+const JEE_INSTITUTION_KEY = { 'IIT': 'iit', 'NIT': 'nit', 'IIIT/GFTI': 'iiit' };
+const HISTORICAL_JEE_INSTITUTION_CUTOFFS = [
+    { year: 2021, category: 'General', iit: 100000, nit: 180000, iiit: 280000 },
+    { year: 2021, category: 'EWS',     iit: 60000,  nit: 110000, iiit: 170000 },
+    { year: 2021, category: 'OBC',     iit: 55000,  nit: 100000, iiit: 155000 },
+    { year: 2021, category: 'SC',      iit: 32000,  nit: 60000,  iiit: 95000  },
+    { year: 2021, category: 'ST',      iit: 16000,  nit: 30000,  iiit: 48000  },
+    { year: 2022, category: 'General', iit: 96000,  nit: 172000, iiit: 268000 },
+    { year: 2022, category: 'EWS',     iit: 58000,  nit: 106000, iiit: 164000 },
+    { year: 2022, category: 'OBC',     iit: 53000,  nit: 96000,  iiit: 149000 },
+    { year: 2022, category: 'SC',      iit: 31000,  nit: 58000,  iiit: 91000  },
+    { year: 2022, category: 'ST',      iit: 15500,  nit: 29000,  iiit: 46000  },
+    { year: 2023, category: 'General', iit: 92000,  nit: 165000, iiit: 257000 },
+    { year: 2023, category: 'EWS',     iit: 56000,  nit: 102000, iiit: 158000 },
+    { year: 2023, category: 'OBC',     iit: 51000,  nit: 93000,  iiit: 143000 },
+    { year: 2023, category: 'SC',      iit: 30000,  nit: 56000,  iiit: 88000  },
+    { year: 2023, category: 'ST',      iit: 15000,  nit: 28000,  iiit: 44500  },
+    { year: 2024, category: 'General', iit: 88000,  nit: 158000, iiit: 247000 },
+    { year: 2024, category: 'EWS',     iit: 54000,  nit: 98000,  iiit: 152000 },
+    { year: 2024, category: 'OBC',     iit: 49000,  nit: 90000,  iiit: 138000 },
+    { year: 2024, category: 'SC',      iit: 29000,  nit: 54000,  iiit: 85000  },
+    { year: 2024, category: 'ST',      iit: 14500,  nit: 27000,  iiit: 43000  }
+];
 
 // JEE Main's 3 subjects carry equal weight (100 marks each of 300 total),
 // so a subject-wise breakdown is expressed the same accuracy-percentage
@@ -1377,15 +1432,30 @@ const JEE_ESTIMATED_CANDIDATES = 1200000; // approx annual JEE Main candidate po
 // below) rather than trying to invent a percentile-per-subject split —
 // JEE percentile is a whole-exam normalized figure and doesn't decompose
 // per-subject the way a raw NEET score does.
-async function predictJeeCutoff(category, examDate, currentAccuracyPct = null) {
+//
+// Signature mirrors predictCutoff(aim, category, state, examDate, accuracy)
+// for consistency -- institution ("aim") first, no state term since JEE has
+// no state-quota adjustment the way NEET AIQ/state-quota does.
+async function predictJeeCutoff(aim, category, examDate, currentAccuracyPct = null) {
+    const inst = JEE_INSTITUTION_KEY[aim] ? aim : 'NIT';
+    const instKey = JEE_INSTITUTION_KEY[inst];
     const cat = HISTORICAL_JEE_CUTOFFS.some(r => r.category === category) ? category : (CATEGORY_FALLBACK[category] || 'General');
     const targetYear = examDate ? new Date(examDate).getFullYear() : (new Date().getFullYear() + 1);
+
+    // JEE Main qualifying percentile trend (exam-wide, category-only).
     const rows = HISTORICAL_JEE_CUTOFFS.filter(r => r.category === cat).map(r => ({ x: r.year, y: r.percentile }));
     const { slope, intercept } = linearRegression(rows);
     let predicted = slope * targetYear + intercept;
     predicted = Math.min(99.9999999, Math.max(1, predicted));
     const targetPercentile = Math.round(predicted * 1000000) / 1000000;
-    const estimatedRank = Math.max(1, Math.round(JEE_ESTIMATED_CANDIDATES * (1 - predicted / 100)));
+
+    // Institution-tier closing rank trend (JoSAA), regressed off the same
+    // static historical data the way NEET's per-institution score is.
+    const rankRows = HISTORICAL_JEE_INSTITUTION_CUTOFFS.filter(r => r.category === cat).map(r => ({ x: r.year, y: r[instKey] }));
+    const rankReg = linearRegression(rankRows);
+    let predictedRank = Math.max(1, Math.round(rankReg.slope * targetYear + rankReg.intercept));
+    const safeRank = Math.max(1, Math.round(predictedRank * 0.88));
+    const stretchRank = Math.max(1, Math.round(predictedRank * 0.65));
 
     let admissionProbability = null;
     if (currentAccuracyPct !== null) {
@@ -1393,9 +1463,9 @@ async function predictJeeCutoff(category, examDate, currentAccuracyPct = null) {
         admissionProbability = Math.round((1 / (1 + Math.exp(-0.15 * diff))) * 1000) / 10;
     }
 
-    const jeeTargets = computeJeeTargets(cat);
+    const jeeTargets = computeJeeTargets(cat, inst);
     return {
-        exam: 'JEE', category: cat, targetYear,
+        exam: 'JEE', category: cat, institution: inst, targetYear,
         safePercentile: Math.round(Math.min(99.9999999, predicted + 2) * 1000000) / 1000000,
         targetPercentile,
         stretchPercentile: Math.round(Math.min(99.9999999, predicted + 5) * 1000000) / 1000000,
@@ -1404,7 +1474,7 @@ async function predictJeeCutoff(category, examDate, currentAccuracyPct = null) {
             Chemistry:   { accuracyTargetPct: jeeTargets.chem },
             Mathematics: { accuracyTargetPct: jeeTargets.math }
         },
-        estimatedRank: { low: Math.max(1, Math.round(estimatedRank * 0.7)), high: Math.round(estimatedRank * 1.3), mid: estimatedRank },
+        closingRank: { target: predictedRank, safe: safeRank, stretch: stretchRank },
         admissionProbability,
         modelInfo: { method: 'linear-regression-static', usingLiveData: false, dataSource: 'historical-regression' }
     };
@@ -1416,30 +1486,49 @@ const AIM_BASE_TARGETS = {
     'Private Medical College':    { bio: 75, phy: 65, chem: 70, zoo: 75 }
 };
 
-// JEE has no institution-tier "aim" field in onboarding (JEE Main qualifying
-// cutoffs are category-wise only, not institution-tiered — tiering only
-// happens later in JoSAA counselling), so this is a single flat baseline
-// adjusted by category, mirroring the NEET relax logic below.
-const JEE_BASE_TARGETS = { phy: 80, chem: 78, math: 82 };
+// JEE institution tiers, mirroring AIM_BASE_TARGETS' shape/pattern above --
+// same 3-tier, "top tier hardest" structure, just engineering institutes
+// instead of medical colleges.
+const JEE_AIM_BASE_TARGETS = {
+    'IIT':       { phy: 88, chem: 88, math: 90 },
+    'NIT':       { phy: 78, chem: 78, math: 80 },
+    'IIIT/GFTI': { phy: 68, chem: 68, math: 70 }
+};
 
-function computeTargets(aim, category) {
-    const base = AIM_BASE_TARGETS[aim] || AIM_BASE_TARGETS['Government Medical College'];
+// A single student's `targets` row holds all 5 subject columns regardless
+// of which exam they're aiming for (NEET and JEE share Physics/Chemistry).
+// examType picks which base table drives phy/chem (and which of bio+zoo vs
+// math is actually meaningful) so a JEE student's Physics/Chemistry targets
+// come from their engineering institution tier, not a medical-college
+// fallback, and vice versa for NEET.
+function computeTargets(aim, category, examType = 'NEET') {
     const relax = ['OBC','SC','ST','EWS','PwD'].includes(category) ? 5 : 0;
+    if (examType === 'JEE') {
+        const base = JEE_AIM_BASE_TARGETS[aim] || JEE_AIM_BASE_TARGETS['NIT'];
+        return {
+            bio: 50, zoo: 50, // not applicable for JEE; neutral placeholder
+            phy:  Math.max(50, base.phy  - relax),
+            chem: Math.max(50, base.chem - relax),
+            math: Math.max(50, base.math - relax)
+        };
+    }
+    const base = AIM_BASE_TARGETS[aim] || AIM_BASE_TARGETS['Government Medical College'];
     return {
         bio:  Math.max(50, base.bio  - relax),
         phy:  Math.max(50, base.phy  - relax),
         chem: Math.max(50, base.chem - relax),
         zoo:  Math.max(50, base.zoo  - relax),
-        math: Math.max(50, JEE_BASE_TARGETS.math - relax)
+        math: 50 // not applicable for NEET; neutral placeholder
     };
 }
 
-function computeJeeTargets(category) {
+function computeJeeTargets(category, aim = 'NIT') {
+    const base = JEE_AIM_BASE_TARGETS[aim] || JEE_AIM_BASE_TARGETS['NIT'];
     const relax = ['OBC','SC','ST','EWS','PwD'].includes(category) ? 5 : 0;
     return {
-        phy:  Math.max(50, JEE_BASE_TARGETS.phy  - relax),
-        chem: Math.max(50, JEE_BASE_TARGETS.chem - relax),
-        math: Math.max(50, JEE_BASE_TARGETS.math - relax)
+        phy:  Math.max(50, base.phy  - relax),
+        chem: Math.max(50, base.chem - relax),
+        math: Math.max(50, base.math - relax)
     };
 }
 
@@ -1467,8 +1556,9 @@ const TOPIC_BANK = {
 module.exports = {
     pool, initSchema,
     CURRICULUM, TEST_SUBJECT_DIST, DIFFICULTY_RATIOS,
-    computeTargets, computeJeeTargets, TOPIC_BANK, AIM_BASE_TARGETS,
-    predictCutoff, predictJeeCutoff, HISTORICAL_CUTOFFS, HISTORICAL_JEE_CUTOFFS, STATE_ADJUSTMENT,
+    computeTargets, computeJeeTargets, TOPIC_BANK, AIM_BASE_TARGETS, JEE_AIM_BASE_TARGETS,
+    predictCutoff, predictJeeCutoff, HISTORICAL_CUTOFFS, HISTORICAL_JEE_CUTOFFS,
+    HISTORICAL_JEE_INSTITUTION_CUTOFFS, STATE_ADJUSTMENT,
     refreshCutoffCache, getCachedCutoffRows, isCutoffCacheStale,
     generateDailyTest, generateWeeklyTest, generateMonthlyTest,
     generateGrandTest, generateChapterComboTest, generateMockTest,
