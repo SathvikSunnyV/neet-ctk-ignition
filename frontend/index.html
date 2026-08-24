@@ -32,6 +32,7 @@
       <button class="nav-btn" data-page="progress" id="navProgress" style="display:none;">Progress</button>
       <button class="nav-btn" data-page="physics" id="navPhysics" style="display:none;">📖 Subjects</button>
       <button class="nav-btn" data-page="chapterNotes" id="navChapterNotes" style="display:none;">📝 Notes</button>
+      <button class="nav-btn" data-page="blogs" id="navBlogs" style="display:none;">📰 Blogs</button>
       <button class="nav-btn" data-page="bridge" id="navBridge" style="display:none;">Test Centre</button>
       <button class="nav-btn" data-page="qbank" id="navQBank" style="display:none;">Question Bank</button>
       <button class="nav-btn" data-page="lecturer" id="navLecturer" style="display:none;">Lecturer Hub</button>
@@ -392,9 +393,7 @@
         </div>
         <div class="field-group">
           <label class="field-label" for="obTargetInstitution">Target institution</label>
-          <select id="obTargetInstitution">
-            <option>AIIMS</option><option>Government Medical College</option><option>Private Medical College</option>
-          </select>
+          <select id="obTargetInstitution"></select>
         </div>
         <div class="field-group">
           <label class="field-label" for="obCategory">Reservation category</label>
@@ -580,6 +579,34 @@
     </div>
   </div>
 
+  <!-- ===================== BLOGS ===================== -->
+  <div id="blogsPage" class="page">
+    <div class="hero" style="padding: 1rem 1rem 1.75rem;">
+      <div class="eyebrow">Community</div>
+      <h1 style="font-size: clamp(1.7rem, 4vw, 2.4rem);">📰 Blogs</h1>
+      <p class="lead" style="margin-bottom:0;">Write about anything — exam tips, motivation, your prep journey. Everyone signed in can read.</p>
+    </div>
+
+    <div class="card">
+      <h3>✍️ Write a new post</h3>
+      <div class="field-group">
+        <label class="field-label" for="blogTitleInput">Title</label>
+        <input type="text" id="blogTitleInput" class="field" style="width:100%;" placeholder="Give your post a title">
+      </div>
+      <div class="field-group">
+        <label class="field-label" for="blogContentInput">Content</label>
+        <textarea id="blogContentInput" class="field" rows="6" style="width:100%;" placeholder="Write about anything..."></textarea>
+      </div>
+      <button class="btn btn-primary" id="publishBlogBtn">Publish</button>
+      <div id="blogPublishMessage" class="mt-2"></div>
+    </div>
+
+    <div class="card">
+      <h3>All posts</h3>
+      <div id="blogsList" class="mt-2"></div>
+    </div>
+  </div>
+
   <!-- ===================== ADMIN PORTAL (separate from student/faculty login) ===================== -->
   <div id="adminLoginPage" class="page">
     <div class="card" style="max-width:480px; margin:0 auto;">
@@ -655,6 +682,12 @@
       <div class="card">
         <h3>⏳ Pending lecturer submissions</h3>
         <div id="pendingLecturesAdmin"></div>
+      </div>
+
+      <div class="card">
+        <h3>🧑‍🏫 Pending faculty approvals</h3>
+        <p class="helper-text">New faculty registrations wait here until approved — they can't log in until then.</p>
+        <div id="pendingFacultyAdmin" class="mt-2"></div>
       </div>
 
       <div class="card">
@@ -759,6 +792,12 @@
         <textarea id="bulkQJson" class="field" rows="12" style="width:100%; font-family:monospace; margin-top:0.6rem;" placeholder='[&#10;  {&#10;    "chapterName": "Laws of Motion",&#10;    "topic": "Second law of motion",&#10;    "questionText": "A body of mass 2 kg accelerates at 5 m/s^2. What is the net force acting on it?",&#10;    "optionA": "5 N",&#10;    "optionB": "10 N",&#10;    "optionC": "15 N",&#10;    "optionD": "20 N",&#10;    "correctAnswer": "B",&#10;    "explanation": "F = ma = 2 x 5 = 10 N",&#10;    "difficulty": "Moderate",&#10;    "estimatedTime": 60&#10;  }&#10;]&#10;&#10;Required per question: chapterName, questionText, optionA, optionB, optionC, optionD, correctAnswer (A/B/C/D).&#10;Optional per question: topic, subtopic, explanation, difficulty (Easy/Moderate/Difficult), estimatedTime (seconds).&#10;courseType/subject can also be set per question to override the dropdowns above.'></textarea>
         <button class="btn btn-primary" id="bulkUploadQBtn" style="margin-top:0.75rem;">📥 Upload JSON</button>
         <div id="bulkUploadQMessage" class="mt-2"></div>
+      </div>
+
+      <div class="card">
+        <h3>📰 Manage blogs</h3>
+        <p class="helper-text">Remove any post that shouldn't be up. Authors can also delete their own posts from the Blogs page.</p>
+        <div id="adminBlogsList" class="mt-2"></div>
       </div>
 
       <div class="card">

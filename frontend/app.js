@@ -391,6 +391,21 @@ async function resetPassword() {
 // ====================================================================
 // ONBOARDING
 // ====================================================================
+// Target institution options depend on the selected exam: NEET is medical
+// colleges (existing 3-tier AIIMS/Govt/Private), JEE is engineering
+// institutes (IIT/NIT/IIIT-GFTI) -- mirrors the same tiering pattern so
+// cutoff prediction and subject targets can treat both consistently.
+const NEET_INSTITUTIONS = ['AIIMS', 'Government Medical College', 'Private Medical College'];
+const JEE_INSTITUTIONS  = ['IIT', 'NIT', 'IIIT/GFTI'];
+
+function populateObInstitutionOptions(preferredValue) {
+  const exam = document.getElementById('obTargetExam').value;
+  const options = exam === 'JEE' ? JEE_INSTITUTIONS : NEET_INSTITUTIONS;
+  const sel = document.getElementById('obTargetInstitution');
+  sel.innerHTML = options.map(o => `<option value="${o}">${o}</option>`).join('');
+  sel.value = options.includes(preferredValue) ? preferredValue : options[0];
+}
+
 async function submitOnboarding() {
   const btn = document.getElementById('onboardingBtn');
   const msgEl = document.getElementById('onboardingMessage');
@@ -427,10 +442,10 @@ async function prefillOnboarding() {
   if (!currentUser || currentUser.role !== 'student') return;
   renderObExamDateDisplay();
   const data = await loadStudentData(currentUser.email);
-  if (!data || !data.student) return;
+  if (!data || !data.student) { populateObInstitutionOptions(); return; }
   const s = data.student;
   if (s.target_exam) document.getElementById('obTargetExam').value = s.target_exam;
-  if (s.target_institution || s.aim) document.getElementById('obTargetInstitution').value = s.target_institution || s.aim;
+  populateObInstitutionOptions(s.target_institution || s.aim);
   if (s.category) document.getElementById('obCategory').value = s.category;
   if (s.state) document.getElementById('obState').value = s.state;
   if (s.current_class) document.getElementById('obCurrentClass').value = s.current_class;
@@ -551,7 +566,7 @@ function renderSingleExamCutoff(cutoff, student) {
     const subj = cutoff.subjectCutoffs;
     return `
       <div class="flex-between">
-        <h3 style="margin-bottom:0;">🎯 JEE cutoff &amp; rank prediction (${cutoff.targetYear})</h3>
+        <h3 style="margin-bottom:0;">🎯 JEE cutoff &amp; rank prediction — ${cutoff.institution} (${cutoff.targetYear})</h3>
         ${badge}
       </div>
       <div class="grid-3 mt-1">
@@ -568,10 +583,10 @@ function renderSingleExamCutoff(cutoff, student) {
           <p style="font-weight:700; font-size:1.4rem; margin:0;">${cutoff.stretchPercentile.toFixed(2)}</p>
         </div>
       </div>
-      <p class="helper-text mt-1">Estimated rank range: <strong>#${cutoff.estimatedRank.low.toLocaleString('en-IN')} – #${cutoff.estimatedRank.high.toLocaleString('en-IN')}</strong>
+      <p class="helper-text mt-1">Estimated ${cutoff.institution} closing rank (CRL): <strong>#${cutoff.closingRank.stretch.toLocaleString('en-IN')} – #${cutoff.closingRank.target.toLocaleString('en-IN')}</strong>
         ${cutoff.admissionProbability !== null ? ` · Admission probability at current pace: <strong>${cutoff.admissionProbability}%</strong>` : ''}
       </p>
-      <p class="helper-text">Regressed from published JEE Main ${cutoff.category} category qualifying percentiles, forward to ${cutoff.targetYear}.</p>
+      <p class="helper-text">Regressed from published JEE Main ${cutoff.category} category qualifying percentiles and JoSAA ${cutoff.institution} closing ranks, forward to ${cutoff.targetYear}.</p>
       <p class="helper-text mt-1" style="font-weight:600;">Subject-wise accuracy targets to stay on pace:</p>
       <div class="grid-3 mt-1">
         <div class="card" style="border:1px solid var(--border);"><strong>Physics</strong><p class="helper-text">${subj.Physics.accuracyTargetPct}% accuracy</p></div>
@@ -1282,6 +1297,93 @@ async function loadChapterNotesPage() {
 }
 
 // ====================================================================
+// BLOGS — open community posts. Any logged-in student/faculty can write
+// about anything; the author or admin can remove a post. The same list
+// renderer is reused for the admin console's "Manage blogs" panel.
+// ====================================================================
+async function loadBlogsPage() {
+  const container = document.getElementById('blogsList');
+  if (!container) return;
+  container.innerHTML = `<div class="loading-row"><div class="spinner"></div></div>`;
+  try {
+    const blogs = await api('/api/blogs');
+    renderBlogsList(blogs, 'blogsList');
+  } catch (err) {
+    container.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
+  }
+}
+
+function renderBlogsList(blogs, containerId) {
+  const container = document.getElementById(containerId);
+  if (!container) return;
+  container.innerHTML = blogs.length ? blogs.map(b => `
+    <div class="card" style="margin-bottom:0.75rem; background:var(--cream-deep); border:none;">
+      <div class="flex-between">
+        <div>
+          <strong>${escapeHtmlText(b.title)}</strong>
+          <div class="helper-text">by ${escapeHtmlText(b.author_name)} (${escapeHtmlText(b.author_role)}) · ${new Date(b.created_at).toLocaleDateString()}</div>
+        </div>
+        ${(currentUser && (currentUser.role === 'admin' || currentUser.email === b.author_email))
+          ? `<button class="btn btn-danger" onclick="deleteBlog(${b.id})">Delete</button>` : ''}
+      </div>
+      <p style="margin-top:0.5rem; white-space:pre-wrap;">${escapeHtmlText(b.content)}</p>
+    </div>`).join('') : `<div class="empty-state"><p>No blog posts yet — be the first to write one!</p></div>`;
+}
+
+async function publishBlog() {
+  const btn = document.getElementById('publishBlogBtn');
+  const title = document.getElementById('blogTitleInput').value.trim();
+  const content = document.getElementById('blogContentInput').value.trim();
+  const msgEl = document.getElementById('blogPublishMessage');
+
+  if (!title || !content) {
+    msgEl.innerHTML = `<span class="badge danger">Title and content are required.</span>`;
+    return;
+  }
+
+  btn.disabled = true; btn.textContent = 'Publishing...';
+  try {
+    await api('/api/blogs', { method: 'POST', body: JSON.stringify({ title, content }) });
+    document.getElementById('blogTitleInput').value = '';
+    document.getElementById('blogContentInput').value = '';
+    msgEl.innerHTML = '';
+    showToast('Blog post published!', 'success');
+    loadBlogsPage();
+  } catch (err) {
+    msgEl.innerHTML = `<span class="badge danger">${err.message}</span>`;
+    showToast(err.message, 'error');
+  } finally {
+    btn.disabled = false; btn.textContent = 'Publish';
+  }
+}
+
+window.deleteBlog = async (id) => {
+  if (!confirm('Delete this blog post? This cannot be undone.')) return;
+  try {
+    await api(`/api/blogs/${id}`, { method: 'DELETE' });
+    showToast('Blog post deleted.', '');
+    // Refresh whichever list is currently visible (student Blogs page
+    // and/or the admin console's Manage blogs panel).
+    if (document.getElementById('blogsList')) loadBlogsPage();
+    if (document.getElementById('adminBlogsList') && currentUser?.role === 'admin') renderAdminBlogs();
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+};
+
+async function renderAdminBlogs() {
+  const container = document.getElementById('adminBlogsList');
+  if (!container) return;
+  container.innerHTML = `<div class="loading-row"><div class="spinner"></div></div>`;
+  try {
+    const blogs = await api('/api/blogs');
+    renderBlogsList(blogs, 'adminBlogsList');
+  } catch (err) {
+    container.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
+  }
+}
+
+// ====================================================================
 // GRAND TEST DRAFT EDITOR — FACULTY
 // Faculty can preview every generated question, edit any of them, and
 // paste extra questions (AI-arranged) to replace generated ones -- the
@@ -1957,6 +2059,17 @@ async function renderAdmin() {
 
     renderAdminStudents();
     renderAdminFaculty();
+    renderAdminBlogs();
+
+    const pendingFaculty = await api('/api/admin/pending-faculty');
+    document.getElementById('pendingFacultyAdmin').innerHTML = pendingFaculty.length ? pendingFaculty.map(f => `
+      <div class="flex-between" style="padding:0.6rem 0; border-bottom:1px solid var(--border);">
+        <div>
+          <strong>${escapeHtmlText(f.name)}</strong>
+          <div class="helper-text">${escapeHtmlText(f.email)} · ${f.department || '—'}${!f.is_verified ? ' · <span style="color:#b5482c;">unverified</span>' : ''}</div>
+        </div>
+        <button class="btn btn-primary" onclick="approveFaculty('${f.email}')">Approve</button>
+      </div>`).join('') : `<div class="empty-state"><p>No pending faculty approvals.</p></div>`;
 
     const pending = await api('/api/admin/pending-lectures');
     document.getElementById('pendingLecturesAdmin').innerHTML = pending.length ? pending.map(s => `
@@ -2073,7 +2186,7 @@ function renderAdminFacultyList(faculty) {
     <div class="flex-between" style="padding:0.6rem 0; border-bottom:1px solid var(--border);">
       <div>
         <strong>${escapeHtmlText(f.name)}</strong>
-        <div class="helper-text">${escapeHtmlText(f.email)} · ${f.department || '—'}${!f.is_verified ? ' · <span style="color:#b5482c;">unverified</span>' : ''}</div>
+        <div class="helper-text">${escapeHtmlText(f.email)} · ${f.department || '—'}${!f.is_verified ? ' · <span style="color:#b5482c;">unverified</span>' : ''}${f.is_approved === false ? ' · <span style="color:#b5482c;">pending approval</span>' : ''}</div>
       </div>
       <div class="flex-row">
         <button class="btn btn-outline" onclick="impersonateUser('${f.email}','faculty')">👁 View as</button>
@@ -2099,6 +2212,17 @@ window.impersonateUser = async (email, role) => {
     const data = await api('/api/admin/impersonate', { method: 'POST', body: JSON.stringify({ email, role }) });
     startImpersonation(data.token, data.user);
     showToast(`Now viewing as ${data.user.name}.`, 'success');
+  } catch (err) {
+    showToast(err.message, 'error');
+  }
+};
+
+// ---- Admin: approve a pending faculty account ----
+window.approveFaculty = async (email) => {
+  try {
+    await api(`/api/admin/approve-faculty/${encodeURIComponent(email)}`, { method: 'POST' });
+    showToast('Faculty account approved.', 'success');
+    renderAdmin();
   } catch (err) {
     showToast(err.message, 'error');
   }
@@ -2463,14 +2587,14 @@ let physicsMaterialsCache = null;
 
 const NEET_PAGE_SUBJECTS = ['Physics', 'Chemistry', 'Botany', 'Zoology'];
 const JEE_PAGE_SUBJECTS = ['Physics', 'Chemistry', 'Mathematics'];
+// All subjects are shown to every student -- the dropdown organises/
+// separates content by subject, it doesn't restrict access to it. A NEET
+// student can still browse Mathematics materials and vice versa.
+const ALL_PAGE_SUBJECTS = [...new Set([...NEET_PAGE_SUBJECTS, ...JEE_PAGE_SUBJECTS])];
 
 async function loadPhysicsModule() {
   const select = document.getElementById('subjectPageSelect');
-  const data = await loadStudentData(currentStudentEmail).catch(() => null);
-  const targetExam = data?.student?.target_exam || 'NEET';
-  const subjects = targetExam === 'JEE' ? JEE_PAGE_SUBJECTS
-    : targetExam === 'BOTH' ? [...new Set([...NEET_PAGE_SUBJECTS, ...JEE_PAGE_SUBJECTS])]
-    : NEET_PAGE_SUBJECTS;
+  const subjects = ALL_PAGE_SUBJECTS;
 
   const prevValue = select.value;
   select.innerHTML = subjects.map(s => `<option value="${s}">${s}</option>`).join('');
@@ -2869,18 +2993,21 @@ async function renderPhysicsRecommendations() {
 // ====================================================================
 const AUTH_REQUIRED_PAGES = {
   guidance: 'student', practice: 'student', progress: 'student', physics: 'student', chapterNotes: 'student',
-  onboarding: 'student', lecturer: 'faculty', facultyDashboard: 'faculty', admin: 'admin'
+  onboarding: 'student', lecturer: 'faculty', facultyDashboard: 'faculty', admin: 'admin',
+  blogs: ['student', 'faculty']
 };
 
 function showPage(pageId) {
-  // Gate role-specific pages
+  // Gate role-specific pages (a page can require a single role or, like
+  // blogs, any one of a list of roles)
   const requiredRole = AUTH_REQUIRED_PAGES[pageId];
   if (requiredRole) {
+    const allowedRoles = Array.isArray(requiredRole) ? requiredRole : [requiredRole];
     if (!currentUser) {
       showToast('Please log in to continue.', 'error');
       pageId = 'login';
-    } else if (currentUser.role !== requiredRole) {
-      showToast(`This area is for ${requiredRole}s.`, 'error');
+    } else if (!allowedRoles.includes(currentUser.role)) {
+      showToast(`This area is for ${allowedRoles.join('/')}s.`, 'error');
       pageId = 'welcome';
     }
   }
@@ -2898,6 +3025,7 @@ function showPage(pageId) {
   if (pageId === 'progress') renderProgress();
   if (pageId === 'physics') loadPhysicsModule();
   if (pageId === 'chapterNotes') loadChapterNotesPage();
+  if (pageId === 'blogs') loadBlogsPage();
   if (pageId === 'lecturer') {
     renderMySubmissions(); renderFacultyTests(); renderFacultyAnalytics(); renderFacultyMaterials();
     populateChapterSelects(); renderChapterList(); renderFacLectures();
@@ -2928,6 +3056,7 @@ function updateNavForAuth() {
   document.getElementById('navProgress').style.display    = (loggedIn && role === 'student') ? '' : 'none';
   document.getElementById('navPhysics').style.display     = (loggedIn && role === 'student') ? '' : 'none';
   document.getElementById('navChapterNotes').style.display = (loggedIn && role === 'student') ? '' : 'none';
+  document.getElementById('navBlogs').style.display        = (loggedIn && (role === 'student' || role === 'faculty')) ? '' : 'none';
   document.getElementById('navBridge').style.display      = (loggedIn && role === 'student') ? '' : 'none';
   document.getElementById('navQBank').style.display       = (loggedIn && (role === 'faculty' || role === 'admin')) ? '' : 'none';
   document.getElementById('navLecturer').style.display    = (loggedIn && role === 'faculty') ? '' : 'none';
@@ -2974,7 +3103,10 @@ window.onload = () => {
   document.getElementById('sendResetOtpBtn').onclick = sendResetOtp;
   document.getElementById('resetPasswordBtn').onclick = resetPassword;
   document.getElementById('onboardingBtn').onclick = submitOnboarding;
+  document.getElementById('obTargetExam').onchange = () => populateObInstitutionOptions();
+  populateObInstitutionOptions();
   document.getElementById('navLogout').onclick = logoutUser;
+  document.getElementById('publishBlogBtn').onclick = publishBlog;
 
   document.getElementById('goToLoginLink').onclick = (e) => { e.preventDefault(); showPage('login'); };
   document.getElementById('goToRegisterLink').onclick = (e) => { e.preventDefault(); showPage('register'); };
