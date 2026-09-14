@@ -352,6 +352,14 @@ function logoutUser() {
   clearSession();
   updateNavForAuth();
   updateImpersonationBanner();
+  // Clear any leftover values in the login form so a previous session's
+  // email/password don't remain visible if the user lands back on Login.
+  const loginEmailEl = document.getElementById('loginEmail');
+  const loginPasswordEl = document.getElementById('loginPassword');
+  if (loginEmailEl) loginEmailEl.value = '';
+  if (loginPasswordEl) loginPasswordEl.value = '';
+  const loginMsgEl = document.getElementById('loginMessage');
+  if (loginMsgEl) loginMsgEl.innerHTML = '';
   showToast('Logged out.', '');
   showPage('welcome');
 }
