@@ -5,20 +5,19 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>CTK Bridge Course · Connectomic Learning</title>
 <meta name="description" content="A comprehensive NEET & JEE preparation platform built on the Seven Hills of Knowledge.">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;600;700&family=Sora:wght@400;500;600;700;800&display=swap" rel="stylesheet">
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-<div id="impersonationBanner" style="display:none; position:sticky; top:0; z-index:1000; background:#7a3b12; color:#fff; padding:0.6rem 1rem; text-align:center; font-size:0.9rem;">
-  👁 Viewing as <strong id="impersonationTarget"></strong> — <button id="exitImpersonationBtn" style="background:#fff; color:#7a3b12; border:none; border-radius:6px; padding:0.2rem 0.7rem; font-weight:600; cursor:pointer; margin-left:0.5rem;">Exit &amp; return to Admin</button>
+<div id="impersonationBanner" style="display:none; position:sticky; top:0; z-index:1000; background:#B08A4E; color:#fff; padding:0.6rem 1rem; text-align:center; font-size:0.9rem;">
+  👁 Viewing as <strong id="impersonationTarget"></strong> — <button id="exitImpersonationBtn" style="background:#fff; color:#B08A4E; border:none; border-radius:6px; padding:0.2rem 0.7rem; font-weight:600; cursor:pointer; margin-left:0.5rem;">Exit &amp; return to Admin</button>
 </div>
 <div class="container">
 
   <!-- ===================== NAV ===================== -->
   <div class="navbar">
     <div class="logo">
+      <img src="logo.png" alt="CTK Bridge Course" class="nav-logo-img">
       <h1>🏔️ CTK Bridge Course</h1>
     </div>
     <div class="logo tagline" style="width:100%; order:3;">Connectomic Theory of Knowledge · The Seven Hills of Knowledge</div>
@@ -44,6 +43,7 @@
   <!-- ===================== WELCOME ===================== -->
   <div id="welcomePage" class="page">
     <div class="hero">
+      <img src="logo.png" alt="CTK Bridge Course" class="hero-logo-img">
       <div class="eyebrow">Connectomic Theory of Knowledge</div>
       <h1>Climb the Seven Hills.<br>Connect the concepts.<br>Reach your Target.</h1>
       <p class="lead">A calm, intelligent learning companion that turns isolated exam facts into a connected map of understanding — built around Prof. Konuri's Seven Hills of Knowledge.</p>
@@ -57,26 +57,28 @@
         </svg>
       </div>
       <div class="grid-7 mt-1">
-        <div class="badge badge-hill" onclick="playHillVideo('https://pub-8521d28a1e0d44bb9c7da4e801284a66.r2.dev/The_First_Hill.mp4','1 · Known → Unknown')"><span class="badge-hill-play">▶</span>1 · Known → Unknown</div>
-        <div class="badge badge-hill" onclick="playHillVideo('https://pub-8521d28a1e0d44bb9c7da4e801284a66.r2.dev/The_Second_Hill.mp4','2 · Central Point')"><span class="badge-hill-play">▶</span>2 · Central Point</div>
-        <div class="badge badge-hill" onclick="playHillVideo('https://pub-8521d28a1e0d44bb9c7da4e801284a66.r2.dev/The_Third_Hill__Discovery.mp4','3 · Let Student Discover')"><span class="badge-hill-play">▶</span>3 · Let Student Discover</div>
-        <div class="badge badge-hill" onclick="playHillVideo('https://pub-8521d28a1e0d44bb9c7da4e801284a66.r2.dev/One_Key,_Many_Doors.mp4','4 · One Key, Many Doors')"><span class="badge-hill-play">▶</span>4 · One Key, Many Doors</div>
-        <div class="badge badge-hill" onclick="playHillVideo('https://pub-8521d28a1e0d44bb9c7da4e801284a66.r2.dev/The_Fifth_and_Sixth_Hills.mp4','5 · Recognise Patterns')"><span class="badge-hill-play">▶</span>5 · Recognise Patterns</div>
-        <div class="badge badge-hill" onclick="playHillVideo('https://pub-8521d28a1e0d44bb9c7da4e801284a66.r2.dev/The_Fifth_and_Sixth_Hills.mp4','6 · Build Connections')"><span class="badge-hill-play">▶</span>6 · Build Connections</div>
-        <div class="badge badge-hill" onclick="playHillVideo('https://pub-8521d28a1e0d44bb9c7da4e801284a66.r2.dev/The_Seventh_Hill.mp4','7 · Real-World Wisdom')"><span class="badge-hill-play">▶</span>7 · Real-World Wisdom</div>
+        <div class="badge badge-hill" onclick="playHillVideo('https://pub-f4f030961eab45ada12b3d35525b2379.r2.dev/The First Hill.mp4','1 · Known → Unknown')"><span class="badge-hill-play">▶</span>1 · Known → Unknown</div>
+        <div class="badge badge-hill" onclick="playHillVideo('https://pub-f4f030961eab45ada12b3d35525b2379.r2.dev/The Second Hill.mp4','2 · Central Point')"><span class="badge-hill-play">▶</span>2 · Central Point</div>
+        <div class="badge badge-hill" onclick="playHillVideo('https://pub-f4f030961eab45ada12b3d35525b2379.r2.dev/The Third Hill.mp4','3 · Let Student Discover')"><span class="badge-hill-play">▶</span>3 · Let Student Discover</div>
+        <div class="badge badge-hill" onclick="playHillVideo('https://pub-f4f030961eab45ada12b3d35525b2379.r2.dev/The Fourth Hill.mp4','4 · One Key, Many Doors')"><span class="badge-hill-play">▶</span>4 · One Key, Many Doors</div>
+        <div class="badge badge-hill" onclick="playHillVideo('https://pub-f4f030961eab45ada12b3d35525b2379.r2.dev/The Fifth Hill.mp4','5 · Recognise Patterns')"><span class="badge-hill-play">▶</span>5 · Recognise Patterns</div>
+        <div class="badge badge-hill" onclick="playHillVideo('https://pub-f4f030961eab45ada12b3d35525b2379.r2.dev/The Sixth Hill.mp4','6 · Build Connections')"><span class="badge-hill-play">▶</span>6 · Build Connections</div>
+        <div class="badge badge-hill" onclick="playHillVideo('https://pub-f4f030961eab45ada12b3d35525b2379.r2.dev/The Seventh Hill.mp4','7 · Real-World Wisdom')"><span class="badge-hill-play">▶</span>7 · Real-World Wisdom</div>
       </div>
 
-      <button class="btn btn-primary" id="startNowBtn" style="display:none;">Start Your Journey →</button>
+      <button class="btn btn-primary mt-2" id="startNowBtn" style="display:none;">Start Your Journey →</button>
 
       <div class="eyebrow" style="margin-bottom:0.75rem;">Choose Your Path</div>
-      <div class="grid-3" style="text-align:left; max-width:920px; margin:0 auto 1rem;">
-        <div class="card" style="text-align:center; cursor:pointer;" onclick="showPage('login')">
-          <h3>🧬 NEET</h3>
-          <p style="color:var(--ink-soft); font-size:0.92rem;">Medical entrance preparation — Physics, Chemistry, Botany &amp; Zoology.</p>
+      <div class="grid-3" style="max-width:920px; margin:0 auto 1rem;">
+        <div class="card level-card level-card-neet" onclick="showPage('login')">
+          <span class="level-card-icon">🧬</span>
+          <h3>NEET</h3>
+          <p class="helper-text">Medical entrance preparation — Physics, Chemistry, Botany &amp; Zoology.</p>
         </div>
-        <div class="card" style="text-align:center; cursor:pointer;" onclick="showPage('login')">
-          <h3>⚙️ JEE</h3>
-          <p style="color:var(--ink-soft); font-size:0.92rem;">Engineering entrance preparation — Physics, Chemistry &amp; Mathematics.</p>
+        <div class="card level-card level-card-jee" onclick="showPage('login')">
+          <span class="level-card-icon">⚙️</span>
+          <h3>JEE</h3>
+          <p class="helper-text">Engineering entrance preparation — Physics, Chemistry &amp; Mathematics.</p>
         </div>
         <!-- <div class="card" style="text-align:center; cursor:pointer;" onclick="showPage('login')">
           <h3>🩺 MEDICAL</h3>
@@ -94,17 +96,24 @@
       </div>
     </div>
 
+    <div class="section-lead">
+      <div class="eyebrow">Why CTK Bridge Course</div>
+      <p class="helper-text">Everything on the platform adapts to you — from your daily plan to the remedies for your weakest topics.</p>
+    </div>
     <div class="grid-3">
-      <div class="card">
-        <h3>🧭 Personalised, not generic</h3>
+      <div class="card section-icon-card">
+        <span class="section-icon">🧭</span>
+        <h3>Personalised, not generic</h3>
         <p style="color:var(--ink-soft); font-size:0.92rem;">Your study plan is generated from your exam date, category, aim and live performance — recalculated every time you practise.</p>
       </div>
-      <div class="card">
-        <h3>🗺️ Error Atlas &amp; Remedial Ladder</h3>
+      <div class="card section-icon-card">
+        <span class="section-icon">🗺️</span>
+        <h3>Error Atlas &amp; Remedial Ladder</h3>
         <p style="color:var(--ink-soft); font-size:0.92rem;">Every quiz feeds an analytics engine that finds your weakest topics and prescribes a Hill-based remedy.</p>
       </div>
-      <div class="card">
-        <h3>👨‍🏫 Curated faculty lectures</h3>
+      <div class="card section-icon-card">
+        <span class="section-icon">👨‍🏫</span>
+        <h3>Curated faculty lectures</h3>
         <p style="color:var(--ink-soft); font-size:0.92rem;">Senior faculty submit lectures, our admin team reviews them, and approved sessions appear instantly in Practice.</p>
       </div>
     </div>

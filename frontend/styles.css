@@ -1,43 +1,53 @@
 /* =====================================================================
-   NEET CTK IGNITION — "Seven Hills" visual system
-   Palette: warm cream base, soft mist-blue / sage / lavender hill bands,
-   terracotta-clay accent for CTAs (the "summit marker").
-   Display face: Fraunces (warm, academic serif)
-   Body face: Sora (calm, rounded geometric sans)
+   CTK BRIDGE COURSE — "Seven Hills" visual system
+   Palette: warm ivory paper + deep burgundy/plum accent, an
+   anatomical-atlas feel (old textbook paper + engraved-plate ink),
+   ported from the Connectomic Medical Academy design system.
+   Display + body face: warm serif (Iowan Old Style / Georgia / Palatino)
    ===================================================================== */
 
 :root{
-  --cream:        #FBF6EE;
-  --cream-deep:   #F3ECDF;
-  --paper:        #FFFDF9;
-  --ink:          #3E3A36;
-  --ink-soft:     #7A7468;
+  --cream:        #F4E9DC;
+  --cream-deep:   #EDE0CE;
+  --paper:        #FBF5EF;
+  --ink:          #2B211D;
+  --ink-soft:     #6E5C51;
 
-  --hill-1: #E7D9C9; /* foothill - warm sand */
-  --hill-2: #D9E4D3; /* sage */
-  --hill-3: #CFE3E6; /* mist blue */
-  --hill-4: #DCD8EC; /* lavender */
-  --hill-5: #E7D6E3; /* dusty rose */
-  --hill-6: #D6E6DD; /* deep sage */
-  --hill-7: #CBDCE8; /* far peak blue */
+  --hill-1: #EADBC8; /* foothill - warm sand */
+  --hill-2: #E0C9AC; /* ochre sand */
+  --hill-3: #D2AD87; /* warm ochre */
+  --hill-4: #C59A78; /* deep ochre */
+  --hill-5: #B98868; /* brass ochre */
+  --hill-6: #A2615A; /* rose-brown */
+  --hill-7: #8C3B4A; /* burgundy peak */
 
-  --accent: #D98E5B;       /* clay terracotta */
-  --accent-deep: #C4753F;
-  --accent-soft: #F3DCC9;
+  --accent: #8C3B4A;        /* muted burgundy -- anatomical plate red */
+  --accent-deep: #6B2530;
+  --accent-soft: #EAD2D2;
 
-  --ok: #7FAE8E;
-  --warn: #D9A65B;
+  --accent2: #5F7A5D;       /* sage green -- secondary/success */
+  --accent2-deep: #435A42;
+  --accent2-soft: #DCE6D8;
 
-  --border: #E8E0D2;
-  --shadow: 0 10px 30px -12px rgba(80, 65, 45, 0.18);
-  --shadow-sm: 0 4px 14px -6px rgba(80, 65, 45, 0.14);
+  --accent3: #B98868;       /* warm ochre -- Bridge Course */
+  --accent3-deep: #8C6142;
+  --accent3-soft: #EBDBC9;
 
-  --radius-lg: 26px;
-  --radius-md: 16px;
+  --gold: #B08A4E;          /* muted brass -- highlights */
+
+  --ok: #5F7A5D;
+  --warn: #B98868;
+
+  --border: #E4D4C3;
+  --shadow: 0 10px 30px -12px rgba(43, 33, 29, 0.18);
+  --shadow-sm: 0 4px 14px -6px rgba(43, 33, 29, 0.14);
+
+  --radius-lg: 20px;
+  --radius-md: 12px;
   --radius-sm: 10px;
 
-  --font-display: 'Fraunces', serif;
-  --font-body: 'Sora', sans-serif;
+  --font-display: 'Iowan Old Style', 'Georgia', 'Palatino Linotype', serif;
+  --font-body: 'Iowan Old Style', 'Georgia', 'Palatino Linotype', serif;
 }
 
 *{ margin:0; padding:0; box-sizing:border-box; }
@@ -73,12 +83,24 @@ a{ color: var(--accent-deep); }
   display:flex; justify-content:space-between; align-items:center; gap:1rem;
   flex-wrap:wrap; padding: 1.1rem 0; margin-bottom: 1.75rem;
 }
+.logo{ display:flex; align-items:center; gap:0.7rem; }
 .logo h1{
   font-family: var(--font-display);
   font-size: 1.55rem; font-weight: 600; letter-spacing: 0.01em;
   color: var(--ink); display:flex; align-items:center; gap:0.5rem;
 }
 .logo .tagline{ font-size:0.72rem; color: var(--ink-soft); letter-spacing:0.04em; margin-top:0.15rem; }
+.nav-logo-img{
+  height: 52px; width: 52px; object-fit: cover; border-radius: 50%; flex-shrink: 0;
+  border: 2.5px solid var(--accent3, #B98868);
+  box-shadow: 0 3px 12px rgba(43,33,29,0.2);
+  transition: transform 0.15s ease;
+}
+.logo:hover .nav-logo-img{ transform: scale(1.05); }
+.hero-logo-img{
+  display: block; margin: 0 auto 1rem; height: 130px; width: 130px; object-fit: cover;
+  border-radius: 50%; border: 3px solid var(--accent3, #B98868); box-shadow: 0 4px 16px rgba(43,33,29,0.18);
+}
 
 .nav-links{ display:flex; gap:0.4rem; flex-wrap:wrap; }
 .nav-btn{
@@ -104,7 +126,7 @@ a{ color: var(--accent-deep); }
   color: #fff; border:none;
 }
 .btn-outline{ background: transparent; border: 1.5px solid var(--ink); }
-.btn-danger{ background: #C75C5C; color:#fff; border:none; }
+.btn-danger{ background: #A33F3F; color:#fff; border:none; }
 .btn:disabled{ opacity:0.55; cursor:not-allowed; transform:none; }
 .btn-block{ width:100%; }
 
@@ -117,10 +139,33 @@ a{ color: var(--accent-deep); }
 .card h2{ font-family: var(--font-display); font-size: 1.6rem; font-weight:600; margin-bottom:0.6rem; }
 .card h3{ font-family: var(--font-display); font-size: 1.2rem; font-weight:600; margin-bottom:0.85rem; }
 
-.grid-2, .grid-3, .grid-7{ display:grid; gap: 1.25rem; }
+/* Elegant "level"-style cards — top accent border, centered content,
+   gentle hover lift. Used for the path-choice and feature cards on
+   the Welcome page so they read as a considered set, not a plain grid. */
+.level-card{
+  cursor:pointer; text-align:center; padding: 1.9rem 1.4rem;
+  transition: transform 0.2s ease, box-shadow 0.2s ease; border-top: 4px solid var(--accent);
+}
+.level-card:hover{ transform: translateY(-4px); box-shadow: var(--shadow); }
+.level-card h3{ margin-bottom: 0.5rem; }
+.level-card-neet{ border-top-color: var(--accent); }
+.level-card-jee{ border-top-color: var(--accent2); }
+.level-card-icon{ font-size: 1.9rem; margin-bottom: 0.5rem; display:block; }
+
+.section-icon-card{ text-align:center; }
+.section-icon-card .section-icon{ font-size: 1.6rem; margin-bottom: 0.5rem; display:block; }
+
+.grid-2, .grid-3{ display:grid; gap: 1.25rem; }
 .grid-2{ grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
 .grid-3{ grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
-.grid-7{ grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); }
+.grid-7{ display:flex; flex-wrap:wrap; justify-content:center; gap:0.4rem; }
+
+/* Section header rhythm for the Welcome page: a small eyebrow label
+   plus a centered helper line above a grid, mirroring how each
+   section on the page is introduced with generous top spacing. */
+.section-lead{ text-align:center; margin: 2.5rem 0 1.25rem; }
+.section-lead .eyebrow{ margin-bottom: 0.4rem; }
+.section-lead .helper-text{ max-width: 620px; margin: 0 auto; font-size: 0.9rem; }
 
 /* ---------------------------------------------------------------- forms */
 label.field-label{ display:block; font-size:0.78rem; font-weight:700; color:var(--ink-soft); margin-bottom:0.35rem; text-transform:uppercase; letter-spacing:0.04em; }
@@ -147,16 +192,16 @@ textarea{ resize: vertical; min-height: 100px; }
   border-radius: 999px; font-size: 0.78rem; font-weight:700; display:inline-block;
   border: 1px solid var(--border);
 }
-.badge.success{ background:#E4F0E6; color:#4F7A5C; border-color:#CDE3D2; }
-.badge.warn{ background:#F6EBD9; color:#A1742F; border-color:#EFDDBE; }
-.badge.danger{ background:#F7E4E4; color:#B6504F; border-color:#F0CFCF; }
+.badge.success{ background:var(--accent2-soft); color:var(--accent2-deep); border-color:var(--accent2); }
+.badge.warn{ background:var(--accent3-soft); color:var(--accent3-deep); border-color:var(--accent3); }
+.badge.danger{ background:var(--accent-soft); color:var(--accent-deep); border-color:var(--accent); }
 .badge-hill{
   cursor:pointer; transition: transform 0.15s ease, background 0.15s ease, box-shadow 0.15s ease;
   background: var(--accent-soft); border-color: var(--accent); color: var(--accent-deep);
-  box-shadow: 0 2px 6px rgba(217,142,91,0.25);
+  box-shadow: 0 2px 6px rgba(140,59,74,0.25);
   display:inline-flex; align-items:center; gap:0.4rem;
 }
-.badge-hill:hover{ background: var(--accent); color:#fff; transform: translateY(-2px); box-shadow: 0 4px 10px rgba(217,142,91,0.4); }
+.badge-hill:hover{ background: var(--accent); color:#fff; transform: translateY(-2px); box-shadow: 0 4px 10px rgba(140,59,74,0.4); }
 .badge-hill:hover .badge-hill-play{ background:#fff; color: var(--accent-deep); }
 .badge-hill-play{
   display:inline-flex; align-items:center; justify-content:center;
@@ -255,7 +300,7 @@ textarea{ resize: vertical; min-height: 100px; }
   display:flex; align-items:center; gap:0.6rem; padding: 0.5rem 0.7rem; border-radius: var(--radius-sm);
   cursor:pointer; transition: background .15s ease;
 }
-.quiz-option:hover{ background: rgba(217,142,91,0.08); }
+.quiz-option:hover{ background: rgba(140,59,74,0.08); }
 .quiz-option input{ width:auto; accent-color: var(--accent); }
 
 /* ---------------------------------------------------------------- flex / layout helpers */
@@ -297,8 +342,8 @@ hr.divider{ border:none; border-top:1px solid var(--border); margin: 1.5rem 0; }
   transition: all .3s ease; z-index: 999; max-width: 90vw; text-align:center;
 }
 #toast.show{ opacity:1; transform: translateX(-50%) translateY(0); }
-#toast.error{ background: #B6504F; }
-#toast.success{ background: #4F7A5C; }
+#toast.error{ background: #A33F3F; }
+#toast.success{ background: #435A42; }
 
 /* ---------------------------------------------------------------- loading spinner */
 .spinner{
@@ -351,9 +396,9 @@ hr.divider{ border:none; border-top:1px solid var(--border); margin: 1.5rem 0; }
 .material-row .material-title{ font-weight:700; font-size:0.9rem; }
 .material-row .material-desc{ font-size:0.82rem; color: var(--ink-soft); margin-top:0.2rem; }
 
-.proficiency-badge.Beginner{ background:#F7E4E4; color:#B6504F; border-color:#F0CFCF; }
-.proficiency-badge.Intermediate{ background:#F6EBD9; color:#A1742F; border-color:#EFDDBE; }
-.proficiency-badge.Advanced{ background:#E4F0E6; color:#4F7A5C; border-color:#CDE3D2; }
+.proficiency-badge.Beginner{ background:var(--accent-soft); color:var(--accent-deep); border-color:var(--border); }
+.proficiency-badge.Intermediate{ background:var(--accent3-soft); color:var(--accent3-deep); border-color:var(--border); }
+.proficiency-badge.Advanced{ background:var(--accent2-soft); color:var(--accent2-deep); border-color:var(--border); }
 
 .rec-item{ border-bottom: 1px solid var(--border); padding: 0.9rem 0; }
 .rec-item:last-child{ border-bottom:none; }
@@ -387,13 +432,13 @@ hr.divider{ border:none; border-top:1px solid var(--border); margin: 1.5rem 0; }
   border-radius: var(--radius-md); background: var(--paper);
   transition: border-color 0.15s ease;
 }
-.test-question-card.answered{ border-color: var(--accent-soft); background: #FFFDF6; }
+.test-question-card.answered{ border-color: var(--accent-soft); background: #FCF3F0; }
 .test-question-meta{
   font-size:0.78rem; color: var(--ink-soft); margin-bottom:0.75rem;
   display:flex; gap:0.6rem; flex-wrap:wrap;
 }
 .test-question-meta span{
-  background: var(--cream-deep, #F3EEE3); padding:0.15rem 0.6rem; border-radius:999px;
+  background: var(--cream-deep, #EDE0CE); padding:0.15rem 0.6rem; border-radius:999px;
 }
 .test-question-text{
   margin: 0 0 1.1rem; font-weight:600; font-size:1.05rem; line-height:1.5;

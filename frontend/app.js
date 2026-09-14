@@ -744,8 +744,8 @@ async function renderProgress() {
       data: {
         labels: ['Biology', 'Physics', 'Chemistry', 'Zoology', 'Mathematics'],
         datasets: [
-          { label: 'Your %', data: [progress.bio_accuracy, progress.phy_accuracy, progress.chem_accuracy, progress.zoo_accuracy, progress.math_accuracy], backgroundColor: '#CFE3E6', borderRadius: 8 },
-          { label: 'Target %', data: [targets.bio, targets.phy, targets.chem, targets.zoo, targets.math], backgroundColor: '#D98E5B', borderRadius: 8 }
+          { label: 'Your %', data: [progress.bio_accuracy, progress.phy_accuracy, progress.chem_accuracy, progress.zoo_accuracy, progress.math_accuracy], backgroundColor: '#B98868', borderRadius: 8 },
+          { label: 'Target %', data: [targets.bio, targets.phy, targets.chem, targets.zoo, targets.math], backgroundColor: '#8C3B4A', borderRadius: 8 }
         ]
       },
       options: { responsive: true, plugins: { legend: { position: 'bottom' } }, scales: { y: { beginAtZero: true, max: 100 } } }
@@ -755,7 +755,7 @@ async function renderProgress() {
       type: 'line',
       data: {
         labels: weeks,
-        datasets: [{ label: 'Overall accuracy', data: history, borderColor: '#D98E5B', backgroundColor: 'rgba(217,142,91,0.15)', fill: true, tension: 0.35 }]
+        datasets: [{ label: 'Overall accuracy', data: history, borderColor: '#8C3B4A', backgroundColor: 'rgba(140,59,74,0.15)', fill: true, tension: 0.35 }]
       },
       options: { responsive: true, plugins: { legend: { position: 'bottom' } }, scales: { y: { beginAtZero: true, max: 100 } } }
     });
@@ -766,7 +766,7 @@ async function renderProgress() {
         labels: ['Biology', 'Physics', 'Chemistry', 'Zoology', 'Mathematics'],
         datasets: [{
           data: [progress.bio_accuracy, progress.phy_accuracy, progress.chem_accuracy, progress.zoo_accuracy, progress.math_accuracy],
-          backgroundColor: ['#CFE3E6', '#D98E5B', '#B6C77A', '#E3B23C', '#9C7FB0']
+          backgroundColor: ['#8C3B4A', '#5F7A5D', '#B98868', '#B08A4E', '#6E5C51']
         }]
       },
       options: { responsive: true, plugins: { legend: { position: 'bottom' }, title: { display: true, text: 'Where your accuracy is concentrated' } } }
@@ -1714,8 +1714,8 @@ function renderFacultyStudentSubjectCharts(bundle) {
     data: {
       labels: ['Biology', 'Physics', 'Chemistry', 'Zoology', 'Mathematics'],
       datasets: [
-        { label: 'Current %', data: [progress.bio_accuracy, progress.phy_accuracy, progress.chem_accuracy, progress.zoo_accuracy, progress.math_accuracy], backgroundColor: '#CFE3E6', borderRadius: 8 },
-        { label: 'Target %', data: [targets.bio, targets.phy, targets.chem, targets.zoo, targets.math], backgroundColor: '#D98E5B', borderRadius: 8 }
+        { label: 'Current %', data: [progress.bio_accuracy, progress.phy_accuracy, progress.chem_accuracy, progress.zoo_accuracy, progress.math_accuracy], backgroundColor: '#B98868', borderRadius: 8 },
+        { label: 'Target %', data: [targets.bio, targets.phy, targets.chem, targets.zoo, targets.math], backgroundColor: '#8C3B4A', borderRadius: 8 }
       ]
     },
     options: { responsive: true, plugins: { legend: { position: 'bottom' } }, scales: { y: { beginAtZero: true, max: 100 } } }
@@ -1729,7 +1729,7 @@ function renderFacultyStudentSubjectCharts(bundle) {
     type: 'line',
     data: {
       labels: weeks,
-      datasets: [{ label: 'Overall accuracy', data: history, borderColor: '#D98E5B', backgroundColor: 'rgba(217,142,91,0.15)', fill: true, tension: 0.35 }]
+      datasets: [{ label: 'Overall accuracy', data: history, borderColor: '#8C3B4A', backgroundColor: 'rgba(140,59,74,0.15)', fill: true, tension: 0.35 }]
     },
     options: { responsive: true, plugins: { legend: { position: 'bottom' } }, scales: { y: { beginAtZero: true, max: 100 } } }
   });
@@ -1751,7 +1751,7 @@ function renderStudentAnalyticsChart(chapterWisePerformance) {
       datasets: [{
         label: 'Accuracy %',
         data: chapterWisePerformance.map(c => c.accuracyPercent),
-        backgroundColor: chapterWisePerformance.map(c => c.accuracyPercent >= 70 ? '#2e7d52' : c.accuracyPercent < 50 ? '#c0392b' : '#d4a017'),
+        backgroundColor: chapterWisePerformance.map(c => c.accuracyPercent >= 70 ? '#435A42' : c.accuracyPercent < 50 ? '#A33F3F' : '#B08A4E'),
         borderRadius: 4
       }]
     },
@@ -2066,7 +2066,7 @@ async function renderAdmin() {
       <div class="flex-between" style="padding:0.6rem 0; border-bottom:1px solid var(--border);">
         <div>
           <strong>${escapeHtmlText(f.name)}</strong>
-          <div class="helper-text">${escapeHtmlText(f.email)} · ${f.department || '—'}${!f.is_verified ? ' · <span style="color:#b5482c;">unverified</span>' : ''}</div>
+          <div class="helper-text">${escapeHtmlText(f.email)} · ${f.department || '—'}${!f.is_verified ? ' · <span style="color:#8C6142;">unverified</span>' : ''}</div>
         </div>
         <button class="btn btn-primary" onclick="approveFaculty('${f.email}')">Approve</button>
       </div>`).join('') : `<div class="empty-state"><p>No pending faculty approvals.</p></div>`;
@@ -2144,7 +2144,7 @@ function renderAdminStudentsList(students) {
     <div class="flex-between" style="padding:0.6rem 0; border-bottom:1px solid var(--border);">
       <div>
         <strong>${escapeHtmlText(s.name)}</strong>
-        <div class="helper-text">${escapeHtmlText(s.email)} · ${s.category || '—'} · ${s.aim || '—'} · ${s.target_exam || 'NEET'}${!s.is_verified ? ' · <span style="color:#b5482c;">unverified</span>' : ''}</div>
+        <div class="helper-text">${escapeHtmlText(s.email)} · ${s.category || '—'} · ${s.aim || '—'} · ${s.target_exam || 'NEET'}${!s.is_verified ? ' · <span style="color:#8C6142;">unverified</span>' : ''}</div>
       </div>
       <div class="flex-row">
         <button class="btn btn-outline" onclick="impersonateUser('${s.email}','student')">👁 View as</button>
@@ -2186,7 +2186,7 @@ function renderAdminFacultyList(faculty) {
     <div class="flex-between" style="padding:0.6rem 0; border-bottom:1px solid var(--border);">
       <div>
         <strong>${escapeHtmlText(f.name)}</strong>
-        <div class="helper-text">${escapeHtmlText(f.email)} · ${f.department || '—'}${!f.is_verified ? ' · <span style="color:#b5482c;">unverified</span>' : ''}${f.is_approved === false ? ' · <span style="color:#b5482c;">pending approval</span>' : ''}</div>
+        <div class="helper-text">${escapeHtmlText(f.email)} · ${f.department || '—'}${!f.is_verified ? ' · <span style="color:#8C6142;">unverified</span>' : ''}${f.is_approved === false ? ' · <span style="color:#8C6142;">pending approval</span>' : ''}</div>
       </div>
       <div class="flex-row">
         <button class="btn btn-outline" onclick="impersonateUser('${f.email}','faculty')">👁 View as</button>
