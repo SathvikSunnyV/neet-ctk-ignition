@@ -7,6 +7,16 @@ const cors    = require('cors');
 const path    = require('path');
 const multer  = require('multer');
 require('dotenv').config();
+
+// Railway and Render both run `npm start` without setting NODE_ENV themselves
+// unless told to. Every production-only safety check below (and in auth.js /
+// db.js) keys off NODE_ENV, so on those platforms an unset value would leave
+// the hardcoded dev JWT secret, admin invite code and default admin password
+// live. Detect the platform and treat it as production.
+if (!process.env.NODE_ENV && (process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_PROJECT_ID || process.env.RENDER)) {
+    process.env.NODE_ENV = 'production';
+    console.log('ℹ️  NODE_ENV was unset on a hosted platform — treating it as "production".');
+}
 const {
     pool, initSchema, computeTargets, TOPIC_BANK, predictCutoff, refreshCutoffCache,
     CURRICULUM, TEST_SUBJECT_DIST,
@@ -24,6 +34,7 @@ const {
     authenticate, requireRole, optionalAuth,
     checkRateLimit, recordAttempt
 } = require('./auth');
+const { sendOtpSms, normalizePhone } = require('./sms');
 
 // Mount question bank + test engine routes
 const qbankRouter = require('./qbank');
@@ -34,6 +45,17 @@ const qbank = qbankRouter.init({
     fillTestQuestions, computeScore, applyBridgeProgressUpdate,
     tryDirectJsonParse, structureWithAI, parseQuestionsRuleBased
 });
+
+// Same fail-loudly rule auth.js applies to JWT_SECRET: the admin invite code
+// has a committed default, so in production it must be set explicitly.
+const DEV_ADMIN_SIGNUP_CODE = 'ctk-admin-invite';
+if (process.env.NODE_ENV === 'production' &&
+    (!process.env.ADMIN_SIGNUP_CODE || process.env.ADMIN_SIGNUP_CODE === DEV_ADMIN_SIGNUP_CODE)) {
+    throw new Error('ADMIN_SIGNUP_CODE must be set to a private value in production (it is unset or still the default dev invite code).');
+}
+if (!process.env.NODE_ENV) {
+    console.warn('⚠️  NODE_ENV is not set. Production safety checks (JWT secret, admin invite code, default admin) are OFF. Set NODE_ENV=production for any real deployment.');
+}
 
 const app  = express();
 const PORT = process.env.PORT || 4000;
@@ -62,20 +84,68 @@ function classifyPhysicsProficiency(pct) {
 // ===========================================================================
 
 // ---------------------------------------------------------------------------
+// Mobile-number support helpers.
+// Accounts are still keyed by `email` everywhere else in the app, so a
+// phone-only account is given a placeholder email derived from its number
+// (never emailed -- OTPs for it always go by SMS).
+// ---------------------------------------------------------------------------
+const PHONE_EMAIL_DOMAIN = '@phone.ctk.invalid';
+const isPlaceholderEmail = (email) => !!email && email.endsWith(PHONE_EMAIL_DOMAIN);
+const placeholderEmailFor = (phone) => `${phone.replace(/\D/g, '')}${PHONE_EMAIL_DOMAIN}`;
+
+// What the person typed (email or mobile number) -> normalised lookup key.
+function identifierKey(identifier) {
+    const raw = (identifier || '').trim();
+    if (!raw) return { isEmail: false, key: '' };
+    if (raw.includes('@')) return { isEmail: true, key: raw.toLowerCase() };
+    return { isEmail: false, key: normalizePhone(raw) || raw };
+}
+
+// Looks up a user by email or mobile number.
+async function findUserByIdentifier(identifier) {
+    const { isEmail, key } = identifierKey(identifier);
+    if (!key) return { user: null, key };
+    const { rows: [user] } = await pool.query(
+        isEmail ? `SELECT * FROM users WHERE email = $1` : `SELECT * FROM users WHERE phone = $1`, [key]
+    );
+    return { user, key };
+}
+
+// Sends an OTP by SMS when the account has a phone number, otherwise by
+// email. If SMS could not be delivered and the account also has a real
+// email, the code is emailed as a fallback.
+async function deliverOtp(user, otp, purpose) {
+    if (user.phone) {
+        const { delivered } = await sendOtpSms(user.phone, otp, purpose);
+        if (delivered || isPlaceholderEmail(user.email)) return 'sms';
+    }
+    await sendOtpEmail(user.email, otp, purpose);
+    return 'email';
+}
+const channelLabel = (c) => (c === 'sms' ? 'phone (SMS)' : 'email');
+
+// ---------------------------------------------------------------------------
 // REGISTER (Student / Faculty / Admin) — creates an unverified user and
 // sends an OTP for email verification.
 // ---------------------------------------------------------------------------
 app.post('/api/auth/register', async (req, res) => {
-    const { name, email, password, confirmPassword, role } = req.body;
-    const cleanEmail = (email || '').trim().toLowerCase();
+    const { name, password, confirmPassword, role } = req.body;
+    const cleanEmail = (req.body.email || '').trim().toLowerCase();
+    const cleanPhone = normalizePhone(req.body.phone);
     const allowedRoles = ['student', 'faculty', 'admin'];
     const finalRole = allowedRoles.includes(role) ? role : 'student';
 
-    if (!name?.trim() || !cleanEmail || !password)
-        return res.status(400).json({ error: 'Name, email and password are required.' });
+    if (!name?.trim() || !password)
+        return res.status(400).json({ error: 'Name, password and an email or mobile number are required.' });
 
-    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail))
+    if (!cleanEmail && !cleanPhone)
+        return res.status(400).json({ error: 'Enter an email or a mobile number (at least one is required).' });
+
+    if (cleanEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail))
         return res.status(400).json({ error: 'Please provide a valid email address.' });
+
+    if (cleanPhone && !/^\+\d{7,15}$/.test(cleanPhone))
+        return res.status(400).json({ error: 'Please provide a valid mobile number.' });
 
     if (password.length < 8)
         return res.status(400).json({ error: 'Password must be at least 8 characters long.' });
@@ -86,17 +156,30 @@ app.post('/api/auth/register', async (req, res) => {
     // Admin self-registration requires an invite code, to avoid open
     // creation of admin accounts.
     if (finalRole === 'admin') {
-        const expected = process.env.ADMIN_SIGNUP_CODE || 'ctk-admin-invite';
+        const expected = process.env.ADMIN_SIGNUP_CODE || DEV_ADMIN_SIGNUP_CODE;
         if (req.body.adminCode !== expected) {
             return res.status(403).json({ error: 'A valid admin invite code is required to register as Admin.' });
         }
     }
 
+    // The account's email key: the real email if given, otherwise a
+    // placeholder derived from the mobile number.
+    const accountEmail = cleanEmail || placeholderEmailFor(cleanPhone);
+
     try {
-        const { rows: [existing] } = await pool.query(`SELECT id, is_verified FROM users WHERE email = $1`, [cleanEmail]);
-        if (existing && existing.is_verified) {
-            return res.status(409).json({ error: 'An account with this email already exists. Please log in.' });
+        const conds = ['email = $1']; const params = [accountEmail];
+        if (cleanPhone) { conds.push('phone = $2'); params.push(cleanPhone); }
+        const { rows: conflicting } = await pool.query(`SELECT id, email, is_verified FROM users WHERE ${conds.join(' OR ')}`, params);
+        if (conflicting.some(r => r.is_verified)) {
+            return res.status(409).json({ error: cleanPhone
+                ? 'An account with this email or mobile number already exists. Please log in.'
+                : 'An account with this email already exists. Please log in.' });
         }
+        const existing = conflicting.find(r => r.email === accountEmail);
+        // Any other UNVERIFIED row colliding on the phone number is a
+        // stale half-finished signup -- replace it.
+        const stale = conflicting.filter(r => r !== existing).map(r => r.id);
+        if (stale.length) await pool.query(`DELETE FROM users WHERE id = ANY($1::int[])`, [stale]);
 
         const passwordHash = await hashPassword(password);
         const otp = generateOTP();
@@ -108,14 +191,14 @@ app.post('/api/auth/register', async (req, res) => {
 
         if (existing) {
             await pool.query(
-                `UPDATE users SET name=$1, password_hash=$2, role=$3, otp_code=$4, otp_expires_at=$5, is_approved=$6 WHERE email=$7`,
-                [name.trim(), passwordHash, finalRole, otp, expiry, initialApproved, cleanEmail]
+                `UPDATE users SET name=$1, password_hash=$2, role=$3, otp_code=$4, otp_expires_at=$5, is_approved=$6, phone=$7 WHERE email=$8`,
+                [name.trim(), passwordHash, finalRole, otp, expiry, initialApproved, cleanPhone, accountEmail]
             );
         } else {
             await pool.query(
-                `INSERT INTO users (name, email, password_hash, role, is_verified, otp_code, otp_expires_at, is_approved)
-                 VALUES ($1,$2,$3,$4, FALSE, $5, $6, $7)`,
-                [name.trim(), cleanEmail, passwordHash, finalRole, otp, expiry, initialApproved]
+                `INSERT INTO users (name, email, phone, password_hash, role, is_verified, otp_code, otp_expires_at, is_approved)
+                 VALUES ($1,$2,$3,$4,$5, FALSE, $6, $7, $8)`,
+                [name.trim(), accountEmail, cleanPhone, passwordHash, finalRole, otp, expiry, initialApproved]
             );
         }
 
@@ -123,18 +206,20 @@ app.post('/api/auth/register', async (req, res) => {
             await pool.query(
                 `INSERT INTO faculty (email, name) VALUES ($1,$2)
                  ON CONFLICT (email) DO UPDATE SET name = $2`,
-                [cleanEmail, name.trim()]
+                [accountEmail, name.trim()]
             );
         }
 
-        await sendOtpEmail(cleanEmail, otp, 'verify your CTK Bridge Course account');
+        const channel = await deliverOtp({ email: accountEmail, phone: cleanPhone }, otp, 'verify your CTK Bridge Course account');
 
         return res.status(201).json({
             success: true,
             message: finalRole === 'faculty'
-                ? 'Registration successful. Please check your email for the OTP to verify your account. Your faculty account will also need admin approval before you can log in.'
-                : 'Registration successful. Please check your email for the OTP to verify your account.',
-            email: cleanEmail
+                ? `Registration successful. Please check your ${channelLabel(channel)} for the OTP to verify your account. Your faculty account will also need admin approval before you can log in.`
+                : `Registration successful. Please check your ${channelLabel(channel)} for the OTP to verify your account.`,
+            email: accountEmail,
+            identifier: cleanEmail || cleanPhone,
+            channel
         });
     } catch (err) {
         console.error(err);
@@ -143,17 +228,26 @@ app.post('/api/auth/register', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// VERIFY OTP — activates the account
+// VERIFY OTP — activates the account (identifier = email or mobile number)
 // ---------------------------------------------------------------------------
 app.post('/api/auth/verify-otp', async (req, res) => {
-    const cleanEmail = (req.body.email || '').trim().toLowerCase();
+    const identifier = req.body.identifier || req.body.email;
+    const { key } = identifierKey(identifier);
     const { otp } = req.body;
 
-    if (!cleanEmail || !otp) return res.status(400).json({ error: 'Email and OTP are required.' });
+    if (!key || !otp) return res.status(400).json({ error: 'Email or mobile number, and OTP are required.' });
 
     try {
-        const { rows: [user] } = await pool.query(`SELECT * FROM users WHERE email = $1`, [cleanEmail]);
-        if (!user) return res.status(404).json({ error: 'No account found for this email.' });
+        // Rate-limited the same way login/resend-otp/password-reset already
+        // are -- without this, a script could guess a 6-digit OTP freely
+        // since there was previously no limit on verification attempts
+        // themselves (only on how often a new OTP could be requested).
+        const allowed = await checkRateLimit(pool, key, 'verify-otp', 10, 15);
+        if (!allowed) return res.status(429).json({ error: 'Too many attempts. Please wait a few minutes and try again.' });
+        await recordAttempt(pool, key, 'verify-otp');
+
+        const { user } = await findUserByIdentifier(identifier);
+        if (!user) return res.status(404).json({ error: 'No account found for this email or mobile number.' });
         if (user.is_verified) return res.status(400).json({ error: 'This account is already verified. Please log in.' });
 
         if (isOtpExpired(user.otp_expires_at)) {
@@ -165,10 +259,10 @@ app.post('/api/auth/verify-otp', async (req, res) => {
 
         await pool.query(
             `UPDATE users SET is_verified = TRUE, otp_code = NULL, otp_expires_at = NULL WHERE email = $1`,
-            [cleanEmail]
+            [user.email]
         );
 
-        return res.json({ success: true, message: 'Email verified successfully. You can now log in.' });
+        return res.json({ success: true, message: 'Account verified successfully. You can now log in.' });
     } catch (err) {
         console.error(err);
         return res.status(500).json({ error: 'Server error during OTP verification.' });
@@ -179,24 +273,25 @@ app.post('/api/auth/verify-otp', async (req, res) => {
 // RESEND OTP
 // ---------------------------------------------------------------------------
 app.post('/api/auth/resend-otp', async (req, res) => {
-    const cleanEmail = (req.body.email || '').trim().toLowerCase();
-    if (!cleanEmail) return res.status(400).json({ error: 'Email is required.' });
+    const identifier = req.body.identifier || req.body.email;
+    const { key } = identifierKey(identifier);
+    if (!key) return res.status(400).json({ error: 'Email or mobile number is required.' });
 
     try {
-        const allowed = await checkRateLimit(pool, cleanEmail, 'otp', 5, 15);
+        const allowed = await checkRateLimit(pool, key, 'otp', 5, 15);
         if (!allowed) return res.status(429).json({ error: 'Too many OTP requests. Please wait a few minutes and try again.' });
 
-        const { rows: [user] } = await pool.query(`SELECT * FROM users WHERE email = $1`, [cleanEmail]);
-        if (!user) return res.status(404).json({ error: 'No account found for this email.' });
+        const { user } = await findUserByIdentifier(identifier);
+        if (!user) return res.status(404).json({ error: 'No account found for this email or mobile number.' });
         if (user.is_verified) return res.status(400).json({ error: 'This account is already verified. Please log in.' });
 
         const otp = generateOTP();
         const expiry = otpExpiry();
-        await pool.query(`UPDATE users SET otp_code=$1, otp_expires_at=$2 WHERE email=$3`, [otp, expiry, cleanEmail]);
-        await recordAttempt(pool, cleanEmail, 'otp');
-        await sendOtpEmail(cleanEmail, otp, 'verify your CTK Bridge Course account');
+        await pool.query(`UPDATE users SET otp_code=$1, otp_expires_at=$2 WHERE email=$3`, [otp, expiry, user.email]);
+        await recordAttempt(pool, key, 'otp');
+        const channel = await deliverOtp(user, otp, 'verify your CTK Bridge Course account');
 
-        return res.json({ success: true, message: 'A new OTP has been sent to your email.' });
+        return res.json({ success: true, message: `A new OTP has been sent to your ${channelLabel(channel)}.` });
     } catch (err) {
         console.error(err);
         return res.status(500).json({ error: 'Server error while resending OTP.' });
@@ -204,28 +299,29 @@ app.post('/api/auth/resend-otp', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// LOGIN
+// LOGIN (identifier = email or mobile number)
 // ---------------------------------------------------------------------------
 app.post('/api/auth/login', async (req, res) => {
-    const cleanEmail = (req.body.email || '').trim().toLowerCase();
+    const identifier = req.body.identifier || req.body.email;
+    const { key } = identifierKey(identifier);
     const { password } = req.body;
 
-    if (!cleanEmail || !password) return res.status(400).json({ error: 'Email and password are required.' });
+    if (!key || !password) return res.status(400).json({ error: 'Email or mobile number and password are required.' });
 
     try {
-        const allowed = await checkRateLimit(pool, cleanEmail, 'login', 10, 15);
+        const allowed = await checkRateLimit(pool, key, 'login', 10, 15);
         if (!allowed) return res.status(429).json({ error: 'Too many login attempts. Please wait a few minutes and try again.' });
 
-        const { rows: [user] } = await pool.query(`SELECT * FROM users WHERE email = $1`, [cleanEmail]);
-        await recordAttempt(pool, cleanEmail, 'login');
+        const { user } = await findUserByIdentifier(identifier);
+        await recordAttempt(pool, key, 'login');
 
-        if (!user) return res.status(401).json({ error: 'Invalid email or password.' });
+        if (!user) return res.status(401).json({ error: 'Invalid email/mobile number or password.' });
 
         const ok = await verifyPassword(password, user.password_hash);
-        if (!ok) return res.status(401).json({ error: 'Invalid email or password.' });
+        if (!ok) return res.status(401).json({ error: 'Invalid email/mobile number or password.' });
 
         if (!user.is_verified) {
-            return res.status(403).json({ error: 'Please verify your email with the OTP sent during registration before logging in.', needsVerification: true, email: cleanEmail });
+            return res.status(403).json({ error: 'Please verify your email or phone number with the OTP sent during registration before logging in.', needsVerification: true, email: key });
         }
 
         if (user.role === 'faculty' && !user.is_approved) {
@@ -245,27 +341,28 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// FORGOT PASSWORD — sends a reset OTP
+// FORGOT PASSWORD — sends a reset OTP (email or mobile number)
 // ---------------------------------------------------------------------------
 app.post('/api/auth/forgot-password', async (req, res) => {
-    const cleanEmail = (req.body.email || '').trim().toLowerCase();
-    if (!cleanEmail) return res.status(400).json({ error: 'Email is required.' });
+    const identifier = req.body.identifier || req.body.email;
+    const { key } = identifierKey(identifier);
+    if (!key) return res.status(400).json({ error: 'Email or mobile number is required.' });
 
     try {
-        const allowed = await checkRateLimit(pool, cleanEmail, 'reset', 5, 15);
+        const allowed = await checkRateLimit(pool, key, 'reset', 5, 15);
         if (!allowed) return res.status(429).json({ error: 'Too many reset requests. Please wait a few minutes and try again.' });
 
-        const { rows: [user] } = await pool.query(`SELECT * FROM users WHERE email = $1`, [cleanEmail]);
-        // Always respond success to avoid leaking which emails are registered.
+        const { user } = await findUserByIdentifier(identifier);
+        // Always respond success to avoid leaking which accounts are registered.
         if (user) {
             const otp = generateOTP();
             const expiry = otpExpiry();
-            await pool.query(`UPDATE users SET reset_otp_code=$1, reset_otp_expires_at=$2 WHERE email=$3`, [otp, expiry, cleanEmail]);
-            await recordAttempt(pool, cleanEmail, 'reset');
-            await sendOtpEmail(cleanEmail, otp, 'reset your CTK Bridge Course password');
+            await pool.query(`UPDATE users SET reset_otp_code=$1, reset_otp_expires_at=$2 WHERE email=$3`, [otp, expiry, user.email]);
+            await recordAttempt(pool, key, 'reset');
+            await deliverOtp(user, otp, 'reset your CTK Bridge Course password');
         }
 
-        return res.json({ success: true, message: 'If an account exists for this email, a password reset OTP has been sent.' });
+        return res.json({ success: true, message: 'If an account exists for this email or mobile number, a password reset OTP has been sent.' });
     } catch (err) {
         console.error(err);
         return res.status(500).json({ error: 'Server error during password reset request.' });
@@ -276,16 +373,17 @@ app.post('/api/auth/forgot-password', async (req, res) => {
 // RESET PASSWORD — verify OTP and set new password
 // ---------------------------------------------------------------------------
 app.post('/api/auth/reset-password', async (req, res) => {
-    const cleanEmail = (req.body.email || '').trim().toLowerCase();
+    const identifier = req.body.identifier || req.body.email;
+    const { key } = identifierKey(identifier);
     const { otp, newPassword, confirmPassword } = req.body;
 
-    if (!cleanEmail || !otp || !newPassword) return res.status(400).json({ error: 'Email, OTP and new password are required.' });
+    if (!key || !otp || !newPassword) return res.status(400).json({ error: 'Email or mobile number, OTP and new password are required.' });
     if (newPassword.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters long.' });
     if (confirmPassword !== undefined && newPassword !== confirmPassword) return res.status(400).json({ error: 'Passwords do not match.' });
 
     try {
-        const { rows: [user] } = await pool.query(`SELECT * FROM users WHERE email = $1`, [cleanEmail]);
-        if (!user) return res.status(404).json({ error: 'No account found for this email.' });
+        const { user } = await findUserByIdentifier(identifier);
+        if (!user) return res.status(404).json({ error: 'No account found for this email or mobile number.' });
 
         if (isOtpExpired(user.reset_otp_expires_at)) {
             return res.status(400).json({ error: 'OTP has expired. Please request a new one.' });
@@ -297,7 +395,7 @@ app.post('/api/auth/reset-password', async (req, res) => {
         const passwordHash = await hashPassword(newPassword);
         await pool.query(
             `UPDATE users SET password_hash=$1, reset_otp_code=NULL, reset_otp_expires_at=NULL WHERE email=$2`,
-            [passwordHash, cleanEmail]
+            [passwordHash, user.email]
         );
 
         return res.json({ success: true, message: 'Password reset successfully. You can now log in with your new password.' });
@@ -365,12 +463,16 @@ app.post('/api/onboarding/student', authenticate, requireRole('student'), async 
                 [email, name, cat, aim, aim, state || null, currentClass || null,
                  dailyStudyHours || null, prepLevel || 'Beginner', exam]
             );
-            await pool.query(
-                `INSERT INTO progress (email, bio_accuracy, phy_accuracy, chem_accuracy, quiz_count, weekly_history)
-                 VALUES ($1, 40, 35, 38, 0, '[40,40,40,40,40,40,40]')`,
-                [email]
-            );
         }
+        // Always make sure the progress row exists (not only when the students row is
+        // new): the two inserts are separate statements, so an interrupted request
+        // could previously leave a students row with no progress row for good.
+        await pool.query(
+            `INSERT INTO progress (email, bio_accuracy, phy_accuracy, chem_accuracy, quiz_count, weekly_history)
+             VALUES ($1, 40, 35, 38, 0, '[40,40,40,40,40,40,40]')
+             ON CONFLICT (email) DO NOTHING`,
+            [email]
+        );
 
         const t = computeTargets(aim, cat, exam);
         await pool.query(
@@ -463,7 +565,7 @@ app.get('/api/admin/cutoff-cache', authenticate, requireRole('admin'), async (re
 app.post('/api/admin/cutoff-cache/refresh', authenticate, requireRole('admin'), async (req, res) => {
     const year = parseInt(req.body.year, 10) || (new Date().getFullYear() + 1);
     try {
-        const result = await refreshCutoffCache(year);
+        const result = await refreshCutoffCache(year, { force: true });
         if (result.success) {
             res.json({ success: true, message: `Live cutoff data refreshed for ${year} from real web sources.`, rowCount: result.rowCount });
         } else {
@@ -500,8 +602,14 @@ async function resolveChapter(chapterId) {
 // ---------------------------------------------------------------------------
 // STUDENT REGISTRATION
 // ---------------------------------------------------------------------------
-app.post('/api/register', async (req, res) => {
+// Legacy registration. Previously unauthenticated: anyone who knew a student's
+// email could overwrite that student's profile and targets. Now requires a login
+// and only lets you register/update your own record (faculty/admin: any).
+app.post('/api/register', authenticate, async (req, res) => {
     const { name, email, phone, category, aim, examDate } = req.body;
+    if (req.user.role !== 'faculty' && req.user.role !== 'admin' &&
+        String(email || '').toLowerCase() !== String(req.user.email || '').toLowerCase())
+        return res.status(403).json({ error: 'You can only register or update your own profile.' });
 
     if (!name?.trim() || !email?.trim())
         return res.status(400).json({ error: 'Name and email are required.' });
@@ -524,12 +632,16 @@ app.post('/api/register', async (req, res) => {
                 `INSERT INTO students (email, name, phone, category, aim, exam_date) VALUES ($1,$2,$3,$4,$5,$6)`,
                 [email, name, phone || '', category || 'General', aim || 'Government Medical College', examDate || null]
             );
-            await pool.query(
-                `INSERT INTO progress (email, bio_accuracy, phy_accuracy, chem_accuracy, quiz_count, weekly_history)
-                 VALUES ($1, 40, 35, 38, 0, '[40,40,40,40,40,40,40]')`,
-                [email]
-            );
         }
+        // Always make sure the progress row exists (not only when the students row is
+        // new): the two inserts are separate statements, so an interrupted request
+        // could previously leave a students row with no progress row for good.
+        await pool.query(
+            `INSERT INTO progress (email, bio_accuracy, phy_accuracy, chem_accuracy, quiz_count, weekly_history)
+             VALUES ($1, 40, 35, 38, 0, '[40,40,40,40,40,40,40]')
+             ON CONFLICT (email) DO NOTHING`,
+            [email]
+        );
 
         const t = computeTargets(aim || 'Government Medical College', category || 'General');
         await pool.query(
@@ -576,7 +688,7 @@ app.post('/api/admin/exam-date', authenticate, requireRole('admin', 'faculty'), 
 // ---------------------------------------------------------------------------
 // PROGRESS
 // ---------------------------------------------------------------------------
-app.get('/api/progress/:email', async (req, res) => {
+app.get('/api/progress/:email', authenticate, requireSelfOrStaff(), async (req, res) => {
     const { rows: [progress] } = await pool.query(`SELECT * FROM progress WHERE email = $1`, [req.params.email]);
     if (!progress) return res.status(404).json({ error: 'Progress not found.' });
     let history = [];
@@ -585,9 +697,53 @@ app.get('/api/progress/:email', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// ACCESS + SUBJECT HELPERS
+// ---------------------------------------------------------------------------
+// A student may read their own data; faculty and admins may read any student's.
+function requireSelfOrStaff(paramName = 'email') {
+    return (req, res, next) => {
+        const target = String(req.params[paramName] || '').toLowerCase();
+        const me = String(req.user.email || '').toLowerCase();
+        if (req.user.role === 'faculty' || req.user.role === 'admin' || target === me) return next();
+        return res.status(403).json({ error: 'You do not have permission to access this student\'s data.' });
+    };
+}
+
+// The `progress`/`targets` tables carry five subject columns for every
+// student, but only some apply to a given target exam. The rest sit at their
+// seeded defaults forever, so any average over all five is dragged by dead
+// weight (and the Plan / Error Atlas ranked the wrong subjects for JEE).
+function examSubjects(targetExam) {
+    const exam = String(targetExam || 'NEET').toUpperCase();
+    const all = {
+        bio:  { key: 'bio',  label: 'Biology' },
+        phy:  { key: 'phy',  label: 'Physics' },
+        chem: { key: 'chem', label: 'Chemistry' },
+        zoo:  { key: 'zoo',  label: 'Zoology' },
+        math: { key: 'math', label: 'Mathematics' }
+    };
+    if (exam === 'JEE') return [all.phy, all.chem, all.math];
+    if (exam === 'BOTH') return [all.bio, all.phy, all.chem, all.zoo, all.math];
+    return [all.bio, all.phy, all.chem, all.zoo];
+}
+
+// Students who signed up but never finished onboarding have no `students` row,
+// so nothing they do can be saved (attempts/mistakes/progress all reference it).
+async function requireOnboarded(req, res, next) {
+    try {
+        const { rows: [st] } = await pool.query(`SELECT 1 FROM students WHERE email = $1`, [req.user.email]);
+        if (st) return next();
+        return res.status(409).json({ error: 'Please complete your profile setup before taking tests.', needsOnboarding: true });
+    } catch (err) {
+        console.error(err);
+        return res.status(500).json({ error: 'Server error.' });
+    }
+}
+
+// ---------------------------------------------------------------------------
 // PERSONALISED PLAN
 // ---------------------------------------------------------------------------
-app.get('/api/plan/:email', async (req, res) => {
+app.get('/api/plan/:email', authenticate, requireSelfOrStaff(), async (req, res) => {
     const bundle = await getStudentBundle(req.params.email);
     if (!bundle) return res.status(404).json({ error: 'Student not found.' });
 
@@ -601,15 +757,13 @@ app.get('/api/plan/:email', async (req, res) => {
     const peakPractice  = daysLeft - foundation - consolidation;
 
     const { progress, targets, student } = bundle;
-    const avgAcc     = (progress.bio_accuracy + progress.phy_accuracy + progress.chem_accuracy) / 3;
-    const targetAvg  = (targets.bio + targets.phy + targets.chem) / 3;
+    // Only the subjects that apply to this student's exam (see examSubjects).
+    const subjects = examSubjects(student.target_exam)
+        .map(sub => ({ key: sub.label, acc: progress[`${sub.key}_accuracy`], target: targets[sub.key] }));
+    const avgAcc     = subjects.reduce((t, x) => t + x.acc, 0) / subjects.length;
+    const targetAvg  = subjects.reduce((t, x) => t + x.target, 0) / subjects.length;
     const progressPct = Math.min(100, Math.round((avgAcc / targetAvg) * 1000) / 10);
-
-    const subjects = [
-        { key: 'Biology',   acc: progress.bio_accuracy,  target: targets.bio  },
-        { key: 'Physics',   acc: progress.phy_accuracy,  target: targets.phy  },
-        { key: 'Chemistry', acc: progress.chem_accuracy, target: targets.chem }
-    ].sort((a, b) => (a.acc - a.target) - (b.acc - b.target));
+    subjects.sort((a, b) => (a.acc - a.target) - (b.acc - b.target));
 
     res.json({
         daysLeft,
@@ -636,26 +790,38 @@ app.get('/api/approved-lectures', async (req, res) => {
 // ---------------------------------------------------------------------------
 // LECTURER HUB
 // ---------------------------------------------------------------------------
-app.post('/api/lecturer/submit', async (req, res) => {
+app.post('/api/lecturer/submit', optionalAuth, async (req, res) => {
     const { title, subject, url, lecturerName } = req.body;
     if (!title?.trim() || !url?.trim() || !lecturerName?.trim())
         return res.status(400).json({ error: 'Title, URL and lecturer name are required.' });
     if (!/^https?:\/\//i.test(url))
         return res.status(400).json({ error: 'Please provide a valid video URL.' });
 
+    // Remember WHO submitted (by login) when they are signed in, so "my submissions"
+    // doesn't depend on a free-text name two people can share.
     await pool.query(
-        `INSERT INTO lectures (title, subject, url, lecturer_name, approved) VALUES ($1,$2,$3,$4,0)`,
-        [title.trim(), subject || 'Physics', url.trim(), lecturerName.trim()]
+        `INSERT INTO lectures (title, subject, url, lecturer_name, approved, submitted_by_email) VALUES ($1,$2,$3,$4,0,$5)`,
+        [title.trim(), subject || 'Physics', url.trim(), lecturerName.trim(), req.user ? req.user.email : null]
     );
     res.status(201).json({ success: true });
 });
 
-app.get('/api/lecturer/submissions/:lecturerName', async (req, res) => {
-    const { rows } = await pool.query(
-        `SELECT id, title, subject, url, approved, created_at FROM lectures
-         WHERE lecturer_name = $1 ORDER BY created_at DESC`,
-        [req.params.lecturerName]
-    );
+// "My submissions". When the caller is signed in the lookup is by their LOGIN
+// (submitted_by_email), plus older rows that predate that column and match their
+// account name -- the :lecturerName in the URL is ignored, so one faculty member can no
+// longer read another's list by typing the same name. Only an anonymous caller (the
+// original public submit page) still gets the name-based lookup.
+app.get('/api/lecturer/submissions/:lecturerName', optionalAuth, async (req, res) => {
+    const cols = `id, title, subject, url, approved, created_at`;
+    const { rows } = req.user
+        ? await pool.query(
+            `SELECT ${cols} FROM lectures
+             WHERE submitted_by_email = $1 OR (submitted_by_email IS NULL AND lecturer_name = $2)
+             ORDER BY created_at DESC`,
+            [req.user.email, req.user.name])
+        : await pool.query(
+            `SELECT ${cols} FROM lectures WHERE lecturer_name = $1 AND submitted_by_email IS NULL ORDER BY created_at DESC`,
+            [req.params.lecturerName]);
     res.json(rows);
 });
 
@@ -1409,21 +1575,21 @@ app.post('/api/admin/impersonate', authenticate, requireRole('admin'), async (re
 // ---------------------------------------------------------------------------
 // ERROR ATLAS
 // ---------------------------------------------------------------------------
-app.get('/api/error-atlas/:email', async (req, res) => {
+app.get('/api/error-atlas/:email', authenticate, requireSelfOrStaff(), async (req, res) => {
     const bundle = await getStudentBundle(req.params.email);
     if (!bundle) return res.status(404).json({ error: 'Student not found.' });
 
-    const { progress, targets } = bundle;
-    const gaps = [
-        { key: 'bio',  label: 'Biology',   gap: targets.bio  - progress.bio_accuracy  },
-        { key: 'phy',  label: 'Physics',   gap: targets.phy  - progress.phy_accuracy  },
-        { key: 'chem', label: 'Chemistry', gap: targets.chem - progress.chem_accuracy }
-    ].sort((a, b) => b.gap - a.gap);
+    const { progress, targets, student } = bundle;
+    const gaps = examSubjects(student.target_exam)
+        .map(sub => ({ key: sub.key, label: sub.label, gap: targets[sub.key] - progress[`${sub.key}_accuracy`] }))
+        .sort((a, b) => b.gap - a.gap);
 
+    // TOPIC_BANK only has curated remedies for Biology / Physics / Chemistry;
+    // subjects without one (Zoology, Mathematics) still show their gap.
     const atlas = gaps.filter(g => g.gap > 0).map(g => ({
         subject: g.label,
         gap: Math.round(g.gap * 10) / 10,
-        topics: TOPIC_BANK[g.key]
+        topics: TOPIC_BANK[g.key] || []
     }));
 
     res.json({ atlas });
@@ -1767,47 +1933,93 @@ app.get('/api/student/tests/history', authenticate, requireRole('student'), asyn
 // ---------------------------------------------------------------------------
 // STUDENT: fetch a test for attempting (answers/correct values withheld)
 // ---------------------------------------------------------------------------
-app.get('/api/student/tests/:id', authenticate, requireRole('student'), async (req, res) => {
-    const { rows: [test] } = await pool.query(`SELECT * FROM tests WHERE id = $1`, [req.params.id]);
-    if (!test) return res.status(404).json({ error: 'Test not found.' });
+// Legacy faculty tests: how long past the limit a late submission is still accepted
+// (covers network latency and a slow device), mirroring the Bridge test engine.
+const LEGACY_LATE_GRACE_SEC = 5 * 60;
 
-    let { rows: questions } = await pool.query(
-        `SELECT id, q_type, question_text, options, topic, subtopic, difficulty, position
-         FROM test_questions WHERE test_id = $1 ORDER BY position ASC`,
-        [req.params.id]
+// Same visibility rule as the list endpoint: scheduled (or unscheduled) AND
+// assigned to this student (or assigned to nobody). Without it a student could
+// open any test -- including one scheduled for next week -- just by guessing its id.
+async function loadVisibleLegacyTest(testId, email) {
+    const { rows: [test] } = await pool.query(
+        `SELECT t.* FROM tests t
+         WHERE t.id = $1
+           AND (t.scheduled_at IS NULL OR t.scheduled_at <= NOW())
+           AND (
+                NOT EXISTS (SELECT 1 FROM test_assignments ta WHERE ta.test_id = t.id)
+                OR EXISTS (SELECT 1 FROM test_assignments ta WHERE ta.test_id = t.id AND ta.student_email = $2)
+           )`,
+        [testId, email]
     );
+    return test || null;
+}
 
-    if (test.randomize) {
-        questions = questions.slice().sort(() => Math.random() - 0.5);
+app.get('/api/student/tests/:id', authenticate, requireRole('student'), requireOnboarded, async (req, res) => {
+    const testId = parseInt(req.params.id, 10);
+    if (!Number.isInteger(testId)) return res.status(404).json({ error: 'Test not found.' });
+    try {
+        const test = await loadVisibleLegacyTest(testId, req.user.email);
+        if (!test) return res.status(404).json({ error: 'Test not found.' });
+
+        // Stamp the server-side start the FIRST time this student opens the test
+        // (a reload must not reset the clock), and refuse to re-open a finished one.
+        await pool.query(
+            `INSERT INTO legacy_test_start_times (test_id, student_email) VALUES ($1,$2) ON CONFLICT DO NOTHING`,
+            [testId, req.user.email]
+        );
+        const { rows: [clock] } = await pool.query(
+            `SELECT started_at, submitted_at, NOW() AS server_now
+             FROM legacy_test_start_times WHERE test_id=$1 AND student_email=$2`,
+            [testId, req.user.email]
+        );
+        if (clock.submitted_at) return res.status(400).json({ error: 'Already attempted.', alreadyAttempted: true });
+
+        let { rows: questions } = await pool.query(
+            `SELECT id, q_type, question_text, options, topic, subtopic, difficulty, position
+             FROM test_questions WHERE test_id = $1 ORDER BY position ASC`,
+            [testId]
+        );
+
+        if (test.randomize) {
+            questions = questions.slice().sort(() => Math.random() - 0.5);
+        }
+
+        res.json({ test, questions, startedAt: clock.started_at, serverNow: clock.server_now });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server error.' });
     }
-
-    res.json({ test, questions });
 });
 
 // ---------------------------------------------------------------------------
 // STUDENT: submit attempt -> auto-grade + mistake analysis
 // ---------------------------------------------------------------------------
-app.post('/api/student/tests/:id/submit', authenticate, requireRole('student'), async (req, res) => {
-    const testId = req.params.id;
+app.post('/api/student/tests/:id/submit', authenticate, requireRole('student'), requireOnboarded, async (req, res) => {
+    const testId = parseInt(req.params.id, 10);
     const { answers } = req.body; // [{ questionId, answer }]
     const email = req.user.email;
 
+    if (!Number.isInteger(testId)) return res.status(404).json({ error: 'Test not found.' });
     if (!Array.isArray(answers)) return res.status(400).json({ error: 'answers must be an array.' });
 
+    const client = await pool.connect();
     try {
-        const { rows: [test] } = await pool.query(`SELECT * FROM tests WHERE id = $1`, [testId]);
+        const test = await loadVisibleLegacyTest(testId, email);
         if (!test) return res.status(404).json({ error: 'Test not found.' });
 
         const { rows: questions } = await pool.query(`SELECT * FROM test_questions WHERE test_id = $1`, [testId]);
         const qMap = new Map(questions.map(q => [q.id, q]));
 
+        // Grade. Each question counts ONCE: previously a payload repeating one correct
+        // questionId N times scored N points (score > total, accuracy > 100%).
         let correctCount = 0;
         let attemptedCount = 0;
         const perQuestion = [];
-
+        const seen = new Set();
         for (const a of answers) {
-            const q = qMap.get(a.questionId);
-            if (!q) continue;
+            const q = qMap.get(a && a.questionId);
+            if (!q || seen.has(q.id)) continue;
+            seen.add(q.id);
             const given = (a.answer ?? '').toString().trim();
             const expected = q.correct_answer.toString().trim();
             const isCorrect = given !== '' && (
@@ -1819,6 +2031,10 @@ app.post('/api/student/tests/:id/submit', authenticate, requireRole('student'), 
             if (isCorrect) correctCount += 1;
             perQuestion.push({ question: q, given, isCorrect, attempted: given !== '' });
         }
+        // Questions the student never sent an answer for are unattempted mistakes too.
+        for (const q of questions) {
+            if (!seen.has(q.id)) perQuestion.push({ question: q, given: '', isCorrect: false, attempted: false });
+        }
 
         let rawScore = correctCount;
         if (test.negative_marking) {
@@ -1826,10 +2042,37 @@ app.post('/api/student/tests/:id/submit', authenticate, requireRole('student'), 
             rawScore = correctCount - incorrectAttempted * 0.25;
         }
 
-        await pool.query(
-            `INSERT INTO test_attempts (test_id, student_email, answers, score, total)
-             VALUES ($1,$2,$3,$4,$5)`,
-            [testId, email, JSON.stringify(answers), rawScore, questions.length]
+        // One transaction: the clock check, the attempt, and the mistake log all
+        // land together or not at all, and the per-(test, student) advisory lock
+        // makes a double-click / retry unable to submit twice.
+        await client.query('BEGIN');
+        await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`legacy-submit:${testId}:${email}`]);
+        // A submit with no earlier fetch (or from before this clock existed) starts the clock now.
+        await client.query(
+            `INSERT INTO legacy_test_start_times (test_id, student_email) VALUES ($1,$2) ON CONFLICT DO NOTHING`,
+            [testId, email]
+        );
+        const { rows: [clock] } = await client.query(
+            `SELECT submitted_at, EXTRACT(EPOCH FROM (NOW() - started_at))::int AS elapsed_sec
+             FROM legacy_test_start_times WHERE test_id=$1 AND student_email=$2 FOR UPDATE`,
+            [testId, email]
+        );
+        if (clock.submitted_at) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ error: 'Already submitted.' });
+        }
+        if (test.time_limit_min && clock.elapsed_sec > test.time_limit_min * 60 + LEGACY_LATE_GRACE_SEC) {
+            await client.query('ROLLBACK');
+            return res.status(403).json({
+                error: 'The time limit for this test has passed and the submission window has closed. Please contact your faculty if you believe this is a mistake.',
+                timeExpired: true
+            });
+        }
+
+        await client.query(
+            `INSERT INTO test_attempts (test_id, student_email, answers, score, total, time_taken_sec)
+             VALUES ($1,$2,$3,$4,$5,$6)`,
+            [testId, email, JSON.stringify(answers), rawScore, questions.length, clock.elapsed_sec]
         );
 
         // ---- Mistake Analysis Engine ----
@@ -1837,12 +2080,17 @@ app.post('/api/student/tests/:id/submit', authenticate, requireRole('student'), 
             if (p.isCorrect) continue;
             const mistakeType = !p.attempted ? 'unattempted'
                 : (p.question.q_type === 'fill_blank' ? 'memory' : 'conceptual');
-            await pool.query(
+            await client.query(
                 `INSERT INTO mistakes (student_email, test_id, question_id, subject, topic, subtopic, concept, difficulty, mistake_type)
                  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
                 [email, testId, p.question.id, test.subject, p.question.topic, p.question.subtopic, p.question.concept, p.question.difficulty, mistakeType]
             );
         }
+        await client.query(
+            `UPDATE legacy_test_start_times SET submitted_at = NOW() WHERE test_id=$1 AND student_email=$2`,
+            [testId, email]
+        );
+        await client.query('COMMIT');
 
         // ---- Update subject accuracy in `progress` (reuses existing blend logic) ----
         const { rows: [progress] } = await pool.query(`SELECT * FROM progress WHERE email = $1`, [email]);
@@ -1870,8 +2118,8 @@ app.post('/api/student/tests/:id/submit', authenticate, requireRole('student'), 
             total: questions.length,
             correctCount,
             attemptedCount,
-            accuracy: Math.round((correctCount / questions.length) * 100),
-            results: perQuestion.map(p => ({
+            accuracy: questions.length ? Math.round((correctCount / questions.length) * 100) : 0,
+            results: perQuestion.filter(p => p.attempted || !p.isCorrect).map(p => ({
                 questionId: p.question.id,
                 questionText: p.question.question_text,
                 yourAnswer: p.given,
@@ -1881,8 +2129,11 @@ app.post('/api/student/tests/:id/submit', authenticate, requireRole('student'), 
             }))
         });
     } catch (err) {
+        try { await client.query('ROLLBACK'); } catch (_) { /* nothing to roll back */ }
         console.error(err);
         res.status(500).json({ error: 'Server error while submitting test.' });
+    } finally {
+        client.release();
     }
 });
 
@@ -1940,18 +2191,62 @@ app.get('/api/faculty/analytics', authenticate, requireRole('faculty'), async (r
         // tied to one faculty the same way -- otherwise this view only ever
         // reflected legacy tests, understating how the whole cohort is
         // actually doing.
+        // Rank topics by ERROR RATE (wrong or unattempted answers / questions that
+        // students were actually served on that topic), not by how many students got at
+        // least one question wrong. The old ranking put a topic 200 students had touched
+        // (30 errors) above one 32 students had touched (28 errors) -- popularity, not
+        // weakness. A student counts as "weak" on a topic at >= 50% errors there.
+        //
+        // Joins are on the exact (test_id, question_id) pair, and attempts are told
+        // apart by the shape of `answers` (Bridge: object, legacy: array), because
+        // legacy `tests` ids and Bridge `generated_tests` ids share one number space.
         const { rows: weakTopics } = await pool.query(
-            `SELECT subject, topic, COUNT(DISTINCT student_email) AS weak_student_count FROM (
-                SELECT m.subject, m.topic, m.student_email
-                FROM mistakes m JOIN tests t ON m.test_id = t.id
-                WHERE t.created_by = $1
-                UNION ALL
-                SELECT m.subject, m.topic, m.student_email
-                FROM mistakes m JOIN generated_tests gt ON m.test_id = gt.id
-            ) combined
-            GROUP BY subject, topic
-            ORDER BY weak_student_count DESC
-            LIMIT 10`,
+            `WITH served AS (
+                 SELECT a.student_email, q.subject, q.topic, COUNT(*)::int AS served
+                 FROM test_attempts a
+                 JOIN generated_test_questions g ON g.test_id = a.test_id
+                 JOIN question_bank q ON q.id = g.question_id
+                 WHERE jsonb_typeof(a.answers) = 'object' AND q.topic IS NOT NULL
+                 GROUP BY 1, 2, 3
+                 UNION ALL
+                 SELECT a.student_email, t.subject, tq.topic, COUNT(*)::int
+                 FROM test_attempts a
+                 JOIN tests t ON t.id = a.test_id AND t.created_by = $1
+                 JOIN test_questions tq ON tq.test_id = t.id
+                 WHERE jsonb_typeof(a.answers) = 'array' AND tq.topic IS NOT NULL
+                 GROUP BY 1, 2, 3
+             ), wrong AS (
+                 SELECT m.student_email, q.subject, q.topic, COUNT(*)::int AS wrong
+                 FROM mistakes m
+                 JOIN generated_test_questions g ON g.test_id = m.test_id AND g.question_id = m.question_id
+                 JOIN question_bank q ON q.id = g.question_id
+                 WHERE q.topic IS NOT NULL
+                 GROUP BY 1, 2, 3
+                 UNION ALL
+                 SELECT m.student_email, t.subject, tq.topic, COUNT(*)::int
+                 FROM mistakes m
+                 JOIN tests t ON t.id = m.test_id AND t.created_by = $1
+                 JOIN test_questions tq ON tq.id = m.question_id AND tq.test_id = m.test_id
+                 WHERE tq.topic IS NOT NULL
+                 GROUP BY 1, 2, 3
+             ), per_student AS (
+                 SELECT s.student_email, s.subject, s.topic, SUM(s.served)::int AS served,
+                        COALESCE(SUM(w.wrong), 0)::int AS wrong
+                 FROM served s
+                 LEFT JOIN wrong w ON w.student_email = s.student_email AND w.subject = s.subject AND w.topic = s.topic
+                 GROUP BY 1, 2, 3
+             )
+             SELECT subject, topic,
+                    SUM(served)::int AS questions_served,
+                    SUM(wrong)::int  AS errors,
+                    COUNT(*)::int    AS students_attempted,
+                    COUNT(*) FILTER (WHERE wrong * 2 >= served)::int AS weak_student_count,
+                    ROUND(100.0 * SUM(wrong) / NULLIF(SUM(served), 0), 1) AS error_rate
+             FROM per_student
+             GROUP BY subject, topic
+             HAVING SUM(served) >= 5 AND SUM(wrong) > 0          -- ignore topics with too little data to judge
+             ORDER BY error_rate DESC, weak_student_count DESC
+             LIMIT 10`,
             [req.user.email]
         );
 
@@ -1988,8 +2283,13 @@ app.get('/api/faculty/analytics', authenticate, requireRole('faculty'), async (r
 
         res.json({
             weakTopics: weakTopics.map(w => ({
-                subject: w.subject, topic: w.topic, weakStudentCount: parseInt(w.weak_student_count, 10),
-                message: `${w.weak_student_count} student(s) are weak in ${w.topic}.`
+                subject: w.subject, topic: w.topic,
+                weakStudentCount: w.weak_student_count,
+                studentsAttempted: w.students_attempted,
+                questionsServed: w.questions_served,
+                errorRate: parseFloat(w.error_rate),
+                message: `${w.topic}: ${w.error_rate}% of answers wrong or skipped across ${w.students_attempted} student(s) `
+                       + `(${w.weak_student_count} weak, ${w.errors} of ${w.questions_served} questions).`
             })),
             recentAttempts: scores,
             testAverages: avgScores.map(a => ({
@@ -2397,7 +2697,7 @@ app.get('/api/faculty/students/:email/analytics', authenticate, requireRole('fac
 });
 
 
-app.get('/api/student/:email', async (req, res) => {
+app.get('/api/student/:email', authenticate, requireSelfOrStaff(), async (req, res) => {
     const bundle = await getStudentBundle(req.params.email);
     if (!bundle) return res.status(404).json({ error: 'Student not found.' });
     res.json(bundle);
@@ -2419,8 +2719,15 @@ app.get('/api/student/:email', async (req, res) => {
 // (entry or faculty-assigned) they've taken.
 // ---------------------------------------------------------------------------
 async function computePhysicsTopicAnalytics(email) {
+    // Entry tests can be retaken. Aggregate only the LATEST attempt of each entry
+    // test: summing every attempt double-counted retaken tests, so the more a
+    // student practised the more their topic accuracy (and the weak/strong
+    // lists and recommendations built from it) drifted from their current level.
     const { rows: attempts } = await pool.query(
-        `SELECT topic_breakdown FROM physics_entry_attempts WHERE student_email = $1`,
+        `SELECT DISTINCT ON (test_number) topic_breakdown
+         FROM physics_entry_attempts
+         WHERE student_email = $1
+         ORDER BY test_number, submitted_at DESC, id DESC`,
         [email]
     );
 

@@ -5,7 +5,9 @@
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "nodemon server.js"
+    "dev": "nodemon server.js",
+    "audit:questions": "node scripts/audit_questions.js",
+    "test": "node scripts/audit_questions.js"
   },
   "engines": {
     "node": ">=18.0.0"

@@ -1,4 +1,6 @@
 const { Router } = require('express');
+const { countPlaceholderQuestions } = require('./db');
+const { presentQuestion, effectiveOrder, displayToOriginal, originalToDisplay } = require('./options');
 
 function init(deps) {
     const {
@@ -26,6 +28,57 @@ function init(deps) {
             [entry.test_id, email]
         );
         return !!attempt;
+    }
+
+    // Grace period added on top of a test's own time_limit_min before the
+    // server refuses a late submission -- covers normal network/UI lag
+    // around the moment the client-side timer hits zero, without letting a
+    // student sit on an open test indefinitely.
+    const LATE_SUBMISSION_GRACE_SEC = 5 * 60;
+
+    // Stamps (server-side, once) the moment a student first opens a given
+    // test's questions, and returns that moment. ON CONFLICT DO NOTHING
+    // means re-opening/refreshing the same test does NOT push the clock
+    // back -- this is what makes the countdown authoritative instead of
+    // resettable by reloading the page. Returns an ISO string.
+    // A student with no `students` row (signed up + verified, but never finished
+    // onboarding) cannot have attempts, mistakes or progress stored: every one of
+    // those tables has a foreign key to students(email). Previously such a student
+    // could open a test, sit it, and only then hit an opaque 500 on submit. Say so
+    // up front instead, with a flag the frontend uses to route to onboarding.
+    async function requireOnboarded(req, res) {
+        const { rows: [st] } = await pool.query(`SELECT 1 FROM students WHERE email=$1`, [req.user.email]);
+        if (st) return true;
+        res.status(409).json({
+            error: 'Please complete your profile setup before taking tests.',
+            needsOnboarding: true
+        });
+        return false;
+    }
+
+    async function stampTestStart(testId, email) {
+        // Same defensive stance as the question_exposure bookkeeping below:
+        // this is best-effort timing infrastructure and must never block a
+        // student from seeing a test they're entitled to (e.g. an FK issue
+        // if they somehow don't yet have a `students` row).
+        try {
+            const { rows: [row] } = await pool.query(
+                `INSERT INTO test_start_times (test_id, student_email)
+                 VALUES ($1, $2)
+                 ON CONFLICT (test_id, student_email) DO NOTHING
+                 RETURNING started_at`,
+                [testId, email]
+            );
+            if (row) return row.started_at;
+            const { rows: [existing] } = await pool.query(
+                `SELECT started_at FROM test_start_times WHERE test_id=$1 AND student_email=$2`,
+                [testId, email]
+            );
+            return existing ? existing.started_at : new Date();
+        } catch (err) {
+            console.warn('Skipped test_start_times stamp:', err.message);
+            return new Date();
+        }
     }
 
     // ============================================================
@@ -327,6 +380,7 @@ function init(deps) {
     router.get('/api/bridge/entry-tests/:courseType/:testNumber', authenticate, requireRole('student'), async (req, res) => {
         const { courseType, testNumber } = req.params;
         try {
+            if (!(await requireOnboarded(req, res))) return;
             const { rows: [et] } = await pool.query(
                 `SELECT et.test_id, et.title, gt.time_limit_min, gt.question_count
                  FROM entry_tests et JOIN generated_tests gt ON et.test_id = gt.id
@@ -341,16 +395,20 @@ function init(deps) {
             );
             if (attempt) return res.status(400).json({ error: 'Already attempted.', alreadyAttempted: true });
 
-            const { rows: questions } = await pool.query(
+            const startedAt = await stampTestStart(et.test_id, req.user.email);
+
+            const { rows: rawQuestions } = await pool.query(
                 `SELECT q.id, q.subject, q.chapter_name, q.question_text,
-                        q.option_a, q.option_b, q.option_c, q.option_d, q.difficulty, q.estimated_time
+                        q.option_a, q.option_b, q.option_c, q.option_d, q.difficulty, q.estimated_time,
+                        gtq.option_order
                  FROM generated_test_questions gtq
                  JOIN question_bank q ON gtq.question_id = q.id
                  WHERE gtq.test_id = $1
                  ORDER BY gtq.position`,
                 [et.test_id]
             );
-            res.json({ testId: et.test_id, title: et.title, timeLimitMin: et.time_limit_min, questions });
+            const questions = rawQuestions.map(({ option_order, ...q }) => presentQuestion(q, option_order));
+            res.json({ testId: et.test_id, title: et.title, timeLimitMin: et.time_limit_min, questions, startedAt });
         } catch (err) {
             res.status(500).json({ error: 'Server error.' });
         }
@@ -454,7 +512,9 @@ function init(deps) {
             const { rows: [gt] } = await pool.query(
                 `SELECT id, title, time_limit_min, question_count FROM generated_tests WHERE id=$1`, [testId]
             );
-            res.json({ success: true, test: gt });
+            const placeholderQuestions = await countPlaceholderQuestions(testId);
+            if (placeholderQuestions) console.warn(`Mock test ${testId} (${courseType}) includes ${placeholderQuestions} placeholder question(s) — the real bank has no questions for some chapters.`);
+            res.json({ success: true, test: gt, placeholderQuestions });
         } catch (err) {
             res.status(500).json({ error: 'Server error.' });
         }
@@ -522,7 +582,16 @@ function init(deps) {
             const { rows: [gt] } = await pool.query(
                 `SELECT id, title, course_type, time_limit_min, question_count, status, created_at FROM generated_tests WHERE id=$1`, [testId]
             );
-            res.json({ success: true, test: gt, alreadyPublished: existingBefore.length > 0 });
+            // Chapters with no real questions yet are padded with dummy "Sample Question"
+            // rows (answer always A). Tell faculty how many, so a grand test is never
+            // published with placeholder content by accident.
+            const placeholderQuestions = await countPlaceholderQuestions(testId);
+            res.json({
+                success: true, test: gt, alreadyPublished: existingBefore.length > 0, placeholderQuestions,
+                warning: placeholderQuestions
+                    ? `${placeholderQuestions} of ${gt.question_count} questions are placeholder samples (no real questions exist for those chapters yet). Replace them before publishing.`
+                    : null
+            });
         } catch (err) {
             console.error(err);
             res.status(500).json({ error: 'Server error.' });
@@ -708,21 +777,27 @@ function init(deps) {
     router.get('/api/bridge/tests/:id/questions', authenticate, requireRole('student'), async (req, res) => {
         const testId = parseInt(req.params.id);
         try {
+            if (!(await requireOnboarded(req, res))) return;
+            // Draft grand tests are still being assembled by faculty and must not be
+            // fetchable by id (the same rule the listing endpoints already apply).
             const { rows: [gt] } = await pool.query(
-                `SELECT id, title, test_type, time_limit_min, negative_marking FROM generated_tests WHERE id=$1`, [testId]
+                `SELECT id, title, test_type, time_limit_min, negative_marking FROM generated_tests WHERE id=$1 AND status='published'`, [testId]
             );
             if (!gt) return res.status(404).json({ error: 'Test not found.' });
 
-            const { rows: questions } = await pool.query(
+            const startedAt = await stampTestStart(testId, req.user.email);
+
+            const { rows: rawQuestions } = await pool.query(
                 `SELECT q.id, q.subject, q.chapter_name, q.topic, q.question_text,
                         q.option_a, q.option_b, q.option_c, q.option_d,
-                        q.difficulty, q.estimated_time
+                        q.difficulty, q.estimated_time, gtq.option_order
                  FROM generated_test_questions gtq
                  JOIN question_bank q ON gtq.question_id = q.id
                  WHERE gtq.test_id = $1
                  ORDER BY gtq.position`,
                 [testId]
             );
+            const questions = rawQuestions.map(({ option_order, ...q }) => presentQuestion(q, option_order));
 
             // Logging exposure is best-effort bookkeeping (used to avoid
             // repeat questions later) — it must never block a student from
@@ -743,7 +818,7 @@ function init(deps) {
                 }
             }
 
-            res.json({ test: gt, questions });
+            res.json({ test: gt, questions, startedAt });
         } catch (err) {
             console.error(err);
             res.status(500).json({ error: 'Server error.' });
@@ -752,11 +827,14 @@ function init(deps) {
 
     router.post('/api/bridge/tests/:id/submit', authenticate, requireRole('student'), async (req, res) => {
         const testId = parseInt(req.params.id);
-        const { answers, timeTakenSec } = req.body;
+        const { answers, timeTakenSec: clientTimeTakenSec } = req.body;
 
         try {
+            if (!(await requireOnboarded(req, res))) return;
+            if (answers !== undefined && (answers === null || typeof answers !== 'object' || Array.isArray(answers)))
+                return res.status(400).json({ error: 'answers must be an object of questionId -> option letter.' });
             const { rows: [gt] } = await pool.query(
-                `SELECT id, negative_marking FROM generated_tests WHERE id=$1`, [testId]
+                `SELECT id, negative_marking, time_limit_min FROM generated_tests WHERE id=$1 AND status='published'`, [testId]
             );
             if (!gt) return res.status(404).json({ error: 'Test not found.' });
 
@@ -766,36 +844,136 @@ function init(deps) {
             );
             if (existing) return res.status(400).json({ error: 'Already submitted.' });
 
+            // The server's own started_at stamp (set the first time this
+            // student opened the test) is the source of truth for elapsed
+            // time -- the client's timer resets on reload, so it can never
+            // be trusted to enforce the limit. Fall back to the client
+            // value only if, for some reason, no stamp exists.
+            const { rows: [startRow] } = await pool.query(
+                `SELECT started_at FROM test_start_times WHERE test_id=$1 AND student_email=$2`,
+                [testId, req.user.email]
+            );
+            const serverTimeTakenSec = startRow
+                ? Math.max(0, Math.round((Date.now() - new Date(startRow.started_at).getTime()) / 1000))
+                : null;
+            const timeTakenSec = serverTimeTakenSec !== null ? serverTimeTakenSec : (clientTimeTakenSec || null);
+
+            const limitSec = (gt.time_limit_min || 180) * 60;
+            if (timeTakenSec !== null && timeTakenSec > limitSec + LATE_SUBMISSION_GRACE_SEC) {
+                return res.status(403).json({
+                    error: 'The time limit for this test has passed and the submission window has closed. Please contact your faculty if you believe this is a mistake.',
+                    timeExpired: true
+                });
+            }
+
             const { rows: questions } = await pool.query(
-                `SELECT q.id, q.correct_answer, q.subject, q.chapter_name, q.topic, q.difficulty
+                `SELECT q.id, q.correct_answer, q.subject, q.chapter_name, q.topic, q.difficulty,
+                        q.question_text, q.option_a, q.option_b, q.option_c, q.option_d, q.explanation,
+                        gtq.option_order
                  FROM generated_test_questions gtq
                  JOIN question_bank q ON gtq.question_id = q.id
-                 WHERE gtq.test_id = $1`,
+                 WHERE gtq.test_id = $1
+                 ORDER BY gtq.position`,
                 [testId]
             );
 
-            const { correct, wrong, skipped, rawScore, totalMax, percentage, neetEquivScore, percentileEst }
-                = computeScore(answers || {}, questions, gt.negative_marking);
-
-            const { rows: [attempt] } = await pool.query(
-                `INSERT INTO test_attempts
-                 (test_id, student_email, answers, score, total, correct_count, wrong_count,
-                  skipped_count, neet_equiv_score, percentile_est, time_taken_sec)
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
-                 RETURNING id, submitted_at`,
-                [testId, req.user.email, JSON.stringify(answers || {}),
-                 rawScore, totalMax, correct, wrong, skipped, neetEquivScore, percentileEst, timeTakenSec||null]
-            );
-
+            // The student answered with the letters they SAW (display order). Translate
+            // to ORIGINAL letters once, here, so grading, mistakes, progress and the
+            // stored attempt (read later by faculty analytics) all speak original letters.
+            const submitted = answers || {};
+            const orders = new Map();      // question id -> effective display order
+            const origAnswers = {};        // question id -> original letter
             for (const q of questions) {
-                const ans = (answers || {})[q.id];
-                if (ans && ans !== q.correct_answer) {
-                    await pool.query(
+                const order = effectiveOrder(q.option_order, q);
+                orders.set(q.id, order);
+                const orig = displayToOriginal(submitted[q.id], order);
+                if (orig) origAnswers[q.id] = orig;
+            }
+
+            const { correct, wrong, skipped, rawScore, totalMax, percentage, neetEquivScore, percentileEst: heuristicPercentileEst }
+                = computeScore(origAnswers, questions, gt.negative_marking);
+
+            // Prefer a real percentile computed from this test's own cohort
+            // of past attempts over the uncalibrated heuristic -- but only
+            // once there's a meaningful cohort to compare against.
+            const { rows: [cohort] } = await pool.query(
+                `SELECT COUNT(*) AS n,
+                        COUNT(*) FILTER (WHERE score::float / NULLIF(total,0) <= $2::float / NULLIF($3,0)) AS at_or_below,
+                        AVG(score::float / NULLIF(total,0)) * 100 AS avg_pct
+                 FROM test_attempts WHERE test_id = $1`,
+                [testId, rawScore, totalMax]
+            );
+            const cohortSize = parseInt(cohort.n, 10);
+            const isHeuristic = cohortSize < 5;
+            const percentileEst = isHeuristic
+                ? heuristicPercentileEst
+                : Math.min(99.9, Math.max(0.1, (parseInt(cohort.at_or_below, 10) / cohortSize) * 100));
+            const cohortAvgPercentage = cohortSize > 0 ? Math.round(parseFloat(cohort.avg_pct) * 10) / 10 : null;
+
+            // Attempt + mistake log are written in ONE transaction, under an advisory
+            // lock on (test, student): either both land or neither does, and two
+            // simultaneous submits (double-click, retry) cannot both pass the
+            // "already submitted" check.
+            const review = [];
+            let attempt;
+            const client = await pool.connect();
+            try {
+                await client.query('BEGIN');
+                await client.query('SELECT pg_advisory_xact_lock(hashtext($1))', [`bridge-submit:${testId}:${req.user.email}`]);
+                const { rows: [dup] } = await client.query(
+                    `SELECT id FROM test_attempts WHERE test_id=$1 AND student_email=$2`, [testId, req.user.email]
+                );
+                if (dup) {
+                    await client.query('ROLLBACK');
+                    return res.status(400).json({ error: 'Already submitted.' });
+                }
+
+                ({ rows: [attempt] } = await client.query(
+                    `INSERT INTO test_attempts
+                     (test_id, student_email, answers, score, total, correct_count, wrong_count,
+                      skipped_count, neet_equiv_score, percentile_est, time_taken_sec)
+                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+                     RETURNING id, submitted_at`,
+                    [testId, req.user.email, JSON.stringify(origAnswers),
+                     rawScore, totalMax, correct, wrong, skipped, neetEquivScore, percentileEst, timeTakenSec]
+                ));
+
+                // Build the per-question review for the result screen, and log
+                // mistakes distinguishing an unanswered question from one the
+                // student actually got wrong -- the recommender keys off
+                // mistake_type, so this is what lets it give different advice
+                // for "never attempted" vs "attempted and got it wrong".
+                // The review is shown in the order the student saw: options and
+                // the letters yourAnswer / correctAnswer use are DISPLAY letters.
+                for (const q of questions) {
+                    const orig = origAnswers[q.id] || null;
+                    if (orig === q.correct_answer) continue;
+                    const order = orders.get(q.id);
+                    const shown = presentQuestion(q, q.option_order);
+                    review.push({
+                        questionId: q.id,
+                        subject: q.subject,
+                        chapterName: q.chapter_name,
+                        topic: q.topic,
+                        questionText: q.question_text,
+                        options: { A: shown.option_a, B: shown.option_b, C: shown.option_c, D: shown.option_d },
+                        yourAnswer: orig ? originalToDisplay(orig, order) : null,
+                        correctAnswer: originalToDisplay(q.correct_answer, order),
+                        explanation: q.explanation || null
+                    });
+                    await client.query(
                         `INSERT INTO mistakes (student_email, test_id, question_id, subject, chapter_name, topic, difficulty, mistake_type)
-                         VALUES ($1,$2,$3,$4,$5,$6,$7,'conceptual')`,
-                        [req.user.email, testId, q.id, q.subject, q.chapter_name, q.topic, q.difficulty]
+                         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+                        [req.user.email, testId, q.id, q.subject, q.chapter_name, q.topic, q.difficulty,
+                         orig ? 'incorrect' : 'unattempted']
                     );
                 }
+                await client.query('COMMIT');
+            } catch (txErr) {
+                try { await client.query('ROLLBACK'); } catch (_) { /* connection already gone */ }
+                throw txErr;
+            } finally {
+                client.release();
             }
 
             // Analyze and record progress for THIS test -- every Bridge test
@@ -804,7 +982,7 @@ function init(deps) {
             // make sure any test a student takes updates their progress,
             // not only faculty-scheduled tests.
             try {
-                await applyBridgeProgressUpdate(req.user.email, questions, answers || {}, correct, questions.length);
+                await applyBridgeProgressUpdate(req.user.email, questions, origAnswers, correct, questions.length);
             } catch (progressErr) {
                 console.warn('Progress update skipped:', progressErr.message);
             }
@@ -818,7 +996,10 @@ function init(deps) {
                 correct, wrong, skipped,
                 neetEquivScore,
                 percentileEst: Math.round(percentileEst * 10) / 10,
-                submittedAt: attempt.submitted_at
+                percentileIsHeuristic: isHeuristic,
+                cohortAvgPercentage,
+                submittedAt: attempt.submitted_at,
+                review
             });
         } catch (err) {
             console.error(err);
@@ -856,7 +1037,39 @@ function init(deps) {
                  ORDER BY ta.submitted_at DESC LIMIT 20`,
                 [email, courseType]
             );
-            res.json({ overall, weakChapters, recentScores });
+
+            // Per-chapter ACCURACY (correct / attempted), not just a raw
+            // mistake count -- `mistakes` only knows about wrong answers,
+            // so without the attempted denominator a chapter attempted 100
+            // times with 5 wrong looks identical to one attempted 6 times
+            // with 5 wrong. Recomputed from the stored answers JSONB
+            // against each question's correct_answer, same approach the
+            // faculty per-student analytics already use.
+            const { rows: chapterRows } = await pool.query(
+                `SELECT q.chapter_name, q.subject,
+                        (ta.answers ? q.id::text) AS attempted,
+                        (ta.answers->>(q.id::text) = q.correct_answer) AS is_correct
+                 FROM test_attempts ta
+                 JOIN generated_tests gt ON ta.test_id = gt.id
+                 JOIN generated_test_questions gtq ON gtq.test_id = gt.id
+                 JOIN question_bank q ON q.id = gtq.question_id
+                 WHERE ta.student_email = $1 AND gt.course_type = $2`,
+                [email, courseType]
+            );
+            const chapterStats = new Map();
+            for (const r of chapterRows) {
+                if (!r.attempted) continue;
+                const key = `${r.subject}::${r.chapter_name}`;
+                const stat = chapterStats.get(key) || { subject: r.subject, chapterName: r.chapter_name, correct: 0, attempted: 0 };
+                stat.attempted++;
+                if (r.is_correct) stat.correct++;
+                chapterStats.set(key, stat);
+            }
+            const chapterAccuracy = Array.from(chapterStats.values())
+                .map(s => ({ ...s, accuracyPercent: Math.round((s.correct / s.attempted) * 1000) / 10 }))
+                .sort((a, b) => a.accuracyPercent - b.accuracyPercent);
+
+            res.json({ overall, weakChapters, recentScores, chapterAccuracy });
         } catch (err) {
             res.status(500).json({ error: 'Server error.' });
         }

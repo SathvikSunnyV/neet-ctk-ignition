@@ -3,7 +3,9 @@
 // centralized question bank, all test types, and faculty approval workflow.
 
 const { Pool } = require('pg');
-const { REAL_IMPORTED_QUESTIONS } = require('./real_imported_questions');
+const { REAL_IMPORTED_QUESTIONS, RAW_IMPORTED_QUESTIONS } = require('./real_imported_questions');
+const { changedRows } = require('./question_corrections');
+const { auditRow } = require('./question_audit');
 
 const pool = new Pool({
     connectionString: process.env.DATABASE_URL,
@@ -208,6 +210,20 @@ async function initSchema() {
             option_order    JSONB DEFAULT '[0,1,2,3]'
         );
 
+        -- Server-side stamp of when a student FIRST opened a given test
+        -- (entry/daily/weekly/monthly/mock/chapter-combo/grand -- all share
+        -- the generated_tests id space). Used to enforce the time limit
+        -- server-side instead of trusting the client's own countdown timer,
+        -- which resets to the full duration on every page reload.
+        -- ON CONFLICT DO NOTHING when the questions are re-fetched means
+        -- re-opening/refreshing a test in progress does NOT reset the clock.
+        CREATE TABLE IF NOT EXISTS test_start_times (
+            test_id         INTEGER NOT NULL,
+            student_email   TEXT REFERENCES students(email) ON DELETE CASCADE,
+            started_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (test_id, student_email)
+        );
+
         -- Student attempts at any generated test. test_id intentionally has
         -- no FK constraint: it's shared by the legacy faculty "tests" table
         -- (server.js) and the Bridge Course "generated_tests" table
@@ -390,6 +406,11 @@ async function initSchema() {
         -- backfilled explicitly. Defaults to TRUE so existing student/
         -- admin/faculty accounts are not retroactively locked out.
         ALTER TABLE users ADD COLUMN IF NOT EXISTS is_approved BOOLEAN NOT NULL DEFAULT TRUE;
+        -- Mobile-number registration: optional phone on the account (E.164).
+        -- Phone-only accounts keep a placeholder email so every email-keyed
+        -- table keeps working unchanged.
+        ALTER TABLE users ADD COLUMN IF NOT EXISTS phone TEXT;
+        CREATE UNIQUE INDEX IF NOT EXISTS users_phone_key ON users(phone) WHERE phone IS NOT NULL;
         ALTER TABLE students ADD COLUMN IF NOT EXISTS target_institution TEXT;
         ALTER TABLE students ADD COLUMN IF NOT EXISTS state TEXT;
         ALTER TABLE students ADD COLUMN IF NOT EXISTS current_class TEXT;
@@ -468,6 +489,108 @@ async function initSchema() {
         CREATE UNIQUE INDEX IF NOT EXISTS lectures_url_uidx ON lectures (url);
     `);
 
+    // -----------------------------------------------------------------
+    // Additive schema: serve-time option shuffle, namespaced legacy-test
+    // clock, restored Physics entry-test tables, lecture submitter email.
+    // -----------------------------------------------------------------
+    await pool.query(`
+        -- A random permutation of the 4 option slots, e.g. [2,0,3,1]: slot i
+        -- shows ORIGINAL option perm[i]. Used as the column default so EVERY
+        -- insert path (entry tests, daily/weekly/monthly/mock/combo, grand-test
+        -- edits) gets a shuffled order without touching each INSERT.
+        CREATE OR REPLACE FUNCTION ctk_random_option_order() RETURNS jsonb AS $$
+            SELECT jsonb_agg(i ORDER BY random()) FROM generate_series(0,3) AS i
+        $$ LANGUAGE sql VOLATILE;
+        ALTER TABLE generated_test_questions ALTER COLUMN option_order SET DEFAULT ctk_random_option_order();
+
+        -- Server-side clock for LEGACY faculty tests (the \"tests\" table). Kept
+        -- separate from test_start_times because that table's test_id shares
+        -- one numeric id space with generated_tests: reusing it would let
+        -- legacy test #7 stamp (or expire) Bridge test #7.
+        CREATE TABLE IF NOT EXISTS legacy_test_start_times (
+            test_id         INTEGER NOT NULL REFERENCES tests(id) ON DELETE CASCADE,
+            student_email   TEXT NOT NULL REFERENCES students(email) ON DELETE CASCADE,
+            started_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            submitted_at    TIMESTAMPTZ,
+            PRIMARY KEY (test_id, student_email)
+        );
+
+        -- Lecturer submissions: remember WHO (by login) submitted, so a
+        -- faculty member's "my submissions" list no longer depends on the
+        -- free-text name typed into the form.
+        ALTER TABLE lectures ADD COLUMN IF NOT EXISTS submitted_by_email TEXT;
+
+        -- Physics Student Module entry diagnostics (these three tables were
+        -- defined in an earlier release but dropped from this file while the
+        -- /api/physics/* routes stayed, so every Physics route 500'd on a
+        -- fresh database). lecture_progress / material_progress already exist above.
+        CREATE TABLE IF NOT EXISTS physics_entry_tests (
+            test_number     INTEGER PRIMARY KEY CHECK (test_number IN (1,2,3)),
+            title           TEXT NOT NULL,
+            mandatory       BOOLEAN NOT NULL DEFAULT FALSE
+        );
+        CREATE TABLE IF NOT EXISTS physics_entry_questions (
+            id              SERIAL PRIMARY KEY,
+            test_number     INTEGER NOT NULL REFERENCES physics_entry_tests(test_number) ON DELETE CASCADE,
+            topic           TEXT NOT NULL,
+            question_text   TEXT NOT NULL,
+            options         JSONB NOT NULL,
+            correct_answer  INTEGER NOT NULL,
+            position        INTEGER DEFAULT 0
+        );
+        CREATE TABLE IF NOT EXISTS physics_entry_attempts (
+            id                  SERIAL PRIMARY KEY,
+            student_email       TEXT REFERENCES students(email) ON DELETE CASCADE,
+            test_number         INTEGER NOT NULL,
+            answers             JSONB,
+            score               INTEGER,
+            total               INTEGER,
+            topic_breakdown     JSONB,
+            proficiency_level   TEXT,
+            time_taken_seconds  INTEGER,
+            submitted_at        TIMESTAMPTZ DEFAULT NOW()
+        );
+    `);
+
+    // Seed the 3 Physics entry tests + their (development-stage) questions once.
+    const { rows: [{ c: peCount }] } = await pool.query(`SELECT COUNT(*) AS c FROM physics_entry_tests`);
+    if (parseInt(peCount, 10) === 0) {
+        await pool.query(`
+            INSERT INTO physics_entry_tests (test_number, title, mandatory) VALUES
+            (1, 'Physics Entry Test 1 — Foundation Diagnostic', TRUE),
+            (2, 'Physics Entry Test 2 — Extended Diagnostic',   FALSE),
+            (3, 'Physics Entry Test 3 — Advanced Diagnostic',   FALSE)
+            ON CONFLICT DO NOTHING
+        `);
+        for (const [testNumber, questions] of Object.entries(PHYSICS_ENTRY_QUESTIONS)) {
+            for (let i = 0; i < questions.length; i++) {
+                const q = questions[i];
+                await pool.query(
+                    `INSERT INTO physics_entry_questions (test_number, topic, question_text, options, correct_answer, position)
+                     VALUES ($1,$2,$3,$4,$5,$6)`,
+                    [parseInt(testNumber, 10), q.topic, q.text, JSON.stringify(q.options), q.answer, i]
+                );
+            }
+        }
+        console.log('✅  Seeded 3 Physics entry tests (10 development MCQs each)');
+    }
+
+    // One-time: shuffle the option order of tests that nobody has started
+    // yet. (A test someone has opened or submitted keeps its stored order so
+    // their in-flight answers and history stay consistent.)
+    const { rows: [bf] } = await pool.query(`SELECT value FROM settings WHERE key = 'option_order_backfill_v1'`).then(r => ({ rows: r.rows.length ? r.rows : [null] }));
+    if (!bf) {
+        const { rowCount } = await pool.query(`
+            UPDATE generated_test_questions
+            SET option_order = ctk_random_option_order()
+            WHERE option_order = '[0,1,2,3]'::jsonb
+              AND test_id NOT IN (SELECT test_id FROM test_attempts WHERE test_id IS NOT NULL)
+              AND test_id NOT IN (SELECT test_id FROM test_start_times)
+        `);
+        await pool.query(`INSERT INTO settings (key, value) VALUES ('option_order_backfill_v1', $1) ON CONFLICT DO NOTHING`, [String(rowCount)]);
+        if (rowCount) console.log(`✅  Shuffled option order on ${rowCount} existing test question(s)`);
+    }
+
     // Seed chapters
     await seedChapters();
 
@@ -476,6 +599,7 @@ async function initSchema() {
 
     // Import real Bridge Course questions (Physics/Chemistry/Botany/Zoology)
     await importRealQuestions();
+    await syncImportedQuestionFixes();
 
     // Pre-generate entry tests
     await seedEntryTests();
@@ -488,14 +612,24 @@ async function initSchema() {
     const { rows: adminRows } = await pool.query(`SELECT id FROM users WHERE role = 'admin' LIMIT 1`);
     if (adminRows.length === 0) {
         const bcrypt = require('bcryptjs');
-        const defaultPass = process.env.DEFAULT_ADMIN_PASSWORD || 'ctk-admin-2026';
-        const hash = await bcrypt.hash(defaultPass, 10);
-        await pool.query(
-            `INSERT INTO users (name, email, password_hash, role, is_verified, onboarding_done)
-             VALUES ('CTK Admin', $1, $2, 'admin', TRUE, TRUE) ON CONFLICT (email) DO NOTHING`,
-            [process.env.DEFAULT_ADMIN_EMAIL || 'admin@ctkbridge.com', hash]
-        );
-        console.log(`ℹ️  Seeded default admin: ${process.env.DEFAULT_ADMIN_EMAIL || 'admin@ctkbridge.com'} / ${defaultPass}`);
+        const isProd = process.env.NODE_ENV === 'production';
+        if (isProd && !process.env.DEFAULT_ADMIN_PASSWORD) {
+            // The fallback password is committed in this repo, so seeding it on a
+            // production database would hand out an admin account to anyone who can
+            // read the source. Skip it; the first admin can register with ADMIN_SIGNUP_CODE.
+            console.error('⚠️  No admin account exists and DEFAULT_ADMIN_PASSWORD is not set — NOT seeding a default admin in production. Set DEFAULT_ADMIN_PASSWORD (and restart) or register an admin with ADMIN_SIGNUP_CODE.');
+        } else {
+            const adminEmail = process.env.DEFAULT_ADMIN_EMAIL || 'admin@ctkbridge.com';
+            const defaultPass = process.env.DEFAULT_ADMIN_PASSWORD || 'ctk-admin-2026';
+            const hash = await bcrypt.hash(defaultPass, 10);
+            await pool.query(
+                `INSERT INTO users (name, email, password_hash, role, is_verified, onboarding_done)
+                 VALUES ('CTK Admin', $1, $2, 'admin', TRUE, TRUE) ON CONFLICT (email) DO NOTHING`,
+                [adminEmail, hash]
+            );
+            // Never print the password itself; logs are routinely shared.
+            console.log(`ℹ️  Seeded default admin: ${adminEmail}` + (process.env.DEFAULT_ADMIN_PASSWORD ? ' (password from DEFAULT_ADMIN_PASSWORD)' : ' (development default password — see README; change it)'));
+        }
     }
 
     // Exam date setting
@@ -757,9 +891,16 @@ async function seedQuestionBank() {
 // ---------------------------------------------------------------------------
 async function importRealQuestions() {
     const byCourseType = {};
+    let skipped = 0;
     for (const q of REAL_IMPORTED_QUESTIONS) {
+        // Never seed a row that fails the structural audit (wrong/unknown key,
+        // duplicate options, letter-reference options, working-out in the
+        // explanation): a bad row costs students marks, a missing row costs nothing.
+        const { errors } = auditRow(q);
+        if (errors.length) { skipped++; console.error(`⚠️  Skipping question that fails audit (${errors.join('; ')}): ${String(q.question_text).slice(0, 70)}`); continue; }
         (byCourseType[q.course_type] = byCourseType[q.course_type] || []).push(q);
     }
+    if (skipped) console.error(`⚠️  ${skipped} imported question(s) skipped by the audit — run \`npm run audit:questions\``);
 
     const CHUNK = 200;
     for (const [courseType, qs] of Object.entries(byCourseType)) {
@@ -794,6 +935,57 @@ async function importRealQuestions() {
         }
         console.log(`✅  Imported ${qs.length} real Bridge Course questions for ${courseType}`);
     }
+}
+
+// ---------------------------------------------------------------------------
+// IMPORTED-QUESTION REPAIR
+// Databases seeded from an older release already contain the old (wrong)
+// answer keys / options / explanations, and importRealQuestions() above never
+// touches a course type that has already been imported. This brings those rows
+// up to the corrected bank in place.
+//
+// Safety: a row is only updated if it STILL EQUALS the original imported
+// values (stem, all four options, key and explanation). Anything a faculty
+// member edited through the question-bank UI no longer matches and is left
+// alone. Idempotent: after one pass nothing matches, so re-runs are no-ops.
+// ---------------------------------------------------------------------------
+async function syncImportedQuestionFixes() {
+    const work = changedRows(RAW_IMPORTED_QUESTIONS, REAL_IMPORTED_QUESTIONS)
+        .filter(({ now }) => !auditRow(now).errors.length);
+    if (!work.length) return;
+
+    let updated = 0;
+    const CHUNK = 250;
+    for (let i = 0; i < work.length; i += CHUNK) {
+        const part = work.slice(i, i + CHUNK);
+        const col = f => part.map(({ old }) => old[f] ?? null);
+        const colNew = f => part.map(({ now }) => now[f] ?? null);
+        const { rowCount } = await pool.query(
+            `UPDATE question_bank qb SET
+                 question_text = v.n_q, option_a = v.n_a, option_b = v.n_b, option_c = v.n_c, option_d = v.n_d,
+                 correct_answer = v.n_k, explanation = v.n_e
+             FROM (SELECT
+                     unnest($1::text[]) AS course_type, unnest($2::text[]) AS subject, unnest($3::text[]) AS chapter_name,
+                     unnest($4::text[]) AS o_q, unnest($5::text[]) AS o_a, unnest($6::text[]) AS o_b,
+                     unnest($7::text[]) AS o_c, unnest($8::text[]) AS o_d, unnest($9::text[]) AS o_k, unnest($10::text[]) AS o_e,
+                     unnest($11::text[]) AS n_q, unnest($12::text[]) AS n_a, unnest($13::text[]) AS n_b,
+                     unnest($14::text[]) AS n_c, unnest($15::text[]) AS n_d, unnest($16::text[]) AS n_k, unnest($17::text[]) AS n_e
+                  ) v
+             WHERE qb.subtopic = 'bridge_course_import'
+               AND qb.course_type = v.course_type AND qb.subject = v.subject AND qb.chapter_name = v.chapter_name
+               AND qb.question_text = v.o_q
+               AND qb.option_a = v.o_a AND qb.option_b = v.o_b AND qb.option_c = v.o_c AND qb.option_d = v.o_d
+               AND qb.correct_answer = v.o_k
+               AND qb.explanation IS NOT DISTINCT FROM v.o_e`,
+            [
+                col('course_type'), col('subject'), col('chapter_name'),
+                col('question_text'), col('option_a'), col('option_b'), col('option_c'), col('option_d'), col('correct_answer'), col('explanation'),
+                colNew('question_text'), colNew('option_a'), colNew('option_b'), colNew('option_c'), colNew('option_d'), colNew('correct_answer'), colNew('explanation')
+            ]
+        );
+        updated += rowCount;
+    }
+    if (updated) console.log(`✅  Repaired ${updated} imported question row(s) (answer keys / options / explanations)`);
 }
 
 // ---------------------------------------------------------------------------
@@ -1052,6 +1244,22 @@ async function createAndFillTest(type, courseType, title, difficultyMode, questi
  * monthly/grand/mock) and the chapter-combo generator draw from, so
  * repetition avoidance is consistent across every test type.
  */
+// The dummy seed rows ("[NEET·Physics·Kinematics] Sample Question 7: ...", answer
+// always A) exist so a test can still be assembled for a chapter that has no
+// real questions yet. They sort AFTER every real question in pickQuestions, so
+// they only appear when the real pool is exhausted, and are reported.
+const PLACEHOLDER_LIKE = `question_text LIKE '[%·%·%] Sample Question %'`;
+
+async function countPlaceholderQuestions(testId) {
+    const { rows: [r] } = await pool.query(
+        `SELECT COUNT(*)::int AS n FROM generated_test_questions g
+         JOIN question_bank qb ON qb.id = g.question_id
+         WHERE g.test_id = $1 AND qb.${PLACEHOLDER_LIKE}`,
+        [testId]
+    );
+    return r.n;
+}
+
 async function pickQuestions({ courseType, subject, diff, chapterFilter, studentEmail, limit }) {
     if (limit <= 0) return [];
 
@@ -1068,7 +1276,7 @@ async function pickQuestions({ courseType, subject, diff, chapterFilter, student
              WHERE course_type = $1 AND subject = $2 ${diffClause} AND status = 'approved'
              ${chapterClause}
              AND id NOT IN (SELECT question_id FROM question_exposure WHERE student_email = $${baseParams.length + 1})
-             ORDER BY usage_count ASC, RANDOM() LIMIT $${baseParams.length + 2}`,
+             ORDER BY (question_text LIKE '[%·%·%] Sample Question %') ASC, usage_count ASC, RANDOM() LIMIT $${baseParams.length + 2}`,
             exclParams
         );
         if (unseen.length >= limit) return unseen;
@@ -1088,7 +1296,7 @@ async function pickQuestions({ courseType, subject, diff, chapterFilter, student
             `SELECT id FROM question_bank
              WHERE course_type = $1 AND subject = $2 ${diffClause} AND status = 'approved'
              ${chapterClause} ${excludeClause}
-             ORDER BY usage_count ASC, RANDOM() LIMIT $${topUpParams.length}`,
+             ORDER BY (question_text LIKE '[%·%·%] Sample Question %') ASC, usage_count ASC, RANDOM() LIMIT $${topUpParams.length}`,
             topUpParams
         );
         return unseen.concat(topUp);
@@ -1099,7 +1307,7 @@ async function pickQuestions({ courseType, subject, diff, chapterFilter, student
         `SELECT id FROM question_bank
          WHERE course_type = $1 AND subject = $2 ${diffClause} AND status = 'approved'
          ${chapterClause}
-         ORDER BY usage_count ASC, RANDOM() LIMIT $${params.length}`,
+         ORDER BY (question_text LIKE '[%·%·%] Sample Question %') ASC, usage_count ASC, RANDOM() LIMIT $${params.length}`,
         params
     );
     return rows;
@@ -1151,7 +1359,13 @@ function computeScore(answers, questions, negativeMarking = false) {
     const rawScore = correct * 4 - (negativeMarking ? wrong * 1 : 0);
     const totalMax = questions.length * 4;
     const percentage = totalMax > 0 ? (rawScore / totalMax) * 100 : 0;
-    const neetEquivScore = Math.round((rawScore / totalMax) * 720);
+    // Negative marking can push rawScore below zero; NEET never presents a
+    // negative "marks out of 720" to students, so clamp at zero.
+    const neetEquivScore = Math.max(0, Math.round((rawScore / totalMax) * 720));
+    // Heuristic-only fallback, used when there isn't yet a large enough
+    // cohort of attempts on this specific test to compute a real
+    // percentile (see computeCohortPercentile below, used by the submit
+    // route when cohort data is available). NOT a calibrated percentile.
     const percentileEst = Math.min(99.9, Math.max(0.1, 50 + (percentage - 50) * 0.8));
 
     return { correct, wrong, skipped, rawScore, totalMax, percentage, neetEquivScore, percentileEst };
@@ -1178,8 +1392,16 @@ const BRIDGE_SUBJECT_PROGRESS_KEY = {
  * and pushes this attempt's overall percentage onto weekly_history.
  */
 async function applyBridgeProgressUpdate(email, questions, answers, correctCount, totalCount) {
-    const { rows: [progress] } = await pool.query(`SELECT * FROM progress WHERE email = $1`, [email]);
-    if (!progress) return;
+    let { rows: [progress] } = await pool.query(`SELECT * FROM progress WHERE email = $1`, [email]);
+    if (!progress) {
+        // A `students` row without a `progress` row (e.g. onboarding was interrupted
+        // between the two inserts) used to drop every update silently. Heal it with the
+        // column defaults. If there is no students row at all, the FK rejects this and
+        // the caller's try/catch reports it — it is never swallowed here.
+        await pool.query(`INSERT INTO progress (email) VALUES ($1) ON CONFLICT (email) DO NOTHING`, [email]);
+        ({ rows: [progress] } = await pool.query(`SELECT * FROM progress WHERE email = $1`, [email]));
+        if (!progress) return;
+    }
 
     const bySubject = {};
     for (const q of questions) {
@@ -1277,7 +1499,29 @@ async function isCutoffCacheStale(year) {
     return (Date.now() - oldest) / (1000 * 60 * 60 * 24) > CUTOFF_CACHE_TTL_DAYS;
 }
 
-async function refreshCutoffCache(year) {
+// Single-flight + cool-down around the real refresh. predictCutoff() triggers a
+// background refresh whenever the cache is stale, so a burst of requests at
+// result time used to start dozens of parallel web-search + AI calls that
+// rate-limit each other and all fail, leaving the cache stale. Now concurrent
+// callers share one in-flight refresh, and after an attempt (success or failure)
+// further automatic attempts wait CUTOFF_REFRESH_COOLDOWN_MS. An explicit admin
+// refresh passes { force: true } to skip the cool-down (it still shares an
+// in-flight run).
+const CUTOFF_REFRESH_COOLDOWN_MS = 10 * 60 * 1000;
+const cutoffRefreshInFlight = new Map();
+const cutoffRefreshLastAttempt = new Map();
+function refreshCutoffCache(year, { force = false } = {}) {
+    if (cutoffRefreshInFlight.has(year)) return cutoffRefreshInFlight.get(year);
+    if (!force && Date.now() - (cutoffRefreshLastAttempt.get(year) || 0) < CUTOFF_REFRESH_COOLDOWN_MS) {
+        return Promise.resolve({ success: false, throttled: true });
+    }
+    cutoffRefreshLastAttempt.set(year, Date.now());
+    const run = doRefreshCutoffCache(year).finally(() => cutoffRefreshInFlight.delete(year));
+    cutoffRefreshInFlight.set(year, run);
+    return run;
+}
+
+async function doRefreshCutoffCache(year) {
     let fetchRealCutoffData;
     try { ({ fetchRealCutoffData } = require('./research')); } catch { return { success: false }; }
     try {
@@ -1553,6 +1797,38 @@ const TOPIC_BANK = {
     ]
 };
 
+// ---------------------------------------------------------------------------
+// Physics entry-test seed content (restored from the earlier release).
+// 10 development-stage MCQs per entry test, cycling through the topic bank.
+// answer = index of the correct option.
+// ---------------------------------------------------------------------------
+function buildPhysicsEntryQuestions() {
+    const bank = [
+        { topic: 'Units and Dimensions', text: 'Which of these is a fundamental (base) SI unit?', options: ['Newton', 'Joule', 'Kilogram', 'Watt'], answer: 2 },
+        { topic: 'Kinematics', text: 'A body moving with uniform acceleration covers a distance given by which equation?', options: ['s = ut + ½at²', 's = ut', 's = at²', 's = u + at'], answer: 0 },
+        { topic: 'Laws of Motion', text: "Newton's First Law is also known as the law of:", options: ['Acceleration', 'Inertia', 'Action-reaction', 'Gravitation'], answer: 1 },
+        { topic: 'Work, Energy and Power', text: 'The SI unit of power is the:', options: ['Joule', 'Newton', 'Watt', 'Pascal'], answer: 2 },
+        { topic: 'Rotational Motion', text: 'The rotational analogue of mass is:', options: ['Torque', 'Angular velocity', 'Moment of inertia', 'Angular momentum'], answer: 2 },
+        { topic: 'Gravitation', text: "The value of escape velocity from Earth's surface is approximately:", options: ['1.1 km/s', '7.9 km/s', '11.2 km/s', '29.8 km/s'], answer: 2 },
+        { topic: 'Oscillations and Waves', text: 'The time period of a simple pendulum depends on:', options: ['Mass of the bob', 'Amplitude only', 'Length of the pendulum and g', 'Material of the string'], answer: 2 },
+        { topic: 'Thermodynamics', text: 'The first law of thermodynamics is a statement of:', options: ['Entropy increase', 'Conservation of energy', 'Absolute zero', 'Ideal gas behaviour'], answer: 1 },
+        { topic: 'Electrostatics', text: 'The SI unit of electric potential is the:', options: ['Ampere', 'Volt', 'Ohm', 'Farad'], answer: 1 },
+        { topic: 'Current Electricity', text: "Ohm's Law relates voltage, current and:", options: ['Power', 'Resistance', 'Charge', 'Energy'], answer: 1 },
+        { topic: 'Magnetism', text: 'The SI unit of magnetic field strength is the:', options: ['Tesla', 'Weber', 'Henry', 'Gauss'], answer: 0 },
+        { topic: 'Optics', text: 'A converging lens is also called a:', options: ['Concave lens', 'Convex lens', 'Plano lens', 'Diverging lens'], answer: 1 },
+        { topic: 'Modern Physics', text: 'The photoelectric effect was explained by:', options: ['Newton', 'Maxwell', 'Einstein', 'Bohr'], answer: 2 }
+    ];
+    const tests = { 1: [], 2: [], 3: [] };
+    for (const t of [1, 2, 3]) {
+        for (let i = 0; i < 10; i++) {
+            const base = bank[(i + (t - 1) * 4) % bank.length];
+            tests[t].push({ ...base, text: `[Entry Test ${t} · Q${i + 1}] ${base.text}` });
+        }
+    }
+    return tests;
+}
+const PHYSICS_ENTRY_QUESTIONS = buildPhysicsEntryQuestions();
+
 module.exports = {
     pool, initSchema,
     CURRICULUM, TEST_SUBJECT_DIST, DIFFICULTY_RATIOS,
@@ -1562,5 +1838,6 @@ module.exports = {
     refreshCutoffCache, getCachedCutoffRows, isCutoffCacheStale,
     generateDailyTest, generateWeeklyTest, generateMonthlyTest,
     generateGrandTest, generateChapterComboTest, generateMockTest,
-    fillTestQuestions, computeScore, applyBridgeProgressUpdate
+    fillTestQuestions, computeScore, applyBridgeProgressUpdate,
+    countPlaceholderQuestions, PLACEHOLDER_LIKE
 };

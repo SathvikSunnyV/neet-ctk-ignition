@@ -7,7 +7,7 @@
 //    content was provided, so JEE entry tests exclude Mathematics)
 // Each row's options were rebalanced so the correct answer is close to
 // an exact 25/25/25/25 split across A/B/C/D.
-const REAL_IMPORTED_QUESTIONS = [
+const RAW_IMPORTED_QUESTIONS = [
   {
     course_type: "NEET", subject: "Botany", chapter_name: "Biomolecules", topic: "Biomolecules",
     question_text: "Which nitrogenous base is found in DNA but not in RNA?",
@@ -15710,4 +15710,17 @@ const REAL_IMPORTED_QUESTIONS = [
   },
 ];
 
-module.exports = { REAL_IMPORTED_QUESTIONS };
+// ---------------------------------------------------------------------------
+// The rows above are the ORIGINAL import and are intentionally left untouched
+// so that databases seeded from them can be repaired precisely. Everything
+// that reads the bank must use REAL_IMPORTED_QUESTIONS, which has the reviewed
+// answer-key / option corrections and explanation clean-up from
+// question_corrections.js applied (same length, same order).
+// ---------------------------------------------------------------------------
+const { applyCorrections } = require('./question_corrections');
+const { rows: REAL_IMPORTED_QUESTIONS, report: CORRECTION_REPORT } = applyCorrections(RAW_IMPORTED_QUESTIONS);
+if (CORRECTION_REPORT.unmatched.length) {
+    throw new Error('question_corrections: fixes matched no rows: ' + CORRECTION_REPORT.unmatched.join('; '));
+}
+
+module.exports = { REAL_IMPORTED_QUESTIONS, RAW_IMPORTED_QUESTIONS, CORRECTION_REPORT };

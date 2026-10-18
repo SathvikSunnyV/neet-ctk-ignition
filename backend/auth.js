@@ -6,7 +6,14 @@
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
 const SibApiV3Sdk = require('@getbrevo/brevo');
-const JWT_SECRET = process.env.JWT_SECRET || 'ctk-ignition-dev-secret-change-me';
+const DEV_JWT_SECRET = 'ctk-ignition-dev-secret-change-me';
+// Fail loudly in production if JWT_SECRET is unset or still the dev
+// placeholder -- silently falling back to a hardcoded secret would mean
+// every issued token is forgeable by anyone who reads this source file.
+if (process.env.NODE_ENV === 'production' && (!process.env.JWT_SECRET || process.env.JWT_SECRET === DEV_JWT_SECRET)) {
+    throw new Error('JWT_SECRET must be set to a real secret in production (it is unset or still the default dev placeholder).');
+}
+const JWT_SECRET = process.env.JWT_SECRET || DEV_JWT_SECRET;
 const JWT_EXPIRES_IN = process.env.JWT_EXPIRES_IN || '7d';
 const OTP_TTL_MINUTES = 10;
 const BCRYPT_ROUNDS = 10;
