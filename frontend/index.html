@@ -276,7 +276,7 @@
   <div id="registerPage" class="page">
     <div class="card" style="max-width:560px; margin:0 auto;">
       <h2>Create your account</h2>
-      <p style="color:var(--ink-soft); margin-bottom:1.25rem; font-size:0.92rem;">Register as a Student or Faculty member. We'll send a one-time code to verify your email.</p>
+      <p style="color:var(--ink-soft); margin-bottom:1.25rem; font-size:0.92rem;">Register as a Student or Faculty member. Enter an email or a mobile number — you only need one, and your one-time verification code goes there.</p>
 
       <div class="field-group">
         <label class="field-label" for="authRole">I am registering as</label>
@@ -289,9 +289,15 @@
         <label class="field-label" for="authName">Full name</label>
         <input type="text" id="authName" placeholder="e.g. Aarav Mehta" required>
       </div>
-      <div class="field-group">
-        <label class="field-label" for="authEmail">Email</label>
-        <input type="email" id="authEmail" placeholder="you@example.com" required>
+      <div class="grid-2">
+        <div class="field-group">
+          <label class="field-label" for="authEmail">Email</label>
+          <input type="email" id="authEmail" placeholder="you@example.com">
+        </div>
+        <div class="field-group">
+          <label class="field-label" for="authPhone">Mobile number</label>
+          <input type="tel" id="authPhone" placeholder="+91 98765 43210" autocomplete="tel">
+        </div>
       </div>
       <div class="grid-2">
         <div class="field-group">
@@ -314,11 +320,11 @@
   <div id="loginPage" class="page">
     <div class="card" style="max-width:480px; margin:0 auto;">
       <h2>Welcome back</h2>
-      <p style="color:var(--ink-soft); margin-bottom:1.25rem; font-size:0.92rem;">Log in with your registered email and password.</p>
+      <p style="color:var(--ink-soft); margin-bottom:1.25rem; font-size:0.92rem;">Log in with your registered email or mobile number and password.</p>
 
       <div class="field-group">
-        <label class="field-label" for="loginEmail">Email</label>
-        <input type="email" id="loginEmail" placeholder="you@example.com" required>
+        <label class="field-label" for="loginEmail">Email or mobile number</label>
+        <input type="text" id="loginEmail" placeholder="you@example.com or +91 98765 43210" autocomplete="username" required>
       </div>
       <div class="field-group">
         <label class="field-label" for="loginPassword">Password</label>
@@ -338,7 +344,7 @@
   <!-- ===================== VERIFY OTP ===================== -->
   <div id="verifyOtpPage" class="page">
     <div class="card" style="max-width:440px; margin:0 auto;">
-      <h2>Verify your email</h2>
+      <h2>Verify your account</h2>
       <p style="color:var(--ink-soft); margin-bottom:1rem; font-size:0.92rem;">We sent a 6-digit code to <strong id="verifyOtpEmailLabel"></strong>. Enter it below to activate your account.</p>
 
       <div class="field-group">
@@ -356,11 +362,11 @@
   <div id="forgotPasswordPage" class="page">
     <div class="card" style="max-width:440px; margin:0 auto;">
       <h2>Reset your password</h2>
-      <p style="color:var(--ink-soft); margin-bottom:1rem; font-size:0.92rem;">Enter your account email — we'll send a one-time code to reset your password.</p>
+      <p style="color:var(--ink-soft); margin-bottom:1rem; font-size:0.92rem;">Enter your account email or mobile number — we'll send a one-time code to reset your password.</p>
 
       <div class="field-group">
-        <label class="field-label" for="forgotEmail">Email</label>
-        <input type="email" id="forgotEmail" placeholder="you@example.com">
+        <label class="field-label" for="forgotEmail">Email or mobile number</label>
+        <input type="text" id="forgotEmail" placeholder="you@example.com or +91 98765 43210">
       </div>
       <button id="sendResetOtpBtn" class="btn btn-primary btn-block">Send reset code</button>
       <div id="forgotMessage" class="mt-2"></div>
@@ -1235,6 +1241,13 @@
       <div id="bridgeTestHistory"></div>
     </div>
 
+    <!-- Chapter-wise Accuracy -->
+    <div class="card" style="margin-top:1rem;">
+      <h3>🎯 Chapter-wise Accuracy</h3>
+      <p style="color:var(--ink-soft); font-size:.85rem;">Correct answers out of every question you've attempted in each chapter, across all your tests.</p>
+      <div id="bridgeChapterAccuracy"><p style="font-size:.85rem;">Loading...</p></div>
+    </div>
+
     <!-- Active Test Modal -->
     <div id="bridgeTestModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.7); z-index:1000; overflow-y:auto;" class="test-modal-overlay">
       <div class="test-modal-panel">
@@ -1256,7 +1269,7 @@
 
     <!-- Result Modal -->
     <div id="bridgeResultModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.7); z-index:1001; overflow-y:auto;">
-      <div style="max-width:600px; margin:3rem auto; background:var(--paper); border-radius:1rem; padding:2rem; text-align:center;">
+      <div style="max-width:800px; margin:3rem auto; background:var(--paper); border-radius:1rem; padding:2rem; text-align:center;">
         <h2>📋 Test Results</h2>
         <div id="bridgeResultContent" style="margin:1.5rem 0;"></div>
         <button class="btn btn-primary" id="closeResultBtn">Close</button>

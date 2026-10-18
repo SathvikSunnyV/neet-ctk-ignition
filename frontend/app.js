@@ -98,9 +98,49 @@ async function api(path, options = {}) {
   }
   if (!res.ok) {
     const msg = (data && data.error) ? data.error : `Request failed (${res.status})`;
-    throw new Error(msg);
+    const err = new Error(msg);
+    err.status = res.status;   // callers can react to e.g. 403 timeExpired
+    err.data = data;
+    // The server refuses to run tests for an account that never finished onboarding
+    // (nothing they did could be saved). Send them to finish it.
+    if (data && data.needsOnboarding && typeof showPage === 'function') {
+      setTimeout(() => showPage('onboarding'), 600);
+    }
+    throw err;
   }
   return data;
+}
+
+// ---- Which subjects apply to a student's target exam --------------------------
+// Every student's progress/targets carry five subject columns, but only some are
+// ever updated for a given exam; the rest sit at seeded defaults. Averages, charts
+// and unlock rules must use only the applicable ones (matches the backend's
+// examSubjects()). NEET -> Biology/Physics/Chemistry/Zoology, JEE -> Physics/
+// Chemistry/Mathematics, BOTH -> all five.
+const SUBJECT_META = [
+  { key: 'bio',  label: 'Biology',     color: '#8C3B4A' },
+  { key: 'phy',  label: 'Physics',     color: '#5F7A5D' },
+  { key: 'chem', label: 'Chemistry',   color: '#B98868' },
+  { key: 'zoo',  label: 'Zoology',     color: '#B08A4E' },
+  { key: 'math', label: 'Mathematics', color: '#6E5C51' }
+];
+function examSubjects(targetExam) {
+  const exam = String(targetExam || 'NEET').toUpperCase();
+  const keys = exam === 'JEE' ? ['phy', 'chem', 'math']
+             : exam === 'BOTH' ? ['bio', 'phy', 'chem', 'zoo', 'math']
+             : ['bio', 'phy', 'chem', 'zoo'];
+  return SUBJECT_META.filter(sub => keys.includes(sub.key));
+}
+
+// Escape a value for use as an argument inside an inline `onclick="fn(...)"`.
+// Handlers previously only escaped single quotes, so a title containing a double
+// quote, backslash or newline broke the handler (and could inject script).
+// JSON.stringify yields a valid JS string literal; the replacements make it safe
+// inside a double-quoted HTML attribute.
+function jsArg(value) {
+  return JSON.stringify(String(value))
+    .replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+    .replace(/</g, '\\u003c').replace(/>/g, '\\u003e');
 }
 
 // ---------------------------------------------------------------- multipart upload helper
@@ -118,7 +158,10 @@ async function apiUpload(path, formData) {
   }
   if (!res.ok) {
     const msg = (data && data.error) ? data.error : `Request failed (${res.status})`;
-    throw new Error(msg);
+    const err = new Error(msg);
+    err.status = res.status;
+    err.data = data;
+    throw err;
   }
   return data;
 }
@@ -144,12 +187,13 @@ async function registerUser() {
   const role = document.getElementById('authRole').value;
   const name = document.getElementById('authName').value.trim();
   const email = document.getElementById('authEmail').value.trim();
+  const phone = document.getElementById('authPhone').value.trim();
   const password = document.getElementById('authPassword').value;
   const confirmPassword = document.getElementById('authConfirmPassword').value;
   const msgEl = document.getElementById('regMessage');
 
-  if (!name || !email || !password) {
-    msgEl.innerHTML = `<span class="badge danger">Please fill in all required fields.</span>`;
+  if (!name || (!email && !phone) || !password) {
+    msgEl.innerHTML = `<span class="badge danger">Please fill in your name, password, and an email or mobile number.</span>`;
     return;
   }
   if (password !== confirmPassword) {
@@ -162,12 +206,12 @@ async function registerUser() {
   msgEl.innerHTML = '';
 
   try {
-    const body = { name, email, password, confirmPassword, role };
+    const body = { name, email: email || undefined, phone: phone || undefined, password, confirmPassword, role };
     const data = await api('/api/auth/register', { method: 'POST', body: JSON.stringify(body) });
     msgEl.innerHTML = `<span class="badge success">✅ ${data.message}</span>`;
-    showToast('Account created — check your email for the OTP.', 'success');
-    pendingVerifyEmail = data.email;
-    document.getElementById('verifyOtpEmailLabel').textContent = data.email;
+    showToast('Account created — check your email or phone for the OTP.', 'success');
+    pendingVerifyEmail = data.identifier || data.email;
+    document.getElementById('verifyOtpEmailLabel').textContent = data.identifier || data.email;
     setTimeout(() => showPage('verifyOtp'), 600);
   } catch (err) {
     msgEl.innerHTML = `<span class="badge danger">${err.message}</span>`;
@@ -265,14 +309,14 @@ async function verifyOtp() {
   const msgEl = document.getElementById('verifyOtpMessage');
   const email = pendingVerifyEmail || document.getElementById('verifyOtpEmailLabel').textContent;
 
-  if (!email) { msgEl.innerHTML = `<span class="badge danger">Missing email — please register again.</span>`; return; }
-  if (!otp) { msgEl.innerHTML = `<span class="badge danger">Please enter the OTP sent to your email.</span>`; return; }
+  if (!email) { msgEl.innerHTML = `<span class="badge danger">Missing email or mobile number — please register again.</span>`; return; }
+  if (!otp) { msgEl.innerHTML = `<span class="badge danger">Please enter the OTP we sent you.</span>`; return; }
 
   btn.disabled = true; btn.textContent = 'Verifying...';
   try {
     const data = await api('/api/auth/verify-otp', { method: 'POST', body: JSON.stringify({ email, otp }) });
     msgEl.innerHTML = `<span class="badge success">${data.message}</span>`;
-    showToast('Email verified — you can now log in.', 'success');
+    showToast('Account verified — you can now log in.', 'success');
     document.getElementById('loginEmail').value = email;
     setTimeout(() => showPage('login'), 800);
   } catch (err) {
@@ -286,7 +330,7 @@ async function verifyOtp() {
 async function resendOtp() {
   const email = pendingVerifyEmail || document.getElementById('verifyOtpEmailLabel').textContent;
   const msgEl = document.getElementById('verifyOtpMessage');
-  if (!email) { msgEl.innerHTML = `<span class="badge danger">Missing email — please register again.</span>`; return; }
+  if (!email) { msgEl.innerHTML = `<span class="badge danger">Missing email or mobile number — please register again.</span>`; return; }
   try {
     const data = await api('/api/auth/resend-otp', { method: 'POST', body: JSON.stringify({ email }) });
     msgEl.innerHTML = `<span class="badge success">${data.message}</span>`;
@@ -304,7 +348,7 @@ async function loginUser() {
   const msgEl = document.getElementById('loginMessage');
 
   if (!email || !password) {
-    msgEl.innerHTML = `<span class="badge danger">Please enter your email and password.</span>`;
+    msgEl.innerHTML = `<span class="badge danger">Please enter your email or mobile number and password.</span>`;
     return;
   }
 
@@ -367,7 +411,7 @@ function logoutUser() {
 async function sendResetOtp() {
   const email = document.getElementById('forgotEmail').value.trim();
   const msgEl = document.getElementById('forgotMessage');
-  if (!email) { msgEl.innerHTML = `<span class="badge danger">Please enter your email.</span>`; return; }
+  if (!email) { msgEl.innerHTML = `<span class="badge danger">Please enter your email or mobile number.</span>`; return; }
   try {
     const data = await api('/api/auth/forgot-password', { method: 'POST', body: JSON.stringify({ email }) });
     msgEl.innerHTML = `<span class="badge success">${data.message}</span>`;
@@ -383,7 +427,7 @@ async function resetPassword() {
   const confirmPassword = document.getElementById('resetConfirmPassword').value;
   const msgEl = document.getElementById('resetMessage');
 
-  if (!email || !otp || !newPassword) { msgEl.innerHTML = `<span class="badge danger">Please fill in all fields, including your email above.</span>`; return; }
+  if (!email || !otp || !newPassword) { msgEl.innerHTML = `<span class="badge danger">Please fill in all fields, including your email or mobile number above.</span>`; return; }
   if (newPassword !== confirmPassword) { msgEl.innerHTML = `<span class="badge danger">Passwords do not match.</span>`; return; }
 
   try {
@@ -537,9 +581,7 @@ async function renderGuidance() {
         <hr class="divider">
 
         <div class="grid-3">
-          ${subjectTargetRow('Biology', progress.bio_accuracy, targets.bio)}
-          ${subjectTargetRow('Physics', progress.phy_accuracy, targets.phy)}
-          ${subjectTargetRow('Chemistry', progress.chem_accuracy, targets.chem)}
+          ${examSubjects(student && student.target_exam).map(sub => subjectTargetRow(sub.label, progress[sub.key + '_accuracy'], targets[sub.key])).join('')}
         </div>
 
         <div class="card mt-2" style="background:var(--cream-deep); border:none;">
@@ -706,12 +748,22 @@ async function renderProgress() {
       container.innerHTML = `<div class="empty-state"><p>We couldn't find your profile. Please register again.</p></div>`;
       return;
     }
-    const { progress, targets } = data;
-    const avgAcc = (progress.bio_accuracy + progress.phy_accuracy + progress.chem_accuracy + progress.zoo_accuracy + progress.math_accuracy) / 5;
-    const targetAvg = (targets.bio + targets.phy + targets.chem + targets.zoo + targets.math) / 5;
+    const { student, progress, targets } = data;
+    // Only subjects that apply to this student's exam. Averaging all five dragged the
+    // headline number with subjects they never study (stuck at their seeded defaults).
+    const subs = examSubjects(student && student.target_exam);
+    const avgAcc = subs.reduce((t, x) => t + progress[x.key + '_accuracy'], 0) / subs.length;
+    const targetAvg = subs.reduce((t, x) => t + targets[x.key], 0) / subs.length;
     const overallPercent = Math.min(100, Math.round((avgAcc / targetAvg) * 100));
 
-    const advancedUnlocked = progress.bio_accuracy >= 80 && progress.phy_accuracy >= 60 && progress.chem_accuracy >= 70;
+    // Advanced Mode thresholds. NEET: Bio/Phy/Chem. JEE has no Biology progress at all,
+    // so it uses Mathematics in its place (same 80% bar as Biology); BOTH needs all four.
+    const exam = String((student && student.target_exam) || 'NEET').toUpperCase();
+    const advancedRules = exam === 'JEE' ? [['phy', 'Physics', 60], ['chem', 'Chemistry', 70], ['math', 'Mathematics', 80]]
+      : exam === 'BOTH' ? [['bio', 'Biology', 80], ['phy', 'Physics', 60], ['chem', 'Chemistry', 70], ['math', 'Mathematics', 80]]
+      : [['bio', 'Biology', 80], ['phy', 'Physics', 60], ['chem', 'Chemistry', 70]];
+    const advancedUnlocked = advancedRules.every(([k, , min]) => progress[k + '_accuracy'] >= min);
+    const advancedRuleText = advancedRules.map(([, label, min]) => `${label} ≥ ${min}%`).join(', ');
 
     const mistakeData = await api('/api/student/mistake-analysis').catch(() => null);
 
@@ -725,13 +777,13 @@ async function renderProgress() {
         <div class="grid-2 mt-2">
           <div><canvas id="subjectDoughnutChart" height="220"></canvas></div>
           <div class="card" style="border:1px solid var(--border); display:flex; flex-direction:column; justify-content:center;">
-            <span>📊 Current — Bio ${progress.bio_accuracy}% · Phy ${progress.phy_accuracy}% · Chem ${progress.chem_accuracy}% · Zoo ${progress.zoo_accuracy}% · Math ${progress.math_accuracy}%</span>
-            <span class="mt-1">🎯 Target — Bio ${targets.bio}% · Phy ${targets.phy}% · Chem ${targets.chem}% · Zoo ${targets.zoo}% · Math ${targets.math}%</span>
+            <span>📊 Current — ${subs.map(x => `${x.label.slice(0, 4)} ${progress[x.key + '_accuracy']}%`).join(' · ')}</span>
+            <span class="mt-1">🎯 Target — ${subs.map(x => `${x.label.slice(0, 4)} ${targets[x.key]}%`).join(' · ')}</span>
             <div class="progress-bar mt-1"><div class="progress-fill" style="width:${overallPercent}%"></div></div>
             <span class="mt-1">⭐ Advanced mode: <span class="badge ${advancedUnlocked ? 'success' : 'warn'}">${advancedUnlocked ? 'Unlocked' : 'Locked'}</span></span>
           </div>
         </div>
-        <p class="helper-text mt-1">${advancedUnlocked ? 'Great work — you have met the subject thresholds (Bio ≥ 80%, Phy ≥ 60%, Chem ≥ 70%) for Advanced Mode.' : 'Advanced Mode unlocks once Biology ≥ 80%, Physics ≥ 60% and Chemistry ≥ 70%.'}</p>
+        <p class="helper-text mt-1">${advancedUnlocked ? `Great work — you have met the subject thresholds (${advancedRuleText}) for Advanced Mode.` : `Advanced Mode unlocks once ${advancedRuleText}.`}</p>
         <button id="refreshProgressBtn" class="btn btn-outline mt-2">Refresh data</button>
       </div>
 
@@ -750,10 +802,10 @@ async function renderProgress() {
     new Chart(document.getElementById('accuracyChart').getContext('2d'), {
       type: 'bar',
       data: {
-        labels: ['Biology', 'Physics', 'Chemistry', 'Zoology', 'Mathematics'],
+        labels: subs.map(x => x.label),
         datasets: [
-          { label: 'Your %', data: [progress.bio_accuracy, progress.phy_accuracy, progress.chem_accuracy, progress.zoo_accuracy, progress.math_accuracy], backgroundColor: '#B98868', borderRadius: 8 },
-          { label: 'Target %', data: [targets.bio, targets.phy, targets.chem, targets.zoo, targets.math], backgroundColor: '#8C3B4A', borderRadius: 8 }
+          { label: 'Your %', data: subs.map(x => progress[x.key + '_accuracy']), backgroundColor: '#B98868', borderRadius: 8 },
+          { label: 'Target %', data: subs.map(x => targets[x.key]), backgroundColor: '#8C3B4A', borderRadius: 8 }
         ]
       },
       options: { responsive: true, plugins: { legend: { position: 'bottom' } }, scales: { y: { beginAtZero: true, max: 100 } } }
@@ -771,10 +823,10 @@ async function renderProgress() {
     new Chart(document.getElementById('subjectDoughnutChart').getContext('2d'), {
       type: 'doughnut',
       data: {
-        labels: ['Biology', 'Physics', 'Chemistry', 'Zoology', 'Mathematics'],
+        labels: subs.map(x => x.label),
         datasets: [{
-          data: [progress.bio_accuracy, progress.phy_accuracy, progress.chem_accuracy, progress.zoo_accuracy, progress.math_accuracy],
-          backgroundColor: ['#8C3B4A', '#5F7A5D', '#B98868', '#B08A4E', '#6E5C51']
+          data: subs.map(x => progress[x.key + '_accuracy']),
+          backgroundColor: subs.map(x => x.color)
         }]
       },
       options: { responsive: true, plugins: { legend: { position: 'bottom' }, title: { display: true, text: 'Where your accuracy is concentrated' } } }
@@ -905,6 +957,7 @@ async function publishGrandTest() {
       ? `<span class="badge warn">A Grand Test with this course + label already exists: ${res.test.title}</span>`
       : `<span class="badge success">✅ Draft created: ${res.test.title} — review it below before publishing.</span>`;
     showToast(res.alreadyPublished ? 'Grand Test already exists.' : 'Draft created.', 'success');
+    if (res.warning) showToast(res.warning, 'error');
     renderGrandTestsList();
     if (res.test.status === 'draft') openGrandTestEditor(res.test.id, res.test.title);
   } catch (err) {
@@ -930,7 +983,7 @@ async function renderGrandTestsList() {
         <div class="flex-row" style="align-items:center; gap:0.5rem;">
           <span class="badge ${t.status === 'published' ? 'success' : 'warn'}">${t.status === 'published' ? 'Published' : 'Draft'}</span>
           <span class="helper-text">${new Date(t.created_at).toLocaleDateString()}</span>
-          <button class="btn btn-outline" onclick="openGrandTestEditor(${t.id}, '${t.title.replace(/'/g, "\\'")}')">${t.status === 'draft' ? 'Review & Edit' : 'View'}</button>
+          <button class="btn btn-outline" onclick="openGrandTestEditor(${t.id}, ${jsArg(t.title)})">${t.status === 'draft' ? 'Review & Edit' : 'View'}</button>
         </div>
       </div>`).join('') : `<div class="empty-state"><p>No Grand Tests yet.</p></div>`;
   } catch (err) {
@@ -1019,7 +1072,7 @@ async function renderChapterList() {
         <div class="flex-row">
           <button class="btn btn-outline" title="Move up" ${i === 0 ? 'disabled' : ''} onclick="moveChapter(${i},-1)">↑</button>
           <button class="btn btn-outline" title="Move down" ${i === chapters.length - 1 ? 'disabled' : ''} onclick="moveChapter(${i},1)">↓</button>
-          <button class="btn btn-outline" onclick="renameChapter(${c.id}, '${c.name.replace(/'/g, "\\'")}')">Rename</button>
+          <button class="btn btn-outline" onclick="renameChapter(${c.id}, ${jsArg(c.name)})">Rename</button>
           <button class="btn btn-outline" onclick="removeChapter(${c.id})">Delete</button>
         </div>
       </div>`).join('') : `<div class="empty-state"><p>No chapters yet for ${subject} — add one above.</p></div>`;
@@ -1111,8 +1164,11 @@ function escapeHtmlText(str) {
 // animations), so they're shown covering the whole viewport like a
 // dedicated page rather than a small embedded box. `allow-scripts` is
 // required here or none of the note's JS (animations, sliders, buttons)
-// runs at all; `allow-same-origin` lets its own inline styles/canvas work
-// normally. The iframe is torn down completely on close so any
+// runs at all. `allow-same-origin` is deliberately NOT granted: combined with
+// allow-scripts on a srcdoc frame it gives faculty-authored HTML the app's own
+// origin, i.e. read access to the viewer's localStorage session token and the
+// ability to call the API as them. Inline styles, canvas and scripts all work
+// without it. The iframe is torn down completely on close so any
 // requestAnimationFrame loops or timers inside the note actually stop
 // instead of continuing to run invisibly in the background.
 function openNoteFullscreen(title, htmlContent) {
@@ -1121,7 +1177,7 @@ function openNoteFullscreen(title, htmlContent) {
   const oldFrame = document.getElementById('noteFullscreenFrame');
   const freshFrame = oldFrame.cloneNode(false);
   oldFrame.replaceWith(freshFrame);
-  freshFrame.setAttribute('sandbox', 'allow-scripts allow-same-origin allow-popups');
+  freshFrame.setAttribute('sandbox', 'allow-scripts allow-popups');
   overlay.style.display = 'flex';
   document.body.style.overflow = 'hidden';
   freshFrame.srcdoc = htmlContent;
@@ -1708,8 +1764,9 @@ async function loadStudentAnalytics() {
 let facStudentAccuracyChartInstance = null;
 let facStudentWeeklyChartInstance = null;
 function renderFacultyStudentSubjectCharts(bundle) {
-  const { progress, targets } = bundle;
+  const { student, progress, targets } = bundle;
   if (!progress || !targets) return;
+  const subs = examSubjects(student && student.target_exam);
   const accCanvas = document.getElementById('facStudentAccuracyChart');
   const weekCanvas = document.getElementById('facStudentWeeklyChart');
   if (!accCanvas || !weekCanvas || typeof Chart === 'undefined') return;
@@ -1720,10 +1777,10 @@ function renderFacultyStudentSubjectCharts(bundle) {
   facStudentAccuracyChartInstance = new Chart(accCanvas.getContext('2d'), {
     type: 'bar',
     data: {
-      labels: ['Biology', 'Physics', 'Chemistry', 'Zoology', 'Mathematics'],
+      labels: subs.map(x => x.label),
       datasets: [
-        { label: 'Current %', data: [progress.bio_accuracy, progress.phy_accuracy, progress.chem_accuracy, progress.zoo_accuracy, progress.math_accuracy], backgroundColor: '#B98868', borderRadius: 8 },
-        { label: 'Target %', data: [targets.bio, targets.phy, targets.chem, targets.zoo, targets.math], backgroundColor: '#8C3B4A', borderRadius: 8 }
+        { label: 'Current %', data: subs.map(x => progress[x.key + '_accuracy']), backgroundColor: '#B98868', borderRadius: 8 },
+        { label: 'Target %', data: subs.map(x => targets[x.key]), backgroundColor: '#8C3B4A', borderRadius: 8 }
       ]
     },
     options: { responsive: true, plugins: { legend: { position: 'bottom' } }, scales: { y: { beginAtZero: true, max: 100 } } }
@@ -1985,18 +2042,28 @@ async function renderStudentTests() {
   }
 }
 
+// Countdown for faculty-scheduled tests. The deadline comes from the SERVER's clock
+// (startedAt / serverNow), so reloading or opening the test in another tab cannot
+// buy extra time; the server enforces the same limit (plus a short grace period).
+let legacyTestTimerInterval = null;
+
 window.startTest = async (testId) => {
   const area = document.getElementById('testAttemptArea');
   area.innerHTML = `<div class="loading-row"><div class="spinner"></div></div>`;
+  clearInterval(legacyTestTimerInterval);
   try {
-    const { test, questions } = await api(`/api/student/tests/${testId}`);
+    const { test, questions, startedAt, serverNow } = await api(`/api/student/tests/${testId}`);
     activeStudentTest = test;
     activeTestQuestions = questions;
+    let legacyRemaining = test.time_limit_min
+      ? Math.round(test.time_limit_min * 60 - (new Date(serverNow) - new Date(startedAt)) / 1000)
+      : null;
 
     area.innerHTML = `
       <div class="card">
         <h3>${test.title}</h3>
-        <p class="helper-text">${test.subject}${test.chapter ? ' · ' + test.chapter : ''} · Time limit: ${test.time_limit_min} min${test.negative_marking ? ' · Negative marking enabled' : ''}</p>
+        <p class="helper-text">${test.subject}${test.chapter ? ' · ' + test.chapter : ''} · Time limit: ${test.time_limit_min} min${test.negative_marking ? ' · Negative marking enabled' : ''}
+          ${legacyRemaining !== null ? ' · <strong id="legacyTestTimer"></strong>' : ''}</p>
         <div id="testQuestionsArea" class="mt-2"></div>
         <button id="submitTestBtn" class="btn btn-primary mt-2">Submit test</button>
         <div id="testResultArea" class="mt-2"></div>
@@ -2014,16 +2081,33 @@ window.startTest = async (testId) => {
           : `<input type="text" class="tq-fill-input" data-qid="${q.id}" placeholder="Type your answer">`}
       </div>`).join('');
 
-    document.getElementById('submitTestBtn').onclick = submitTest;
+    document.getElementById('submitTestBtn').onclick = () => submitTest({ auto: false });
+    if (legacyRemaining !== null) {
+      const paint = () => {
+        const el = document.getElementById('legacyTestTimer');
+        if (!el) { clearInterval(legacyTestTimerInterval); return; }   // page changed
+        const t = Math.max(0, legacyRemaining);
+        el.textContent = `⏱ ${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}`;
+      };
+      paint();
+      legacyTestTimerInterval = setInterval(() => {
+        legacyRemaining--;
+        paint();
+        if (legacyRemaining <= 0) { clearInterval(legacyTestTimerInterval); submitTest({ auto: true }); }
+      }, 1000);
+    }
     window.scrollTo({ top: area.offsetTop, behavior: 'smooth' });
   } catch (err) {
     area.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
   }
 };
 
-async function submitTest() {
+async function submitTest(opts = {}) {
   if (!activeStudentTest) return;
   const btn = document.getElementById('submitTestBtn');
+  if (!btn) return;
+  clearInterval(legacyTestTimerInterval);
+  if (opts && opts.auto) showToast("Time is up — submitting your answers.", 'success');
   const answers = activeTestQuestions.map(q => {
     if (q.q_type === 'mcq') {
       const selected = document.querySelector(`input[name="tq${q.id}"]:checked`);
@@ -2053,6 +2137,12 @@ async function submitTest() {
     btn.style.display = 'none';
     renderStudentTests();
   } catch (err) {
+    if (err.data && err.data.timeExpired) {
+      // The window is closed for good; offering "Submit" again would only fail.
+      btn.style.display = 'none';
+      document.getElementById('testResultArea').innerHTML =
+        `<div class="card" style="background:var(--cream-deep); border:none;"><strong>⏱ Time limit passed</strong><p class="helper-text mt-1">${err.message}</p></div>`;
+    }
     showToast(err.message, 'error');
   } finally {
     btn.disabled = false; btn.textContent = 'Submit test';
@@ -3226,6 +3316,7 @@ let bridgeTestQuestions = [];
 let bridgeTestAnswers = {};
 let bridgeTimerInterval = null;
 let bridgeTimeRemaining = 0;
+let bridgeTestStartedAt = null; // server-anchored start time (ms since epoch) for the active test
 let bridgeCurriculumData = null;
 
 async function loadBridgeCurriculum() {
@@ -3258,7 +3349,16 @@ async function initBridgePage() {
             </div>
         `).join('');
         const test1 = entries.find(e => e.test_number === 1);
-        entryTest1Done = !test1 || !!test1.submitted_at;
+        // Safe default is to BLOCK. The old `!test1 || ...` logic treated
+        // "test 1 missing from this list" the same as "no entry tests
+        // configured for this course at all" and unlocked everything in
+        // both cases. Only the latter (an empty list -- nothing to gate
+        // on, matching the backend's own isEntryTest1Complete semantics)
+        // should unlock by default; if the list is non-empty but test
+        // number 1 specifically isn't in it (seeding gap, deleted row),
+        // or it's there but not yet submitted, the Test Centre stays
+        // locked.
+        entryTest1Done = entries.length === 0 ? true : !!(test1 && test1.submitted_at);
     } catch (err) {
         document.getElementById('bridgeEntryTests').innerHTML = '<p style="color:var(--ink-soft);">Entry tests not available yet.</p>';
     }
@@ -3375,6 +3475,7 @@ async function initBridgePage() {
 
     // Test history
     await loadBridgeHistory();
+    await loadBridgeChapterAccuracy();
 }
 
 async function setupChapterComboUI() {
@@ -3413,7 +3514,7 @@ async function startEntryTest(courseType, testNumber) {
     try {
         const data = await api(`/api/bridge/entry-tests/${courseType}/${testNumber}`);
         if (data.alreadyAttempted) return showToast('You have already taken this entry test.', 'error');
-        openTestModal(data.testId, data.title, data.questions, data.timeLimitMin);
+        openTestModal(data.testId, data.title, data.questions, data.timeLimitMin, data.startedAt);
     } catch (err) {
         showToast(err.message, 'error');
     }
@@ -3423,17 +3524,55 @@ async function startGeneratedTest(testId, title, alreadyAttempted) {
     if (alreadyAttempted) return showToast('You have already attempted this test.', 'error');
     try {
         const data = await api(`/api/bridge/tests/${testId}/questions`);
-        openTestModal(testId, data.test.title, data.questions, data.test.time_limit_min);
+        openTestModal(testId, data.test.title, data.questions, data.test.time_limit_min, data.startedAt);
     } catch (err) {
         showToast(err.message, 'error');
     }
 }
 
-function openTestModal(testId, title, questions, timeLimitMin) {
+// Answers and the server-stamped start time are persisted to sessionStorage
+// per test_id so that a refresh, an accidental tab close, or a dropped
+// connection mid-test does not wipe out everything the student has
+// answered so far. Keyed by test id so switching between tests (or the
+// history page) can't cross-contaminate answers.
+function bridgeStorageKey(testId) { return `bridgeTest_${testId}`; }
+
+function saveBridgeTestState() {
+    if (!bridgeActiveTestId) return;
+    try {
+        sessionStorage.setItem(bridgeStorageKey(bridgeActiveTestId), JSON.stringify({
+            answers: bridgeTestAnswers,
+            startedAt: bridgeTestStartedAt
+        }));
+    } catch (_) { /* storage unavailable/full -- non-fatal, answers still submit from memory */ }
+}
+
+function clearBridgeTestState(testId) {
+    try { sessionStorage.removeItem(bridgeStorageKey(testId)); } catch (_) {}
+}
+
+function openTestModal(testId, title, questions, timeLimitMin, startedAt) {
     bridgeActiveTestId = testId;
     bridgeTestQuestions = questions;
+    bridgeTestStartedAt = startedAt ? new Date(startedAt).getTime() : Date.now();
     bridgeTestAnswers = {};
-    bridgeTimeRemaining = (timeLimitMin || 180) * 60;
+
+    // Restore in-progress answers (and the original start time) from a
+    // previous session for this exact test, if any -- so refreshing the
+    // page or reopening the test mid-attempt does not lose work or reset
+    // the clock.
+    try {
+        const saved = JSON.parse(sessionStorage.getItem(bridgeStorageKey(testId)) || 'null');
+        if (saved && saved.answers) {
+            bridgeTestAnswers = saved.answers;
+            if (saved.startedAt) bridgeTestStartedAt = saved.startedAt;
+        }
+    } catch (_) { /* ignore corrupt/missing storage */ }
+    saveBridgeTestState();
+
+    const timeLimitSec = (timeLimitMin || 180) * 60;
+    const elapsedSec = Math.max(0, Math.floor((Date.now() - bridgeTestStartedAt) / 1000));
+    bridgeTimeRemaining = Math.max(0, timeLimitSec - elapsedSec);
 
     document.getElementById('bridgeTestTitle').textContent = title;
     updateBridgeTestProgress();
@@ -3448,7 +3587,7 @@ function openTestModal(testId, title, questions, timeLimitMin) {
             <div class="test-options">
                 ${['A','B','C','D'].map(opt => `
                     <label class="test-option-row" id="topt_${q.id}_${opt}">
-                        <input type="radio" name="q_${q.id}" value="${opt}" onchange="bridgeSelectAnswer(${q.id}, '${opt}')">
+                        <input type="radio" name="q_${q.id}" value="${opt}" onchange="bridgeSelectAnswer(${q.id}, '${opt}')" ${bridgeTestAnswers[q.id] === opt ? 'checked' : ''}>
                         <span class="opt-letter">${opt}.</span>
                         <span class="opt-text">${q['option_' + opt.toLowerCase()]}</span>
                     </label>
@@ -3457,18 +3596,28 @@ function openTestModal(testId, title, questions, timeLimitMin) {
         </div>
     `).join('');
 
-    // Timer
+    // Reflect any restored answers in the card styling too.
+    Object.entries(bridgeTestAnswers).forEach(([qId, opt]) => {
+        const card = document.getElementById(`tqcard_${qId}`);
+        const selectedRow = document.getElementById(`topt_${qId}_${opt}`);
+        if (card) card.classList.add('answered');
+        if (selectedRow) selectedRow.classList.add('selected');
+    });
+
+    // Timer -- ticks down from the server-anchored remaining time, so
+    // reloading the page recomputes the same deadline instead of resetting
+    // to the full duration.
     clearInterval(bridgeTimerInterval);
     bridgeTimerInterval = setInterval(() => {
         bridgeTimeRemaining--;
-        const m = Math.floor(bridgeTimeRemaining / 60);
-        const s = bridgeTimeRemaining % 60;
+        const m = Math.floor(Math.max(0, bridgeTimeRemaining) / 60);
+        const s = Math.max(0, bridgeTimeRemaining) % 60;
         document.getElementById('bridgeTestTimer').textContent =
             `⏱ ${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`;
-        if (bridgeTimeRemaining <= 0) { clearInterval(bridgeTimerInterval); submitBridgeTest(); }
+        if (bridgeTimeRemaining <= 0) { clearInterval(bridgeTimerInterval); submitBridgeTest({ auto: true }); }
     }, 1000);
 
-    document.getElementById('submitTestBtn').onclick = submitBridgeTest;
+    document.getElementById('submitTestBtn').onclick = () => submitBridgeTest({ auto: false });
     document.getElementById('bridgeTestModal').style.display = '';
 }
 
@@ -3481,6 +3630,7 @@ function updateBridgeTestProgress() {
 
 window.bridgeSelectAnswer = (qId, opt) => {
     bridgeTestAnswers[qId] = opt;
+    saveBridgeTestState();
     const card = document.getElementById(`tqcard_${qId}`);
     if (card) {
         card.classList.add('answered');
@@ -3491,16 +3641,27 @@ window.bridgeSelectAnswer = (qId, opt) => {
     updateBridgeTestProgress();
 };
 
-async function submitBridgeTest() {
+// `opts.auto` distinguishes the timeout path (fires after the interval has
+// already been cleared, so there's no second chance to submit) from the
+// student's own "Submit Test" button. Only the manual path asks for
+// confirmation -- previously BOTH went through the same confirm() dialog,
+// so dismissing it on auto-submit left the test unsubmittable with no
+// timer left to retry.
+async function submitBridgeTest(opts = {}) {
+    const auto = !!opts.auto;
     clearInterval(bridgeTimerInterval);
-    if (!confirm('Submit this test? You cannot change your answers after submission.')) return;
+    if (!auto && !confirm('Submit this test? You cannot change your answers after submission.')) return;
     document.getElementById('bridgeTestModal').style.display = 'none';
 
+    const testId = bridgeActiveTestId;
+    const timeTakenSec = Math.max(0, Math.round((Date.now() - bridgeTestStartedAt) / 1000));
+
     try {
-        const result = await api(`/api/bridge/tests/${bridgeActiveTestId}/submit`, {
+        const result = await api(`/api/bridge/tests/${testId}/submit`, {
             method: 'POST',
-            body: JSON.stringify({ answers: bridgeTestAnswers })
+            body: JSON.stringify({ answers: bridgeTestAnswers, timeTakenSec })
         });
+        clearBridgeTestState(testId);
         showBridgeResult(result);
     } catch (err) {
         showToast('Submission error: ' + err.message, 'error');
@@ -3508,6 +3669,32 @@ async function submitBridgeTest() {
 }
 
 function showBridgeResult(r) {
+    const percentileLabel = r.percentileIsHeuristic
+        ? `Heuristic estimate (not enough attempts on this test yet for a real percentile): <strong>${r.percentileEst}%</strong>`
+        : `Percentile among students who've taken this test: <strong>${r.percentileEst}%</strong>`;
+    const cohortLine = (r.cohortAvgPercentage !== null && r.cohortAvgPercentage !== undefined)
+        ? `<p style="text-align:center; font-size:.9rem; color:var(--ink-soft);">Cohort average on this test: <strong>${r.cohortAvgPercentage}%</strong> (you scored ${r.percentage}%)</p>`
+        : '';
+    const review = r.review || [];
+    const reviewHtml = review.length ? `
+        <div style="text-align:left; margin-top:1.5rem;">
+            <h3 style="margin-bottom:.5rem;">📝 Review your mistakes (${review.length})</h3>
+            ${review.map((q, idx) => `
+                <div class="card" style="margin-bottom:.75rem; text-align:left;">
+                    <div class="test-question-meta"><span>${q.subject}</span><span>${q.chapterName}</span>${q.topic ? `<span>${q.topic}</span>` : ''}</div>
+                    <p style="font-weight:600; margin:.4rem 0;">${idx+1}. ${q.questionText}</p>
+                    <p style="font-size:.9rem; margin:.2rem 0;">
+                        Your answer: <strong style="color:${q.yourAnswer ? 'red' : 'var(--ink-soft)'};">${q.yourAnswer ? `${q.yourAnswer}. ${q.options[q.yourAnswer] || ''}` : 'Not attempted'}</strong>
+                    </p>
+                    <p style="font-size:.9rem; margin:.2rem 0;">
+                        Correct answer: <strong style="color:green;">${q.correctAnswer}. ${q.options[q.correctAnswer] || ''}</strong>
+                    </p>
+                    ${q.explanation ? `<p style="font-size:.85rem; color:var(--ink-soft); margin-top:.4rem;">💡 ${q.explanation}</p>` : ''}
+                </div>
+            `).join('')}
+        </div>
+    ` : '';
+
     document.getElementById('bridgeResultContent').innerHTML = `
         <div style="display:grid; grid-template-columns:1fr 1fr; gap:1rem; text-align:left;">
             <div class="card" style="text-align:center;"><div style="font-size:2rem; font-weight:700; color:var(--accent);">${r.score}/${r.total}</div><div>Raw Score</div></div>
@@ -3517,7 +3704,9 @@ function showBridgeResult(r) {
             <div class="card" style="text-align:center;"><div style="font-size:1.5rem; font-weight:700;">${r.skipped}</div><div>Skipped</div></div>
             <div class="card" style="text-align:center;"><div style="font-size:1.5rem; font-weight:700; color:var(--accent);">${r.neetEquivScore}/720</div><div>Equiv. Score</div></div>
         </div>
-        <p style="margin-top:1rem; text-align:center; font-size:.9rem; color:var(--ink-soft);">Estimated Percentile: <strong>${r.percentileEst}%</strong></p>
+        <p style="margin-top:1rem; text-align:center; font-size:.9rem; color:var(--ink-soft);">${percentileLabel}</p>
+        ${cohortLine}
+        ${reviewHtml}
     `;
     document.getElementById('closeResultBtn').onclick = () => {
         document.getElementById('bridgeResultModal').style.display = 'none';
@@ -3561,6 +3750,43 @@ async function loadBridgeHistory() {
         `;
     } catch (err) {
         document.getElementById('bridgeTestHistory').innerHTML = '<p style="color:var(--ink-soft);">Could not load history.</p>';
+    }
+}
+
+async function loadBridgeChapterAccuracy() {
+    const container = document.getElementById('bridgeChapterAccuracy');
+    if (!container) return;
+    try {
+        const data = await api(`/api/bridge/analytics?courseType=${bridgeActiveCourseType}`);
+        const rows = data.chapterAccuracy || [];
+        if (!rows.length) {
+            container.innerHTML = '<p style="color:var(--ink-soft); font-size:.85rem;">Attempt a test to see chapter-wise accuracy here.</p>';
+            return;
+        }
+        container.innerHTML = `
+            <table style="width:100%; border-collapse:collapse; font-size:.9rem;">
+                <thead>
+                    <tr style="text-align:left; border-bottom:2px solid var(--border);">
+                        <th style="padding:.4rem;">Chapter</th>
+                        <th>Subject</th>
+                        <th>Correct / Attempted</th>
+                        <th>Accuracy</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    ${rows.map(r => `
+                        <tr style="border-bottom:1px solid var(--border);">
+                            <td style="padding:.4rem;">${r.chapterName}</td>
+                            <td>${r.subject}</td>
+                            <td>${r.correct} / ${r.attempted}</td>
+                            <td style="color:${r.accuracyPercent < 50 ? 'red' : (r.accuracyPercent >= 70 ? 'green' : 'inherit')}; font-weight:600;">${r.accuracyPercent}%</td>
+                        </tr>
+                    `).join('')}
+                </tbody>
+            </table>
+        `;
+    } catch (err) {
+        container.innerHTML = '<p style="color:var(--ink-soft); font-size:.85rem;">Could not load chapter accuracy.</p>';
     }
 }
 
@@ -3710,7 +3936,7 @@ async function renderQbChapterList() {
                     ${c.description ? `<div class="helper-text">${c.description}</div>` : ''}
                 </div>
                 <div class="flex-row">
-                    <button class="btn btn-outline" onclick="renameQbChapter(${c.id}, '${c.name.replace(/'/g, "\\'")}')">Rename</button>
+                    <button class="btn btn-outline" onclick="renameQbChapter(${c.id}, ${jsArg(c.name)})">Rename</button>
                     <button class="btn btn-outline" onclick="removeQbChapter(${c.id})">Delete</button>
                 </div>
             </div>`).join('') : `<div class="empty-state"><p>No chapters yet for ${courseType} · ${subject} — add one above.</p></div>`;
