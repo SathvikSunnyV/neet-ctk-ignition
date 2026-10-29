@@ -57,13 +57,13 @@
         </svg>
       </div>
       <div class="grid-7 mt-1">
-        <div class="badge badge-hill" onclick="playHillVideo('https://pub-f4f030961eab45ada12b3d35525b2379.r2.dev/The First Hill.mp4','1 · Known → Unknown')"><span class="badge-hill-play">▶</span>1 · Known → Unknown</div>
-        <div class="badge badge-hill" onclick="playHillVideo('https://pub-f4f030961eab45ada12b3d35525b2379.r2.dev/The Second Hill.mp4','2 · Central Point')"><span class="badge-hill-play">▶</span>2 · Central Point</div>
-        <div class="badge badge-hill" onclick="playHillVideo('https://pub-f4f030961eab45ada12b3d35525b2379.r2.dev/The Third Hill.mp4','3 · Let Student Discover')"><span class="badge-hill-play">▶</span>3 · Let Student Discover</div>
-        <div class="badge badge-hill" onclick="playHillVideo('https://pub-f4f030961eab45ada12b3d35525b2379.r2.dev/The Fourth Hill.mp4','4 · One Key, Many Doors')"><span class="badge-hill-play">▶</span>4 · One Key, Many Doors</div>
-        <div class="badge badge-hill" onclick="playHillVideo('https://pub-f4f030961eab45ada12b3d35525b2379.r2.dev/The Fifth Hill.mp4','5 · Recognise Patterns')"><span class="badge-hill-play">▶</span>5 · Recognise Patterns</div>
-        <div class="badge badge-hill" onclick="playHillVideo('https://pub-f4f030961eab45ada12b3d35525b2379.r2.dev/The Sixth Hill.mp4','6 · Build Connections')"><span class="badge-hill-play">▶</span>6 · Build Connections</div>
-        <div class="badge badge-hill" onclick="playHillVideo('https://pub-f4f030961eab45ada12b3d35525b2379.r2.dev/The Seventh Hill.mp4','7 · Real-World Wisdom')"><span class="badge-hill-play">▶</span>7 · Real-World Wisdom</div>
+        <div class="badge badge-hill" onclick="playHill(1)"><span class="badge-hill-play">▶</span>1 · Known → Unknown</div>
+        <div class="badge badge-hill" onclick="playHill(2)"><span class="badge-hill-play">▶</span>2 · Central Point</div>
+        <div class="badge badge-hill" onclick="playHill(3)"><span class="badge-hill-play">▶</span>3 · Let Student Discover</div>
+        <div class="badge badge-hill" onclick="playHill(4)"><span class="badge-hill-play">▶</span>4 · One Key, Many Doors</div>
+        <div class="badge badge-hill" onclick="playHill(5)"><span class="badge-hill-play">▶</span>5 · Recognise Patterns</div>
+        <div class="badge badge-hill" onclick="playHill(6)"><span class="badge-hill-play">▶</span>6 · Build Connections</div>
+        <div class="badge badge-hill" onclick="playHill(7)"><span class="badge-hill-play">▶</span>7 · Real-World Wisdom</div>
       </div>
 
       <button class="btn btn-primary mt-2" id="startNowBtn" style="display:none;">Start Your Journey →</button>
@@ -579,7 +579,7 @@
       <div class="grid-2">
         <div class="field-group">
           <label class="field-label" for="notesViewSubjectSelect">Subject</label>
-          <select id="notesViewSubjectSelect" class="field"><option>Physics</option><option>Chemistry</option><option>Biology</option></select>
+          <select id="notesViewSubjectSelect" class="field"><option>Botany</option><option>Zoology</option><option>Chemistry</option><option>Physics</option><option>Mathematics</option></select>
         </div>
         <div class="field-group">
           <label class="field-label" for="notesViewChapterSelect">Chapter</label>
@@ -869,7 +869,7 @@
         </div>
         <div class="field-group">
           <label class="field-label" for="lectureSubject">Subject</label>
-          <select id="lectureSubject"><option>Physics</option><option>Chemistry</option><option>Biology</option></select>
+          <select id="lectureSubject"><option>Botany</option><option>Zoology</option><option>Chemistry</option><option>Physics</option><option>Mathematics</option></select>
         </div>
         <div class="field-group" style="grid-column:1/-1;">
           <label class="field-label" for="lectureTitle">Video title</label>
@@ -901,7 +901,7 @@
       <div class="grid-2">
         <div class="field-group">
           <label class="field-label" for="chapterSubjectSelect">Subject</label>
-          <select id="chapterSubjectSelect"><option>Physics</option><option>Chemistry</option><option>Biology</option></select>
+          <select id="chapterSubjectSelect"><option>Botany</option><option>Zoology</option><option>Chemistry</option><option>Physics</option><option>Mathematics</option></select>
         </div>
         <div class="field-group">
           <label class="field-label" for="newChapterName">New chapter name</label>
@@ -926,7 +926,7 @@
       <div class="grid-2">
         <div class="field-group">
           <label class="field-label" for="noteSubjectSelect">Subject</label>
-          <select id="noteSubjectSelect"><option>Physics</option><option>Chemistry</option><option>Biology</option></select>
+          <select id="noteSubjectSelect"><option>Botany</option><option>Zoology</option><option>Chemistry</option><option>Physics</option><option>Mathematics</option></select>
         </div>
         <div class="field-group">
           <label class="field-label" for="noteChapterSelect">Chapter</label>
@@ -992,7 +992,7 @@
         <div class="field-group">
           <label class="field-label" for="grandAddSubject">Subject (for the pasted batch)</label>
           <select id="grandAddSubject" class="field">
-            <option>Physics</option><option>Chemistry</option><option>Botany</option><option>Zoology</option><option>Mathematics</option>
+            <option>Botany</option><option>Zoology</option><option>Chemistry</option><option>Physics</option><option>Mathematics</option>
           </select>
         </div>
         <div class="field-group">
@@ -1033,7 +1033,7 @@
         </div>
         <div class="field-group">
           <label class="field-label" for="materialSubject">Subject</label>
-          <select id="materialSubject"><option>Physics</option><option>Chemistry</option><option>Botany</option><option>Zoology</option><option>Biology</option><option>Mathematics</option></select>
+          <select id="materialSubject"><option>Botany</option><option>Zoology</option><option>Chemistry</option><option>Physics</option><option>Mathematics</option></select>
         </div>
         <div class="field-group">
           <label class="field-label" for="materialChapter">Chapter</label>
@@ -1052,10 +1052,15 @@
             <option value="3">Term 3 · Advanced Applications</option>
           </select>
         </div>
+        <div class="field-group" id="materialFileGroup" style="grid-column:1/-1;">
+          <label class="field-label" for="materialFileInput">Upload a file (PDF, PowerPoint, Word, Excel or image — up to 100 MB)</label>
+          <input type="file" id="materialFileInput" accept=".pdf,.ppt,.pptx,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg,.webp,.gif">
+          <p class="helper-text">The file is stored securely on our CDN and students can open it straight from their Study Materials page. When editing, choosing a new file replaces the old one.</p>
+        </div>
         <div class="field-group" id="materialUrlGroup" style="grid-column:1/-1;">
-          <label class="field-label" for="materialUrlInput">Link (Google Drive, YouTube, etc.)</label>
+          <label class="field-label" for="materialUrlInput">…or paste a link instead (Google Drive, YouTube, etc.)</label>
           <input type="url" id="materialUrlInput" placeholder="https://drive.google.com/file/d/...">
-          <p class="helper-text">Tip: in Google Drive, right-click the file → Share → "Anyone with the link" → copy link.</p>
+          <p class="helper-text">If you choose a file above, the link is ignored. Tip: in Google Drive, right-click the file → Share → "Anyone with the link" → copy link.</p>
         </div>
         <div class="field-group" style="grid-column:1/-1;">
           <label class="field-label" for="materialDescription">Description (optional)</label>
@@ -1081,8 +1086,8 @@
 
     <!-- ===== FACULTY LECTURE LINKS (chapter-wise, instant publish) ===== -->
     <div class="card">
-      <h3>🎬 Lecture links (chapter-wise)</h3>
-      <p style="color:var(--ink-soft); font-size:0.92rem; margin-bottom:1rem;">Add, edit or remove your own lecture links, organised by chapter. Published instantly — separate from the "Submit for approval" queue above.</p>
+      <h3>🎬 Lectures (chapter-wise)</h3>
+      <p style="color:var(--ink-soft); font-size:0.92rem; margin-bottom:1rem;">Upload a lecture video/audio file or add a link, organised by chapter. Add, edit or remove your own lectures — published instantly, separate from the "Submit for approval" queue above.</p>
       <div class="grid-2">
         <div class="field-group" style="grid-column:1/-1;">
           <label class="field-label" for="facLectureTitle">Title</label>
@@ -1090,22 +1095,28 @@
         </div>
         <div class="field-group">
           <label class="field-label" for="facLectureSubject">Subject</label>
-          <select id="facLectureSubject"><option>Physics</option><option>Chemistry</option><option>Biology</option></select>
+          <select id="facLectureSubject"><option>Botany</option><option>Zoology</option><option>Chemistry</option><option>Physics</option><option>Mathematics</option></select>
         </div>
         <div class="field-group">
           <label class="field-label" for="facLectureChapter">Chapter</label>
           <select id="facLectureChapter"><option value="">— No chapter —</option></select>
         </div>
         <div class="field-group" style="grid-column:1/-1;">
-          <label class="field-label" for="facLectureUrl">Video URL</label>
-          <input type="url" id="facLectureUrl" placeholder="https://www.youtube.com/watch?v=...">
+          <label class="field-label" for="facLectureFile">Upload a lecture (MP4, WebM, MOV video or M4A/MP3 audio — up to 1 GB)</label>
+          <input type="file" id="facLectureFile" accept=".mp4,.m4v,.webm,.mov,.m4a,.mp3,.aac,video/mp4,video/webm,video/quicktime,audio/mp4,audio/mpeg">
+          <p class="helper-text">Stored on our CDN and played right inside the platform. When editing, choosing a new file replaces the old one.</p>
+        </div>
+        <div class="field-group" style="grid-column:1/-1;">
+          <label class="field-label" for="facLectureUrl">…or Video URL</label>
+          <input type="url" id="facLectureUrl" placeholder="https://www.youtube.com/embed/...">
+          <p class="helper-text">If you choose a file above, the URL is ignored.</p>
         </div>
       </div>
       <div id="facLectureEditingBanner" style="display:none;" class="mt-1">
         <span class="badge warn">Editing an existing lecture link.</span>
         <button id="cancelFacLectureEditBtn" class="btn btn-outline" style="margin-left:0.5rem;">Cancel edit</button>
       </div>
-      <button id="facLectureSaveBtn" class="btn btn-primary btn-block mt-1">Publish lecture link</button>
+      <button id="facLectureSaveBtn" class="btn btn-primary btn-block mt-1">Publish lecture</button>
       <div id="facLectureMessage" class="mt-2"></div>
       <div id="facLectureList" class="mt-2"></div>
     </div>

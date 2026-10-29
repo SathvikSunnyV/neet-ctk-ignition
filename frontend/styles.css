@@ -285,6 +285,8 @@ textarea{ resize: vertical; min-height: 100px; }
 }
 .video-card:hover{ transform: translateY(-4px); box-shadow: var(--shadow); }
 .video-card iframe{ width:100%; aspect-ratio:16/9; border:0; display:block; }
+.video-card video{ width:100%; aspect-ratio:16/9; display:block; background:#000; }
+.video-card audio{ width:100%; display:block; box-sizing:border-box; padding:1rem 1rem 0.25rem; }
 .video-card .info{ padding: 0.85rem 1rem; }
 .video-card .info strong{ display:block; font-size:0.92rem; margin-bottom:0.25rem; }
 .video-card .info .meta{ font-size:0.78rem; color: var(--ink-soft); }

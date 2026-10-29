@@ -145,10 +145,10 @@ function jsArg(value) {
 
 // ---------------------------------------------------------------- multipart upload helper
 // (no Content-Type header — the browser sets the multipart boundary itself)
-async function apiUpload(path, formData) {
+async function apiUpload(path, formData, method = 'POST') {
   const headers = {};
   if (authToken) headers['Authorization'] = `Bearer ${authToken}`;
-  const res = await fetch(`${API_BASE}${path}`, { method: 'POST', headers, body: formData });
+  const res = await fetch(`${API_BASE}${path}`, { method, headers, body: formData });
   let data = null;
   try { data = await res.json(); } catch (e) { /* no body */ }
   if (res.status === 401 && authToken) {
@@ -164,6 +164,46 @@ async function apiUpload(path, formData) {
     throw err;
   }
   return data;
+}
+
+// Same as apiUpload, but reports upload progress (0-100) -- used for faculty
+// file uploads, which can be hundreds of MB for lecture videos.
+function apiUploadWithProgress(path, formData, method, onProgress) {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open(method || 'POST', `${API_BASE}${path}`);
+    if (authToken) xhr.setRequestHeader('Authorization', `Bearer ${authToken}`);
+    if (onProgress && xhr.upload) {
+      xhr.upload.onprogress = e => { if (e.lengthComputable) onProgress(Math.round((e.loaded / e.total) * 100)); };
+    }
+    xhr.onload = () => {
+      let data = null;
+      try { data = JSON.parse(xhr.responseText); } catch (e) { /* no body */ }
+      if (xhr.status === 401 && authToken) {
+        clearSession();
+        updateNavForAuth();
+        showToast('Your session has expired — please log in again.', 'error');
+      }
+      if (xhr.status >= 200 && xhr.status < 300) return resolve(data);
+      const err = new Error((data && data.error) ? data.error : `Upload failed (${xhr.status})`);
+      err.status = xhr.status;
+      err.data = data;
+      reject(err);
+    };
+    xhr.onerror = () => reject(new Error('Network error while uploading — please check your connection and try again.'));
+    xhr.send(formData);
+  });
+}
+
+// Lecture players: files hosted on the CDN (mp4/webm/mov video, m4a/mp3 audio)
+// get a native <video>/<audio> player; anything else (YouTube/Drive embed
+// URLs) keeps using an iframe exactly as before.
+function lectureMediaHtml(url) {
+  const safe = String(url || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
+  const bare = String(url || '').split('#')[0].split('?')[0].toLowerCase();
+  if (/\.(mp4|m4v|webm|mov|ogv)$/.test(bare)) return `<video src="${safe}" controls preload="metadata" playsinline></video>`;
+  if (/\.(m4a|mp3|aac|wav|ogg|oga)$/.test(bare)) return `<audio src="${safe}" controls preload="none"></audio>`;
+  return `<iframe src="${safe}" allowfullscreen loading="lazy"></iframe>`;
 }
 
 // ---------------------------------------------------------------- student data
@@ -705,7 +745,7 @@ async function renderPractice() {
 
     const cardHtml = (l, showAuthor) => `
       <div class="video-card">
-        <iframe src="${l.url}" allowfullscreen loading="lazy"></iframe>
+        ${lectureMediaHtml(l.url)}
         <div class="info">
           <strong>${l.title}</strong>
           <span class="meta">${showAuthor ? l.lecturer_name + ' · ' : ''}${l.subject}</span>
@@ -1034,24 +1074,34 @@ async function renderFacultyAnalytics() {
 // ====================================================================
 let lastChaptersBySubject = {};
 
-async function populateChapterSelects() {
-  const subject = document.getElementById('chapterSubjectSelect') ? document.getElementById('chapterSubjectSelect').value : 'Physics';
+// Each form's Chapter dropdown follows ITS OWN Subject dropdown (so changing
+// the subject on the Materials / Lectures forms reloads that subject's chapters).
+async function loadChapterOptions(selectId, subject, keepValue) {
+  const el = document.getElementById(selectId);
+  if (!el) return [];
+  el.dataset.chapterSubject = subject;           // guards against out-of-order responses
   try {
     const chapters = await api(`/api/chapters?subject=${encodeURIComponent(subject)}`);
+    if (el.dataset.chapterSubject !== subject) return chapters;   // user already picked another subject
     lastChaptersBySubject[subject] = chapters;
-    const optionsHtml = `<option value="">— No chapter —</option>` + chapters.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
-    ['testChapter', 'materialChapter', 'facLectureChapter'].forEach(id => {
-      const el = document.getElementById(id);
-      if (!el) return;
-      const prevValue = el.value;
-      el.innerHTML = optionsHtml;
-      if (chapters.some(c => String(c.id) === prevValue)) el.value = prevValue;
-    });
+    el.innerHTML = `<option value="">— No chapter —</option>` + chapters.map(c => `<option value="${c.id}">${c.name}</option>`).join('');
+    if (keepValue && chapters.some(c => String(c.id) === String(keepValue))) el.value = String(keepValue);
     return chapters;
   } catch (err) {
     showToast(err.message, 'error');
     return [];
   }
+}
+
+async function populateChapterSelects() {
+  const matSubject = document.getElementById('materialSubject');
+  const lecSubject = document.getElementById('facLectureSubject');
+  const matChapter = document.getElementById('materialChapter');
+  const lecChapter = document.getElementById('facLectureChapter');
+  await Promise.all([
+    matSubject ? loadChapterOptions('materialChapter', matSubject.value, matChapter && matChapter.value) : null,
+    lecSubject ? loadChapterOptions('facLectureChapter', lecSubject.value, lecChapter && lecChapter.value) : null
+  ]);
 }
 
 async function renderChapterList() {
@@ -1608,13 +1658,15 @@ let facLectureEditingId = null;
 function resetFacLectureForm() {
   facLectureEditingId = null;
   document.getElementById('facLectureEditingBanner').style.display = 'none';
-  document.getElementById('facLectureSaveBtn').textContent = 'Publish lecture link';
+  document.getElementById('facLectureSaveBtn').textContent = 'Publish lecture';
   document.getElementById('facLectureTitle').value = '';
   document.getElementById('facLectureUrl').value = '';
   document.getElementById('facLectureChapter').value = '';
+  const fileEl = document.getElementById('facLectureFile');
+  if (fileEl) fileEl.value = '';
 }
 
-window.editFacLecture = (id, lectures) => {
+window.editFacLecture = async (id, lectures) => {
   const l = lectures.find(x => x.id === id);
   if (!l) return;
   facLectureEditingId = id;
@@ -1622,39 +1674,61 @@ window.editFacLecture = (id, lectures) => {
   document.getElementById('facLectureSaveBtn').textContent = 'Save changes';
   document.getElementById('facLectureTitle').value = l.title;
   document.getElementById('facLectureSubject').value = l.subject || 'Physics';
-  document.getElementById('facLectureChapter').value = l.chapter_id || '';
+  await loadChapterOptions('facLectureChapter', document.getElementById('facLectureSubject').value, l.chapter_id);
   document.getElementById('facLectureUrl').value = l.url;
+  const fileEl = document.getElementById('facLectureFile');
+  if (fileEl) fileEl.value = '';
+  if (l.storage_key) showToast('This lecture is an uploaded file — choose a new file to replace it, or just edit the title/chapter.', '');
   document.getElementById('facLectureTitle').scrollIntoView({ behavior: 'smooth', block: 'center' });
 };
 
 window.deleteFacLecture = async (id) => {
-  if (!confirm('Delete this lecture link?')) return;
+  if (!confirm('Delete this lecture? An uploaded video/audio file will be removed too.')) return;
   try {
     await api(`/api/faculty/lectures/${id}`, { method: 'DELETE' });
-    showToast('Lecture link deleted.', '');
+    showToast('Lecture deleted.', '');
     renderFacLectures();
   } catch (err) {
     showToast(err.message, 'error');
   }
 };
 
+const MAX_LECTURE_UPLOAD_BYTES = 1024 * 1024 * 1024;   // keep in sync with backend/server.js (uploadLecture)
+
 async function saveFacLecture() {
   const btn = document.getElementById('facLectureSaveBtn');
   const msgEl = document.getElementById('facLectureMessage');
   const title = document.getElementById('facLectureTitle').value.trim();
   const subject = document.getElementById('facLectureSubject').value;
-  const chapterId = document.getElementById('facLectureChapter').value || null;
+  const chapterId = document.getElementById('facLectureChapter').value || '';
   const url = document.getElementById('facLectureUrl').value.trim();
-  if (!title || !url) { msgEl.innerHTML = `<span class="badge danger">Please provide a title and URL.</span>`; return; }
+  const fileEl = document.getElementById('facLectureFile');
+  const file = fileEl && fileEl.files && fileEl.files[0] ? fileEl.files[0] : null;
 
+  if (!title) { msgEl.innerHTML = `<span class="badge danger">Please provide a title.</span>`; return; }
+  if (!file && !url) { msgEl.innerHTML = `<span class="badge danger">Please choose a video/audio file to upload, or provide a URL.</span>`; return; }
+  if (file && file.size > MAX_LECTURE_UPLOAD_BYTES) { msgEl.innerHTML = `<span class="badge danger">That file is larger than 1 GB.</span>`; return; }
+
+  const idleLabel = facLectureEditingId ? 'Save changes' : 'Publish lecture';
   btn.disabled = true;
+  btn.textContent = file ? 'Uploading… 0%' : (facLectureEditingId ? 'Saving…' : 'Publishing…');
   try {
-    if (facLectureEditingId) {
-      await api(`/api/faculty/lectures/${facLectureEditingId}`, { method: 'PUT', body: JSON.stringify({ title, subject, chapterId, url }) });
-      msgEl.innerHTML = `<span class="badge success">✅ Lecture link updated.</span>`;
+    if (file) {
+      const fd = new FormData();
+      fd.append('title', title);
+      fd.append('subject', subject);
+      fd.append('chapterId', chapterId);
+      fd.append('file', file);
+      const onProgress = pct => { btn.textContent = pct >= 100 ? 'Saving…' : `Uploading… ${pct}%`; };
+      if (facLectureEditingId) await apiUploadWithProgress(`/api/faculty/lectures/${facLectureEditingId}`, fd, 'PUT', onProgress);
+      else await apiUploadWithProgress('/api/faculty/lectures', fd, 'POST', onProgress);
+      msgEl.innerHTML = `<span class="badge success">✅ Lecture uploaded and published.</span>`;
+    } else if (facLectureEditingId) {
+      await api(`/api/faculty/lectures/${facLectureEditingId}`, { method: 'PUT', body: JSON.stringify({ title, subject, chapterId: chapterId || null, url }) });
+      msgEl.innerHTML = `<span class="badge success">✅ Lecture updated.</span>`;
     } else {
-      await api('/api/faculty/lectures', { method: 'POST', body: JSON.stringify({ title, subject, chapterId, url }) });
-      msgEl.innerHTML = `<span class="badge success">✅ Lecture link published.</span>`;
+      await api('/api/faculty/lectures', { method: 'POST', body: JSON.stringify({ title, subject, chapterId: chapterId || null, url }) });
+      msgEl.innerHTML = `<span class="badge success">✅ Lecture published.</span>`;
     }
     resetFacLectureForm();
     showToast('Saved.', 'success');
@@ -1664,6 +1738,7 @@ async function saveFacLecture() {
     showToast(err.message, 'error');
   } finally {
     btn.disabled = false;
+    btn.textContent = facLectureEditingId ? 'Save changes' : 'Publish lecture';
   }
 }
 
@@ -1680,14 +1755,14 @@ async function renderFacLectures() {
       <div class="flex-between" style="padding:0.55rem 0; border-bottom:1px solid var(--border);">
         <div>
           <strong>${l.title}</strong>
-          <div class="helper-text">${l.subject}${l.chapter_name ? ' · ' + l.chapter_name : ''}</div>
+          <div class="helper-text">${l.subject}${l.chapter_name ? ' · ' + l.chapter_name : ''}${l.storage_key ? ' · 📁 uploaded file' + (l.file_size_bytes ? ' (' + formatFileSize(Number(l.file_size_bytes)) + ')' : '') : ' · link'}</div>
         </div>
         <div class="flex-row">
           <a class="btn btn-outline" href="${l.url}" target="_blank" rel="noopener">Open</a>
           <button class="btn btn-outline" onclick="editFacLecture(${l.id}, lastFacLectures)">Edit</button>
           <button class="btn btn-outline" onclick="deleteFacLecture(${l.id})">Delete</button>
         </div>
-      </div>`).join('') : `<div class="empty-state"><p>No lecture links published yet.</p></div>`;
+      </div>`).join('') : `<div class="empty-state"><p>No lectures published yet.</p></div>`;
   } catch (err) {
     container.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
   }
@@ -1883,6 +1958,8 @@ function resetMaterialForm() {
   document.getElementById('materialDescription').value = '';
   document.getElementById('materialTerm').value = '';
   document.getElementById('materialUrlInput').value = '';
+  const fileEl = document.getElementById('materialFileInput');
+  if (fileEl) fileEl.value = '';
 }
 
 window.editMaterial = async (id, materials) => {
@@ -1894,16 +1971,22 @@ window.editMaterial = async (id, materials) => {
   document.getElementById('materialTitle').value = m.title || '';
   document.getElementById('materialSubject').value = m.subject || 'Physics';
   toggleMaterialTermField();
-  document.getElementById('materialChapter').value = m.chapter_id || '';
+  await loadChapterOptions('materialChapter', document.getElementById('materialSubject').value, m.chapter_id);
   document.getElementById('materialTopic').value = m.topic || '';
   document.getElementById('materialDescription').value = m.description || '';
   document.getElementById('materialTerm').value = m.term || '';
   document.getElementById('materialUrlInput').value = m.external_url || '';
-  if (m.material_type === 'file') {
-    showToast('This was uploaded as a file under the old system — add a link to replace it (files are no longer stored).', '');
+  const matFileEl = document.getElementById('materialFileInput');
+  if (matFileEl) matFileEl.value = '';
+  if (m.is_uploaded) {
+    showToast(`This material is an uploaded file${m.file_name ? ' (' + m.file_name + ')' : ''} — choose a new file to replace it, or just edit the details.`, '');
+  } else if (m.material_type === 'file') {
+    showToast('This was uploaded as a file under the old system — choose a new file or add a link to replace it.', '');
   }
   document.getElementById('materialTitle').scrollIntoView({ behavior: 'smooth', block: 'center' });
 };
+
+const MAX_MATERIAL_UPLOAD_BYTES = 100 * 1024 * 1024;   // keep in sync with backend/server.js (uploadDoc)
 
 async function uploadMaterial() {
   const btn = document.getElementById('uploadMaterialBtn');
@@ -1915,33 +1998,54 @@ async function uploadMaterial() {
   const description = document.getElementById('materialDescription').value.trim();
   const term = document.getElementById('materialTerm').value;
   const externalUrl = document.getElementById('materialUrlInput').value.trim();
+  const fileEl = document.getElementById('materialFileInput');
+  const file = fileEl && fileEl.files && fileEl.files[0] ? fileEl.files[0] : null;
 
   if (!title || !subject) {
     msgEl.innerHTML = `<span class="badge danger">Please provide a title and subject.</span>`;
     return;
   }
-  if (!externalUrl) {
-    msgEl.innerHTML = `<span class="badge danger">Please provide a link (e.g. a Google Drive share link).</span>`;
+  if (!file && !externalUrl) {
+    msgEl.innerHTML = `<span class="badge danger">Please choose a file to upload, or provide a link (e.g. a Google Drive share link).</span>`;
+    return;
+  }
+  if (file && file.size > MAX_MATERIAL_UPLOAD_BYTES) {
+    msgEl.innerHTML = `<span class="badge danger">That file is larger than 100 MB.</span>`;
     return;
   }
 
-  btn.disabled = true; btn.textContent = materialEditingId ? 'Saving...' : 'Publishing...';
+  const wasEditing = !!materialEditingId;
+  btn.disabled = true;
+  btn.textContent = file ? 'Uploading… 0%' : (wasEditing ? 'Saving...' : 'Publishing...');
   try {
-    if (materialEditingId) {
-      const data = await api(`/api/faculty/materials/${materialEditingId}`, {
+    let data;
+    if (file) {
+      const fd = new FormData();
+      fd.append('title', title);
+      fd.append('subject', subject);
+      fd.append('chapterId', chapterId || '');
+      fd.append('topic', topic);
+      fd.append('description', description);
+      fd.append('term', term || '');
+      fd.append('file', file);
+      const onProgress = pct => { btn.textContent = pct >= 100 ? 'Saving…' : `Uploading… ${pct}%`; };
+      data = wasEditing
+        ? await apiUploadWithProgress(`/api/faculty/materials/${materialEditingId}`, fd, 'PUT', onProgress)
+        : await apiUploadWithProgress('/api/faculty/materials/upload', fd, 'POST', onProgress);
+    } else if (wasEditing) {
+      data = await api(`/api/faculty/materials/${materialEditingId}`, {
         method: 'PUT',
-        body: JSON.stringify({ title, chapterId, topic, description, term: term || null, externalUrl })
+        body: JSON.stringify({ title, subject, chapterId, topic, description, term: term || null, externalUrl })
       });
-      msgEl.innerHTML = `<span class="badge success">✅ ${data.message}</span>`;
     } else {
-      const data = await api('/api/faculty/materials/link', {
+      data = await api('/api/faculty/materials/link', {
         method: 'POST',
         body: JSON.stringify({ title, subject, chapterId, topic, description, externalUrl, term: term || null })
       });
-      msgEl.innerHTML = `<span class="badge success">✅ ${data.message}</span>`;
     }
+    msgEl.innerHTML = `<span class="badge success">✅ ${data.message}</span>`;
     resetMaterialForm();
-    showToast(materialEditingId ? 'Material updated.' : 'Material published to students.', 'success');
+    showToast(wasEditing ? 'Material updated.' : 'Material published to students.', 'success');
     renderFacultyMaterials();
   } catch (err) {
     msgEl.innerHTML = `<span class="badge danger">${err.message}</span>`;
@@ -1949,6 +2053,11 @@ async function uploadMaterial() {
   } finally {
     btn.disabled = false; btn.textContent = materialEditingId ? 'Save changes' : 'Publish to students';
   }
+}
+
+// Uploaded files (stored on the CDN) and pasted links both open m.external_url.
+function materialOpenLabel(m) {
+  return m.is_uploaded ? `📄 Open file${m.file_size ? ' (' + formatFileSize(m.file_size) + ')' : ''}` : '🔗 Open';
 }
 
 function formatFileSize(bytes) {
@@ -1970,7 +2079,7 @@ async function renderFacultyMaterials() {
       <div class="flex-between" style="padding:0.6rem 0; border-bottom:1px solid var(--border);">
         <div>
           <strong>${m.title}</strong>
-          <div class="helper-text">${m.subject}${m.chapter ? ' · ' + m.chapter : ''}${m.topic ? ' · ' + m.topic : ''}${m.term ? ' · Term ' + m.term : ''} · ${m.material_type === 'file' ? ('legacy file: ' + (m.file_name || '') + ' ' + formatFileSize(m.file_size)) : (m.material_type === 'note' ? 'Note' : 'Link')}</div>
+          <div class="helper-text">${m.subject}${m.chapter ? ' · ' + m.chapter : ''}${m.topic ? ' · ' + m.topic : ''}${m.term ? ' · Term ' + m.term : ''} · ${m.is_uploaded ? ('📄 uploaded file: ' + (m.file_name || '') + ' ' + formatFileSize(m.file_size)) : (m.material_type === 'file' ? ('legacy file: ' + (m.file_name || '') + ' ' + formatFileSize(m.file_size)) : (m.material_type === 'note' ? 'Note' : 'Link'))}</div>
         </div>
         <div class="flex-row">
           <button class="btn btn-outline" onclick="editMaterial(${m.id}, lastFacultyMaterials)">Edit</button>
@@ -1983,6 +2092,7 @@ async function renderFacultyMaterials() {
 }
 
 window.deleteMaterial = async (id) => {
+  if (!confirm('Remove this material? An uploaded file will be deleted too.')) return;
   try {
     await api(`/api/faculty/materials/${id}`, { method: 'DELETE' });
     showToast('Material removed.', '');
@@ -2012,7 +2122,7 @@ async function renderMaterials() {
         </div>
         ${m.material_type === 'file'
           ? `<a class="btn btn-outline" href="${API_BASE}/api/materials/${m.id}/download" target="_blank" rel="noopener">⬇ ${formatFileSize(m.file_size)}</a>`
-          : `<a class="btn btn-outline" href="${m.external_url}" target="_blank" rel="noopener">🔗 Open</a>`}
+          : `<a class="btn btn-outline" href="${m.external_url}" target="_blank" rel="noopener">${materialOpenLabel(m)}</a>`}
       </div>`).join('') : `<div class="empty-state"><p>${subject ? `No ${subject} study materials published yet — check back soon.` : 'No study materials published yet — check back soon.'}</p></div>`;
   } catch (err) {
     container.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
@@ -2744,7 +2854,7 @@ async function renderGenericSubjectMaterials(subject) {
         </div>
         ${m.material_type === 'file'
           ? `<a class="btn btn-outline" href="${API_BASE}/api/materials/${m.id}/download" target="_blank" rel="noopener">⬇ ${formatFileSize(m.file_size)}</a>`
-          : `<a class="btn btn-outline" href="${m.external_url}" target="_blank" rel="noopener">🔗 Open</a>`}
+          : `<a class="btn btn-outline" href="${m.external_url}" target="_blank" rel="noopener">${materialOpenLabel(m)}</a>`}
       </div>`).join('') : `<div class="empty-state"><p>No ${subject} study materials published yet — check back soon.</p></div>`;
   } catch (err) {
     container.innerHTML = `<div class="empty-state"><p>${err.message}</p></div>`;
@@ -2758,7 +2868,7 @@ async function renderGenericSubjectLectures(subject) {
     const lectures = (await api('/api/approved-lectures')).filter(l => l.subject === subject);
     container.innerHTML = lectures.length ? lectures.map(l => `
       <div class="video-card">
-        <iframe src="${l.url}" allowfullscreen loading="lazy"></iframe>
+        ${lectureMediaHtml(l.url)}
         <div class="video-card-title">${l.title}</div>
       </div>`).join('') : `<div class="empty-state"><p>No ${subject} lectures published yet.</p></div>`;
   } catch (err) {
@@ -2898,7 +3008,7 @@ function physicsMaterialRow(m) {
   const action = m.material_type === 'file'
     ? `<a class="btn btn-outline" href="${API_BASE}/api/materials/${m.id}/download" target="_blank" onclick="markPhysicsMaterialViewed(${m.id}, true)">Download</a>`
     : (m.material_type === 'link'
-        ? `<a class="btn btn-outline" href="${m.external_url}" target="_blank" onclick="markPhysicsMaterialViewed(${m.id})">Open link</a>`
+        ? `<a class="btn btn-outline" href="${m.external_url}" target="_blank" onclick="markPhysicsMaterialViewed(${m.id})">${m.is_uploaded ? 'Open file' : 'Open link'}</a>`
         : `<button class="btn btn-outline" onclick="markPhysicsMaterialViewed(${m.id})">${m.viewed ? 'Viewed' : 'Mark as viewed'}</button>`);
   return `
     <div class="material-row">
@@ -3010,7 +3120,7 @@ async function renderPhysicsLectures() {
     const lectures = await api('/api/physics/lectures');
     el.innerHTML = lectures.length ? lectures.map(l => `
       <div class="video-card">
-        <iframe src="${l.url}" allowfullscreen></iframe>
+        ${lectureMediaHtml(l.url)}
         <div class="info">
           <strong>${l.title}</strong>
           <div class="meta">${l.lecturer_name || ''}</div>
@@ -3189,6 +3299,26 @@ function closeHillVideoModal() {
 window.playHillVideo = playHillVideo;
 window.closeHillVideoModal = closeHillVideoModal;
 
+// The hill-video URLs are not hard-coded: the server (GET /api/config, see
+// backend/cdn.js) builds them from the CDN_BASE_URL env var. Fetched once, on
+// first click, and cached; a failed fetch is retried on the next click.
+let _appConfig = null;
+async function loadAppConfig() {
+  if (_appConfig) return _appConfig;
+  try {
+    const res = await fetch(`${API_BASE}/api/config`);
+    if (res.ok) _appConfig = await res.json();
+  } catch (e) { /* offline / server down -> handled by caller */ }
+  return _appConfig;
+}
+async function playHill(n) {
+  const cfg = await loadAppConfig();
+  const video = cfg && cfg.hillVideos && cfg.hillVideos[n - 1];
+  if (!video) { showToast('This video is unavailable right now. Please try again.', 'error'); return; }
+  playHillVideo(video.url, video.label);
+}
+window.playHill = playHill;
+
 // ====================================================================
 // INIT
 // ====================================================================
@@ -3244,7 +3374,12 @@ window.onload = () => {
   document.getElementById('refreshStudentTestsBtn').onclick = renderStudentTests;
   document.getElementById('uploadMaterialBtn').onclick = uploadMaterial;
   document.getElementById('refreshFacultyMaterialsBtn').onclick = renderFacultyMaterials;
-  document.getElementById('materialSubject').onchange = toggleMaterialTermField;
+  document.getElementById('materialSubject').onchange = () => {
+    toggleMaterialTermField();
+    loadChapterOptions('materialChapter', document.getElementById('materialSubject').value);
+  };
+  document.getElementById('facLectureSubject').onchange = () =>
+    loadChapterOptions('facLectureChapter', document.getElementById('facLectureSubject').value);
   document.getElementById('refreshPhysicsMaterialsBtn').onclick = renderPhysicsMaterials;
   document.getElementById('physicsTopicFilter').onchange = (e) => jumpToPhysicsTopic(e.target.value);
 
