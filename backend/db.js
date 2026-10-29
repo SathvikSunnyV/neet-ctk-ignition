@@ -520,6 +520,14 @@ async function initSchema() {
         -- free-text name typed into the form.
         ALTER TABLE lectures ADD COLUMN IF NOT EXISTS submitted_by_email TEXT;
 
+        -- Faculty file uploads (Cloudflare R2, see storage.js). storage_key is the
+        -- object key in the bucket so the file can be deleted/replaced later;
+        -- NULL for every pre-existing row and for plain link-based entries.
+        -- Additive only: nothing is dropped or rewritten.
+        ALTER TABLE lectures  ADD COLUMN IF NOT EXISTS storage_key TEXT;
+        ALTER TABLE lectures  ADD COLUMN IF NOT EXISTS file_size_bytes BIGINT;
+        ALTER TABLE materials ADD COLUMN IF NOT EXISTS storage_key TEXT;
+
         -- Physics Student Module entry diagnostics (these three tables were
         -- defined in an earlier release but dropped from this file while the
         -- /api/physics/* routes stayed, so every Physics route 500'd on a
@@ -756,7 +764,8 @@ async function seedChapters() {
 // (see renderPractice() in frontend/app.js), separate from community/
 // approved faculty lectures. Titles/subjects can be edited later from
 // the Lecturer Hub if needed -- this just gets them onto the platform.
-const PROF_KONURI_LECTURE_BASE_URL = 'https://pub-8521d28a1e0d44bb9c7da4e801284a66.r2.dev';
+// Base URL comes from env (CDN_BASE_URL) via cdn.js -- never hard-code it here.
+const { lectureBase: PROF_KONURI_LECTURE_BASE_URL, legacyBases: LEGACY_CDN_BASES, isConfigured: CDN_BASE_CONFIGURED } = require('./cdn');
 const PROF_KONURI_LECTURES = [
     ['Connectomic_Method.mp4',                          'Connectomic Method'],
     ['Connectomics_Beats_Medical_Exam_Cramming.m4a',     'Connectomics Beats Medical Exam Cramming'],
@@ -777,18 +786,67 @@ const PROF_KONURI_LECTURES = [
     ['Why_Oil_Doesn_t_Mix.mp4',                           "Why Oil Doesn't Mix"],
 ];
 
+// Re-points lecture rows at the current CDN_BASE_URL after the bucket/account
+// moves. Idempotent, runs every startup, and does nothing at all unless
+// CDN_BASE_URL is set -- so existing deployments are untouched until opted in.
+//  1. Seeded 'CTK Faculty' rows are matched by FILENAME, so they follow the
+//     base whatever it used to be.
+//  2. Any other row (e.g. faculty-submitted) is only rewritten if it sits on a
+//     known legacy base -- external links to other sites are never touched.
+// Conflicts with the unique url index are resolved by keeping one row.
+async function syncLectureCdnBase() {
+    if (!CDN_BASE_CONFIGURED) return;
+    const base = PROF_KONURI_LECTURE_BASE_URL;
+
+    for (const [fileName] of PROF_KONURI_LECTURES) {
+        const target = `${base}/${fileName}`;
+        const { rows: stale } = await pool.query(
+            `SELECT id FROM lectures
+              WHERE lecturer_name = 'CTK Faculty' AND right(url, $1) = $2 AND url <> $3
+              ORDER BY id`,
+            [fileName.length + 1, '/' + fileName, target]
+        );
+        if (!stale.length) continue;
+        const { rows: existing } = await pool.query(`SELECT id FROM lectures WHERE url = $1`, [target]);
+        const ids = stale.map(r => r.id);
+        if (existing.length) {
+            await pool.query(`DELETE FROM lectures WHERE id = ANY($1::int[])`, [ids]);
+        } else {
+            await pool.query(`UPDATE lectures SET url = $1 WHERE id = $2`, [target, ids[0]]);
+            if (ids.length > 1) await pool.query(`DELETE FROM lectures WHERE id = ANY($1::int[])`, [ids.slice(1)]);
+        }
+    }
+
+    for (const oldBase of LEGACY_CDN_BASES) {
+        const { rows } = await pool.query(
+            `SELECT id, url FROM lectures WHERE left(url, $1) = $2`,
+            [oldBase.length + 1, oldBase + '/']
+        );
+        for (const row of rows) {
+            try {
+                await pool.query(`UPDATE lectures SET url = $1 WHERE id = $2`, [base + row.url.slice(oldBase.length), row.id]);
+            } catch (err) {
+                if (err.code !== '23505') throw err; // target url already exists -> leave this row as-is
+            }
+        }
+    }
+    console.log(`✅  Lecture URLs synced to CDN base ${base}`);
+}
+
 async function seedProfKonuriLectures() {
     // One-time cleanup: two filenames were corrected after being seeded
     // under the wrong URL (typo'd "Al" -> "AI", missing double underscore
     // in "Third_Hill__Discovery"). Remove the old, now-broken rows so they
     // don't linger as duplicate 404 cards alongside the corrected ones.
-    await pool.query(
-        `DELETE FROM lectures WHERE lecturer_name = 'CTK Faculty' AND url = ANY($1::text[])`,
-        [[
-            `${PROF_KONURI_LECTURE_BASE_URL}/Scaling_the_Seven_Hills_with_Al.m4a`,
-            `${PROF_KONURI_LECTURE_BASE_URL}/The_Third_Hill_Discovery.mp4`,
-        ]]
-    );
+    // Matched by filename (not full URL) so it works whatever the base was.
+    for (const badFile of ['Scaling_the_Seven_Hills_with_Al.m4a', 'The_Third_Hill_Discovery.mp4']) {
+        await pool.query(
+            `DELETE FROM lectures WHERE lecturer_name = 'CTK Faculty' AND right(url, $1) = $2`,
+            [badFile.length + 1, '/' + badFile]
+        );
+    }
+
+    await syncLectureCdnBase();
 
     for (const [fileName, title] of PROF_KONURI_LECTURES) {
         // DO UPDATE (not DO NOTHING): self-healing on every startup, so if a

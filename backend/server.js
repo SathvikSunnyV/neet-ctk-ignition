@@ -35,6 +35,11 @@ const {
     checkRateLimit, recordAttempt
 } = require('./auth');
 const { sendOtpSms, normalizePhone } = require('./sms');
+const { getPublicConfig } = require('./cdn');
+const storage = require('./storage');   // Cloudflare R2 uploads (faculty materials + lectures)
+const fs = require('fs');
+const os = require('os');
+const nodeCrypto = require('crypto');
 
 // Mount question bank + test engine routes
 const qbankRouter = require('./qbank');
@@ -67,6 +72,85 @@ app.use(cors());
 // notes "as large as possible" without hitting PayloadTooLargeError.
 app.use(express.json({ limit: '50mb' }));
 app.use(express.static(path.join(__dirname, '..', 'frontend')));
+
+// ---------------------------------------------------------------------------
+// FILE UPLOADS (faculty study materials + lecture videos/audio -> Cloudflare R2)
+// Multer parses multipart/form-data only; for a plain JSON request it just
+// calls next(), so the same route can accept EITHER a JSON body (link) OR a
+// multipart upload (file). Files are spooled to a temp file on disk and then
+// streamed to R2, so a large lecture video never has to sit in RAM.
+//
+// The type whitelist is enforced on the server (client-side `accept` is only
+// a convenience): both the extension AND the declared MIME type must be on
+// the list, so HTML / SVG / scripts / executables never reach the bucket.
+// ---------------------------------------------------------------------------
+const DOC_EXT_MIME = {
+    '.pdf': 'application/pdf',
+    '.ppt': 'application/vnd.ms-powerpoint',
+    '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+    '.doc': 'application/msword',
+    '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    '.xls': 'application/vnd.ms-excel',
+    '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif'
+};
+const MEDIA_EXT_MIME = {
+    '.mp4': 'video/mp4', '.m4v': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime',
+    '.m4a': 'audio/mp4', '.mp3': 'audio/mpeg', '.aac': 'audio/aac'
+};
+const EXTRA_ALLOWED_MIME = new Set([
+    'audio/x-m4a', 'audio/m4a', 'audio/mp3', 'audio/x-aac', 'video/x-m4v',
+    'application/vnd.ms-office', 'application/x-zip-compressed'   // some browsers label .pptx/.docx/.xlsx this way
+]);
+
+function uploadFilter(extMap) {
+    const allowedMime = new Set([...Object.values(extMap), ...EXTRA_ALLOWED_MIME]);
+    return (req, file, cb) => {
+        const ext = path.extname(file.originalname || '').toLowerCase();
+        const mimeOk = allowedMime.has(file.mimetype) || file.mimetype === 'application/octet-stream';
+        if (extMap[ext] && mimeOk) return cb(null, true);
+        cb(new Error(`Unsupported file type: ${ext || file.mimetype}`));
+    };
+}
+// The extension is the more reliable signal, so it decides the Content-Type R2 serves.
+function resolveContentType(file) {
+    const ext = path.extname(file.originalname || '').toLowerCase();
+    return DOC_EXT_MIME[ext] || MEDIA_EXT_MIME[ext] || file.mimetype || 'application/octet-stream';
+}
+const diskStorage = multer.diskStorage({
+    destination: os.tmpdir(),
+    filename: (req, file, cb) => cb(null, 'ctk-upload-' + nodeCrypto.randomBytes(8).toString('hex'))
+});
+const uploadDoc = multer({
+    storage: diskStorage,
+    limits: { fileSize: 100 * 1024 * 1024, files: 1 },        // 100 MB -- PDF / PPT / DOC
+    fileFilter: uploadFilter(DOC_EXT_MIME)
+});
+const uploadLecture = multer({
+    storage: diskStorage,
+    limits: { fileSize: 1024 * 1024 * 1024, files: 1 },       // 1 GB -- lecture video / audio
+    fileFilter: uploadFilter(MEDIA_EXT_MIME)
+});
+// Delete the spooled temp file once the response has gone out, whatever path
+// the route took (success, validation error, exception).
+function cleanupTempFile(req, res, next) {
+    if (req.file && req.file.path) {
+        const tmp = req.file.path;
+        res.on('close', () => fs.unlink(tmp, () => {}));
+    }
+    next();
+}
+function uploadFromTemp(file, folder) {
+    return storage.uploadFile({
+        folder, filePath: file.path, size: file.size,
+        originalName: file.originalname, contentType: resolveContentType(file)
+    });
+}
+function sendUploadError(res, err, fallbackMessage) {
+    if (err && err.code === 'STORAGE_NOT_CONFIGURED') return res.status(503).json({ error: err.message });
+    console.error(err);
+    return res.status(500).json({ error: fallbackMessage });
+}
 
 // Question bank & test engine (additive)
 app.use('/', qbank);
@@ -667,6 +751,15 @@ app.post('/api/register', authenticate, async (req, res) => {
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------
+// PUBLIC CONFIG -- CDN-hosted media URLs, driven by env (see cdn.js). Public and
+// non-secret; the frontend reads it instead of hard-coding any bucket URL.
+// ---------------------------------------------------------------------------
+app.get('/api/config', (req, res) => {
+    res.set('Cache-Control', 'public, max-age=60');
+    res.json(getPublicConfig());
+});
+
+// ---------------------------------------------------------------------------
 // EXAM DATE
 // ---------------------------------------------------------------------------
 app.get('/api/admin/exam-date', async (req, res) => {
@@ -854,22 +947,31 @@ app.delete('/api/admin/reject-lecture/:id', authenticate, requireRole('admin'), 
 // submit-for-approval endpoints (/api/lecturer/submit and the admin
 // approve/reject queue) are untouched and keep working exactly as before.
 // ===========================================================================
-app.post('/api/faculty/lectures', authenticate, requireRole('faculty'), async (req, res) => {
+app.post('/api/faculty/lectures', authenticate, requireRole('faculty'), uploadLecture.single('file'), cleanupTempFile, async (req, res) => {
     const { title, subject, url, chapterId } = req.body;
-    if (!title?.trim() || !url?.trim()) return res.status(400).json({ error: 'Title and URL are required.' });
-    if (!/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'Please provide a valid video URL.' });
+    if (!title?.trim()) return res.status(400).json({ error: 'Title is required.' });
+    if (!req.file) {
+        if (!url?.trim()) return res.status(400).json({ error: 'Upload a video/audio file or provide a video URL.' });
+        if (!/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'Please provide a valid video URL.' });
+    }
 
+    let uploaded = null;
     try {
         const chapterRow = await resolveChapter(chapterId);
+        let finalUrl = url ? url.trim() : null, storageKey = null, sizeBytes = null;
+        if (req.file) {
+            uploaded = await uploadFromTemp(req.file, 'lectures');
+            finalUrl = uploaded.url; storageKey = uploaded.key; sizeBytes = req.file.size;
+        }
         const { rows: [lecture] } = await pool.query(
-            `INSERT INTO lectures (title, subject, url, lecturer_name, lecturer_email, chapter_id, approved)
-             VALUES ($1,$2,$3,$4,$5,$6,1) RETURNING *`,
-            [title.trim(), subject || 'Physics', url.trim(), req.user.name, req.user.email, chapterRow ? chapterRow.id : null]
+            `INSERT INTO lectures (title, subject, url, lecturer_name, lecturer_email, chapter_id, approved, storage_key, file_size_bytes)
+             VALUES ($1,$2,$3,$4,$5,$6,1,$7,$8) RETURNING *`,
+            [title.trim(), subject || 'Physics', finalUrl, req.user.name, req.user.email, chapterRow ? chapterRow.id : null, storageKey, sizeBytes]
         );
         res.status(201).json({ success: true, lecture });
     } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Server error while publishing the lecture link.' });
+        if (uploaded) storage.deleteFile(uploaded.key);   // don't leave an orphan if the DB insert failed
+        sendUploadError(res, err, 'Server error while publishing the lecture.');
     }
 });
 
@@ -888,35 +990,56 @@ app.get('/api/faculty/lectures', authenticate, requireRole('faculty'), async (re
     }
 });
 
-app.put('/api/faculty/lectures/:id', authenticate, requireRole('faculty'), async (req, res) => {
+app.put('/api/faculty/lectures/:id', authenticate, requireRole('faculty'), uploadLecture.single('file'), cleanupTempFile, async (req, res) => {
     const { title, subject, url, chapterId } = req.body;
-    if (!title?.trim() || !url?.trim()) return res.status(400).json({ error: 'Title and URL are required.' });
-    if (!/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'Please provide a valid video URL.' });
+    if (!title?.trim()) return res.status(400).json({ error: 'Title is required.' });
+    if (!req.file) {
+        if (!url?.trim()) return res.status(400).json({ error: 'Title and URL are required.' });
+        if (!/^https?:\/\//i.test(url)) return res.status(400).json({ error: 'Please provide a valid video URL.' });
+    }
 
+    let uploaded = null;
     try {
-        const chapterRow = await resolveChapter(chapterId);
-        const { rowCount } = await pool.query(
-            `UPDATE lectures SET title=$1, subject=$2, url=$3, chapter_id=$4 WHERE id=$5 AND lecturer_email=$6`,
-            [title.trim(), subject || 'Physics', url.trim(), chapterRow ? chapterRow.id : null, req.params.id, req.user.email]
+        const { rows: [existing] } = await pool.query(
+            `SELECT * FROM lectures WHERE id = $1 AND lecturer_email = $2`, [req.params.id, req.user.email]
         );
-        if (rowCount === 0) return res.status(404).json({ error: 'Lecture link not found or not owned by you.' });
-        res.json({ success: true, message: 'Lecture link updated.' });
+        if (!existing) return res.status(404).json({ error: 'Lecture not found or not owned by you.' });
+
+        const chapterRow = await resolveChapter(chapterId);
+        let finalUrl = existing.url, storageKey = existing.storage_key, sizeBytes = existing.file_size_bytes;
+        let oldKeyToDelete = null;
+        if (req.file) {
+            uploaded = await uploadFromTemp(req.file, 'lectures');
+            finalUrl = uploaded.url; storageKey = uploaded.key; sizeBytes = req.file.size;
+            oldKeyToDelete = existing.storage_key;                 // replaced file -> remove the old object
+        } else if (url.trim() !== existing.url) {
+            finalUrl = url.trim(); storageKey = null; sizeBytes = null;
+            oldKeyToDelete = existing.storage_key;                 // switched from an uploaded file to a link
+        }
+        await pool.query(
+            `UPDATE lectures SET title=$1, subject=$2, url=$3, chapter_id=$4, storage_key=$5, file_size_bytes=$6
+             WHERE id=$7 AND lecturer_email=$8`,
+            [title.trim(), subject || 'Physics', finalUrl, chapterRow ? chapterRow.id : null, storageKey, sizeBytes, req.params.id, req.user.email]
+        );
+        if (oldKeyToDelete) await storage.deleteFile(oldKeyToDelete);
+        res.json({ success: true, message: 'Lecture updated.' });
     } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Server error while updating the lecture link.' });
+        if (uploaded) storage.deleteFile(uploaded.key);
+        sendUploadError(res, err, 'Server error while updating the lecture.');
     }
 });
 
 app.delete('/api/faculty/lectures/:id', authenticate, requireRole('faculty'), async (req, res) => {
     try {
-        const { rowCount } = await pool.query(
-            `DELETE FROM lectures WHERE id = $1 AND lecturer_email = $2`, [req.params.id, req.user.email]
+        const { rows: [deleted] } = await pool.query(
+            `DELETE FROM lectures WHERE id = $1 AND lecturer_email = $2 RETURNING storage_key`, [req.params.id, req.user.email]
         );
-        if (rowCount === 0) return res.status(404).json({ error: 'Lecture link not found or not owned by you.' });
+        if (!deleted) return res.status(404).json({ error: 'Lecture not found or not owned by you.' });
+        if (deleted.storage_key) await storage.deleteFile(deleted.storage_key);
         res.json({ success: true });
     } catch (err) {
         console.error(err);
-        res.status(500).json({ error: 'Server error while deleting the lecture link.' });
+        res.status(500).json({ error: 'Server error while deleting the lecture.' });
     }
 });
 
@@ -1150,10 +1273,12 @@ app.delete('/api/faculty/chapter-notes/:id', authenticate, requireRole('faculty'
 });
 
 // ===========================================================================
-// STUDY MATERIALS (faculty share links only — Google Drive, YouTube, etc.)
-// We intentionally do NOT accept direct file uploads here any more: storing
-// files as bytea in Postgres was eating up the database's storage quota.
-// A shared link keeps the material accessible to students without that cost.
+// STUDY MATERIALS (faculty share a link OR upload a file)
+// Files are NOT stored in Postgres (bytea ate the database's storage quota):
+// uploads go to Cloudflare R2 (see storage.js) and the row just keeps the
+// public URL + the object key. Uploaded files are saved as material_type
+// 'link' with external_url = the R2 URL, so every existing student view
+// (which already opens external_url) keeps working unchanged.
 // Published directly by the authenticated faculty member — no separate
 // approval queue, since this is course material rather than open community
 // video submissions.
@@ -1187,11 +1312,40 @@ app.post('/api/faculty/materials/link', authenticate, requireRole('faculty'), as
 });
 
 // ---------------------------------------------------------------------------
+// FACULTY: upload a file-based material (PDF / PPT / DOC / image) to R2
+// ---------------------------------------------------------------------------
+app.post('/api/faculty/materials/upload', authenticate, requireRole('faculty'), uploadDoc.single('file'), cleanupTempFile, async (req, res) => {
+    const { title, subject, chapter, chapterId, topic, description, term } = req.body;
+    if (!req.file) return res.status(400).json({ error: 'Please choose a file to upload.' });
+    if (!title?.trim() || !subject?.trim()) return res.status(400).json({ error: 'Title and subject are required.' });
+
+    const termNum = [1, 2, 3].includes(parseInt(term, 10)) ? parseInt(term, 10) : null;
+    let uploaded = null;
+    try {
+        const chapterRow = await resolveChapter(chapterId);
+        uploaded = await uploadFromTemp(req.file, 'materials');
+        await pool.query(
+            `INSERT INTO materials (title, subject, chapter, chapter_id, topic, material_type, file_name, mime_type, file_size,
+                                    external_url, storage_key, description, uploaded_by, term)
+             VALUES ($1,$2,$3,$4,$5,'link',$6,$7,$8,$9,$10,$11,$12,$13)`,
+            [title.trim(), subject, chapterRow ? chapterRow.name : (chapter || null), chapterRow ? chapterRow.id : null,
+             topic || null, req.file.originalname, resolveContentType(req.file), req.file.size,
+             uploaded.url, uploaded.key, description || null, req.user.email, termNum]
+        );
+        res.status(201).json({ success: true, message: 'File uploaded and published to students.' });
+    } catch (e) {
+        if (uploaded) storage.deleteFile(uploaded.key);
+        sendUploadError(res, e, 'Server error while uploading the material.');
+    }
+});
+
+// ---------------------------------------------------------------------------
 // FACULTY: list own uploaded materials
 // ---------------------------------------------------------------------------
 app.get('/api/faculty/materials', authenticate, requireRole('faculty'), async (req, res) => {
     const { rows } = await pool.query(
-        `SELECT id, title, subject, chapter, chapter_id, topic, material_type, file_name, mime_type, file_size, external_url, description, term, created_at
+        `SELECT id, title, subject, chapter, chapter_id, topic, material_type, file_name, mime_type, file_size, external_url, description, term, created_at,
+                (storage_key IS NOT NULL) AS is_uploaded
          FROM materials WHERE uploaded_by = $1 ORDER BY created_at DESC`,
         [req.user.email]
     );
@@ -1199,16 +1353,18 @@ app.get('/api/faculty/materials', authenticate, requireRole('faculty'), async (r
 });
 
 // ---------------------------------------------------------------------------
-// FACULTY: edit a material's metadata (title, chapter, topic, term,
-// description, and — for link-type materials only — the URL). Replacing
-// the underlying file itself is not supported here; faculty can delete and
-// re-upload if the file content needs to change, which keeps this edit
-// path simple and avoids silently invalidating any cached downloads.
+// FACULTY: edit a material (title, chapter, topic, term, description) and,
+// optionally, replace its content: choose a new file (multipart) to replace
+// the file / link, or change the link. A replaced R2 object is deleted so the
+// bucket doesn't fill up with orphans.
 // ---------------------------------------------------------------------------
-app.put('/api/faculty/materials/:id', authenticate, requireRole('faculty'), async (req, res) => {
-    const { title, chapterId, topic, description, term, externalUrl } = req.body;
+app.put('/api/faculty/materials/:id', authenticate, requireRole('faculty'), uploadDoc.single('file'), cleanupTempFile, async (req, res) => {
+    const { title, subject, chapterId, topic, description, term, externalUrl } = req.body;
     if (!title?.trim()) return res.status(400).json({ error: 'Title is required.' });
+    if (!req.file && externalUrl && externalUrl.trim() && !/^https?:\/\//i.test(externalUrl.trim()))
+        return res.status(400).json({ error: 'Please provide a valid URL.' });
 
+    let uploaded = null;
     try {
         const { rows: [existing] } = await pool.query(
             `SELECT * FROM materials WHERE id = $1 AND uploaded_by = $2`, [req.params.id, req.user.email]
@@ -1217,35 +1373,60 @@ app.put('/api/faculty/materials/:id', authenticate, requireRole('faculty'), asyn
 
         const chapterRow = await resolveChapter(chapterId);
         const termNum = [1, 2, 3].includes(parseInt(term, 10)) ? parseInt(term, 10) : null;
+        // Subject can be changed on edit. If it changes and no chapter of the new
+        // subject was picked, drop the old chapter (it belongs to the old subject).
+        const newSubject = subject && subject.trim() ? subject.trim() : existing.subject;
+        const subjectChanged = newSubject !== existing.subject;
 
-        if (existing.material_type === 'link' && externalUrl) {
-            if (!/^https?:\/\//i.test(externalUrl)) return res.status(400).json({ error: 'Please provide a valid URL.' });
-            await pool.query(
-                `UPDATE materials SET title=$1, chapter=$2, chapter_id=$3, topic=$4, description=$5, term=$6, external_url=$7 WHERE id=$8`,
-                [title.trim(), chapterRow ? chapterRow.name : existing.chapter, chapterRow ? chapterRow.id : existing.chapter_id,
-                 topic ?? existing.topic, description ?? existing.description, termNum ?? existing.term, externalUrl.trim(), req.params.id]
-            );
-        } else {
-            await pool.query(
-                `UPDATE materials SET title=$1, chapter=$2, chapter_id=$3, topic=$4, description=$5, term=$6 WHERE id=$7`,
-                [title.trim(), chapterRow ? chapterRow.name : existing.chapter, chapterRow ? chapterRow.id : existing.chapter_id,
-                 topic ?? existing.topic, description ?? existing.description, termNum ?? existing.term, req.params.id]
-            );
+        let materialType = existing.material_type, extUrl = existing.external_url, storageKey = existing.storage_key,
+            fileName = existing.file_name, mimeType = existing.mime_type, fileSize = existing.file_size;
+        let clearFileData = false, oldKeyToDelete = null;
+
+        if (req.file) {
+            uploaded = await uploadFromTemp(req.file, 'materials');
+            materialType = 'link'; extUrl = uploaded.url; storageKey = uploaded.key;
+            fileName = req.file.originalname; mimeType = resolveContentType(req.file); fileSize = req.file.size;
+            clearFileData = true;                                  // a legacy in-database file is replaced too
+            oldKeyToDelete = existing.storage_key;
+        } else if (externalUrl && externalUrl.trim() && externalUrl.trim() !== existing.external_url) {
+            materialType = 'link'; extUrl = externalUrl.trim(); storageKey = null;
+            fileName = null; mimeType = null; fileSize = null;
+            clearFileData = true;
+            oldKeyToDelete = existing.storage_key;
         }
+
+        await pool.query(
+            `UPDATE materials SET title=$1, chapter=$2, chapter_id=$3, topic=$4, description=$5, term=$6,
+                    material_type=$7, external_url=$8, storage_key=$9, file_name=$10, mime_type=$11, file_size=$12,
+                    file_data = CASE WHEN $13::boolean THEN NULL ELSE file_data END, subject=$15
+             WHERE id=$14`,
+            [title.trim(),
+             chapterRow ? chapterRow.name : (subjectChanged ? null : existing.chapter),
+             chapterRow ? chapterRow.id : (subjectChanged ? null : existing.chapter_id),
+             topic ?? existing.topic, description ?? existing.description, termNum ?? existing.term,
+             materialType, extUrl, storageKey, fileName, mimeType, fileSize, clearFileData, req.params.id, newSubject]
+        );
+        if (oldKeyToDelete) await storage.deleteFile(oldKeyToDelete);
         res.json({ success: true, message: 'Material updated.' });
     } catch (e) {
-        console.error(e);
-        res.status(500).json({ error: 'Server error while updating the material.' });
+        if (uploaded) storage.deleteFile(uploaded.key);
+        sendUploadError(res, e, 'Server error while updating the material.');
     }
 });
 
 app.delete('/api/faculty/materials/:id', authenticate, requireRole('faculty'), async (req, res) => {
-    const { rowCount } = await pool.query(
-        `DELETE FROM materials WHERE id = $1 AND uploaded_by = $2`,
-        [req.params.id, req.user.email]
-    );
-    if (rowCount === 0) return res.status(404).json({ error: 'Material not found or not owned by you.' });
-    res.json({ success: true });
+    try {
+        const { rows: [deleted] } = await pool.query(
+            `DELETE FROM materials WHERE id = $1 AND uploaded_by = $2 RETURNING storage_key`,
+            [req.params.id, req.user.email]
+        );
+        if (!deleted) return res.status(404).json({ error: 'Material not found or not owned by you.' });
+        if (deleted.storage_key) await storage.deleteFile(deleted.storage_key);
+        res.json({ success: true });
+    } catch (e) {
+        console.error(e);
+        res.status(500).json({ error: 'Server error while removing the material.' });
+    }
 });
 
 // ---------------------------------------------------------------------------
@@ -1258,7 +1439,7 @@ app.get('/api/materials', authenticate, async (req, res) => {
             `SELECT m.id, m.title, m.subject, m.chapter, m.chapter_id, m.topic, m.material_type, m.file_name, m.mime_type,
                     m.file_size, m.external_url, m.description, m.term, m.created_at, f.name AS uploaded_by_name,
                     COALESCE(mp.viewed, FALSE) AS viewed, COALESCE(mp.downloaded, FALSE) AS downloaded,
-                    COALESCE(mp.completed, FALSE) AS completed
+                    COALESCE(mp.completed, FALSE) AS completed, (m.storage_key IS NOT NULL) AS is_uploaded
              FROM materials m
              LEFT JOIN faculty f ON m.uploaded_by = f.email
              LEFT JOIN material_progress mp ON mp.material_id = m.id AND mp.student_email = $5
@@ -2917,7 +3098,7 @@ app.get('/api/physics/materials', authenticate, async (req, res) => {
             `SELECT m.id, m.title, m.chapter AS topic, m.term, m.material_type, m.file_name, m.mime_type,
                     m.file_size, m.external_url, m.description, m.created_at,
                     COALESCE(mp.viewed, FALSE) AS viewed, COALESCE(mp.downloaded, FALSE) AS downloaded,
-                    COALESCE(mp.completed, FALSE) AS completed
+                    COALESCE(mp.completed, FALSE) AS completed, (m.storage_key IS NOT NULL) AS is_uploaded
              FROM materials m
              LEFT JOIN material_progress mp ON mp.material_id = m.id AND mp.student_email = $1
              WHERE m.subject = 'Physics'
@@ -3107,6 +3288,17 @@ app.get('/api/physics/dashboard', authenticate, requireRole('student'), async (r
 
 app.get(/^\/(?!api).*/, (req, res) => {
     res.sendFile(path.join(__dirname, '..', 'frontend', 'index.html'));
+});
+
+// Multer errors (file too large, or a type rejected by the upload filters above)
+// otherwise fall through to Express's default HTML error page, which breaks
+// every frontend caller expecting JSON.
+app.use((err, req, res, next) => {
+    if (err instanceof multer.MulterError || (err && /^Unsupported file type/.test(err.message))) {
+        const msg = err.code === 'LIMIT_FILE_SIZE' ? 'That file is too large for this upload type.' : err.message;
+        return res.status(400).json({ error: msg });
+    }
+    next(err);
 });
 
 // ---------------------------------------------------------------------------
